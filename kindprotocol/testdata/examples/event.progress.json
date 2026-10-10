@@ -1,0 +1,13 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-event",
+  "execution_id": "ex_01JA7Y3K2M9",
+  "operation": "apply",
+  "sequence": 3,
+  "time": "2026-10-10T15:12:04Z",
+  "event": {
+    "type": "progress",
+    "message": "6 of 12 tasks running the new version",
+    "percent": 50
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oyzu.dev/contracts/kinds-v1alpha1/request.schema.json",
+  "title": "Draft deployment kind protocol v1alpha1: operation request",
+  "description": "The one JSON document a kind reads on standard input. It never carries a credential or a secret value; secrets appear only as references.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "type", "operation", "execution_id", "kind", "target_settings", "components"],
+  "properties": {
+    "schema_version": { "const": "v1alpha1" },
+    "type": { "const": "deployment-kind-request" },
+    "operation": { "$ref": "common.schema.json#/$defs/operation" },
+    "execution_id": { "$ref": "common.schema.json#/$defs/executionId" },
+    "kind": { "$ref": "common.schema.json#/$defs/kindRef" },
+    "target_settings": {
+      "description": "Validated against the manifest's target_settings_schema before the request is sent.",
+      "type": "object"
+    },
+    "components": {
+      "description": "The desired component versions from the release snapshot.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": { "$ref": "common.schema.json#/$defs/componentVersion" }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "values": {
+          "type": "object",
+          "maxProperties": 1024,
+          "additionalProperties": { "type": ["string", "number", "boolean"] }
+        },
+        "secrets": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "ref"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$" },
+              "ref": {
+                "description": "An opaque reference the pool resolves through the secrets use path. Never a value.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            }
+          }
+        }
+      }
+    },
+    "last_observed": { "$ref": "common.schema.json#/$defs/observedState" },
+    "approved_plan": {
+      "description": "apply only: the plan a person approved. The kind applies exactly this or refuses it as stale.",
+      "$ref": "plan.schema.json"
+    },
+    "traffic_percent": {
+      "description": "shift only: the share of traffic the staged version should receive.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "rollback_to": {
+      "description": "rollback only: the previously observed state to return to.",
+      "$ref": "common.schema.json#/$defs/observedState"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "operation": { "const": "apply" } } },
+      "then": { "required": ["approved_plan"] },
+      "else": { "not": { "required": ["approved_plan"] } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "shift" } } },
+      "then": { "required": ["traffic_percent"] },
+      "else": { "not": { "required": ["traffic_percent"] } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "rollback" } } },
+      "then": { "required": ["rollback_to"] },
+      "else": { "not": { "required": ["rollback_to"] } }
+    }
+  ]
+}

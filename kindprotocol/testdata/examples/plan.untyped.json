@@ -1,0 +1,32 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-plan",
+  "kind": {
+    "name": "script",
+    "version": "0.1.0"
+  },
+  "summary": "Run ./deploy.sh 2026.10.10-4 on the web hosts; the version changes from 2026.10.09-2 to 2026.10.10-4.",
+  "changes": [
+    {
+      "action": "run",
+      "resource": {
+        "type": "script.command",
+        "name": "./deploy.sh"
+      },
+      "attributes": [
+        {
+          "path": "/version",
+          "before": "2026.10.09-2",
+          "after": "2026.10.10-4"
+        }
+      ]
+    }
+  ],
+  "risk_flags": [
+    {
+      "flag": "untyped",
+      "reason": "A script cannot say what it will change."
+    }
+  ],
+  "digest": "sha256:2904c0d6250a409d9c19e68ed8db21541e24cd37a22257630753293c6376c85c"
+}

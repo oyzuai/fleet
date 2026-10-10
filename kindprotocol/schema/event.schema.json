@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oyzu.dev/contracts/kinds-v1alpha1/event.schema.json",
+  "title": "Draft deployment kind protocol v1alpha1: progress event",
+  "description": "One line of the event stream a kind writes on standard error while it works: progress, heartbeats and log lines, one JSON object per line.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "type", "execution_id", "operation", "sequence", "time", "event"],
+  "properties": {
+    "schema_version": { "const": "v1alpha1" },
+    "type": { "const": "deployment-kind-event" },
+    "execution_id": { "$ref": "common.schema.json#/$defs/executionId" },
+    "operation": { "$ref": "common.schema.json#/$defs/operation" },
+    "sequence": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "time": { "type": "string", "format": "date-time" },
+    "event": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": { "type": { "const": "heartbeat" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "message"],
+          "properties": {
+            "type": { "const": "progress" },
+            "message": { "type": "string", "minLength": 1, "maxLength": 1000 },
+            "percent": { "type": "integer", "minimum": 0, "maximum": 100 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "level", "message"],
+          "properties": {
+            "type": { "const": "log" },
+            "level": { "enum": ["debug", "info", "warn", "error"] },
+            "message": { "type": "string", "maxLength": 16384 }
+          }
+        }
+      ]
+    }
+  }
+}

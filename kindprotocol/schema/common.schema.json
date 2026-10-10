@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oyzu.dev/contracts/kinds-v1alpha1/common.schema.json",
+  "title": "Draft deployment kind protocol v1alpha1: shared definitions",
+  "$defs": {
+    "name": {
+      "description": "A lowercase DNS-label-style name for a kind, component or resource type segment.",
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "semver": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "executionId": {
+      "description": "Opaque, engine-assigned. A kind uses it only as an idempotency key for apply.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "operation": {
+      "enum": ["validate", "plan", "apply", "observe", "stage", "shift", "switch", "retire", "abort", "rollback", "drift"]
+    },
+    "kindRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "version": { "$ref": "#/$defs/semver" }
+      }
+    },
+    "artifact": {
+      "description": "One artifact of a component version, pinned by digest.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "digest"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "media_type": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "digest": { "$ref": "#/$defs/digest" },
+        "uri": { "type": "string", "minLength": 1, "maxLength": 2048 }
+      }
+    },
+    "componentVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component", "version", "artifacts"],
+      "properties": {
+        "component": { "$ref": "#/$defs/name" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/artifact" }
+        }
+      }
+    },
+    "health": {
+      "description": "The five Oyzu status words as machine values.",
+      "enum": ["healthy", "pending", "paused", "needs-attention", "failed"]
+    },
+    "observedComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component", "health"],
+      "properties": {
+        "component": { "$ref": "#/$defs/name" },
+        "version": {
+          "description": "Absent when nothing is deployed.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "artifacts": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/artifact" }
+        },
+        "health": { "$ref": "#/$defs/health" },
+        "message": { "type": "string", "maxLength": 4000 }
+      }
+    },
+    "observedState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["as_of", "components"],
+      "properties": {
+        "as_of": { "type": "string", "format": "date-time" },
+        "components": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/observedComponent" }
+        }
+      }
+    },
+    "change": {
+      "description": "One entry of a typed diff.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "resource"],
+      "properties": {
+        "action": { "enum": ["create", "update", "replace", "delete", "run"] },
+        "resource": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "name"],
+          "properties": {
+            "type": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "name": { "type": "string", "minLength": 1, "maxLength": 1024 }
+          }
+        },
+        "attributes": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+              "before": true,
+              "after": true,
+              "sensitive": {
+                "description": "When true the values are masked and before and after are absent.",
+                "type": "boolean"
+              }
+            },
+            "if": { "properties": { "sensitive": { "const": true } }, "required": ["sensitive"] },
+            "then": { "not": { "anyOf": [{ "required": ["before"] }, { "required": ["after"] }] } }
+          }
+        }
+      }
+    }
+  }
+}

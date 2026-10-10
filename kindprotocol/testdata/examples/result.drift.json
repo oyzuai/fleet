@@ -1,0 +1,26 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-result",
+  "execution_id": "ex_01JA7Y3K2M9",
+  "operation": "drift",
+  "outcome": "succeeded",
+  "drift": {
+    "drifted": true,
+    "changes": [
+      {
+        "action": "update",
+        "resource": {
+          "type": "aws.ecs.service",
+          "name": "prod-use1/checkout"
+        },
+        "attributes": [
+          {
+            "path": "/desiredCount",
+            "before": 12,
+            "after": 9
+          }
+        ]
+      }
+    ]
+  }
+}

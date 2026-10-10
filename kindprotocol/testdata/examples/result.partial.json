@@ -1,0 +1,12 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-result",
+  "execution_id": "ex_01JA7Y3K2M9",
+  "operation": "apply",
+  "outcome": "failed",
+  "failure": {
+    "class": "partial-change",
+    "code": "deployment-circuit-breaker",
+    "message": "ECS stopped the deployment after 4 of 12 tasks started; both task definitions are running."
+  }
+}

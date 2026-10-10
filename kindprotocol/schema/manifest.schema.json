@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oyzu.dev/contracts/kinds-v1alpha1/manifest.schema.json",
+  "title": "Draft deployment kind protocol v1alpha1: kind manifest",
+  "description": "What a kind declares it can do. The platform checks a release plan against these declarations before the release is created.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "type", "name", "version", "operations", "rollback", "strategies", "default_strategy", "target_settings_schema", "connectors"],
+  "properties": {
+    "schema_version": { "const": "v1alpha1" },
+    "type": { "const": "deployment-kind-manifest" },
+    "name": { "$ref": "common.schema.json#/$defs/name" },
+    "version": { "$ref": "common.schema.json#/$defs/semver" },
+    "description": { "type": "string", "minLength": 1, "maxLength": 1000 },
+    "operations": {
+      "description": "Every operation the kind implements, with its timeout. validate, plan, apply and observe are required.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["validate", "plan", "apply", "observe"],
+      "properties": {
+        "validate": { "$ref": "#/$defs/operation" },
+        "plan": { "$ref": "#/$defs/operation" },
+        "apply": { "$ref": "#/$defs/operation" },
+        "observe": { "$ref": "#/$defs/operation" },
+        "stage": { "$ref": "#/$defs/operation" },
+        "shift": { "$ref": "#/$defs/operation" },
+        "switch": { "$ref": "#/$defs/operation" },
+        "retire": { "$ref": "#/$defs/operation" },
+        "abort": { "$ref": "#/$defs/operation" },
+        "rollback": { "$ref": "#/$defs/operation" },
+        "drift": { "$ref": "#/$defs/operation" }
+      }
+    },
+    "rollback": {
+      "description": "native: the kind implements the rollback operation. redeploy: the engine plans and applies the previous observed version. none: there is no rollback.",
+      "enum": ["native", "redeploy", "none"]
+    },
+    "strategies": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "mode"],
+        "properties": {
+          "name": { "$ref": "#/$defs/strategy" },
+          "mode": {
+            "description": "native: the engine drives each step through this kind's operations. delegated: a tool the customer already runs times the steps, and the kind starts, observes, promotes and aborts it.",
+            "enum": ["native", "delegated"]
+          },
+          "tool": {
+            "description": "The tool a delegated strategy hands timing to, for example Argo Rollouts.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "if": { "properties": { "mode": { "const": "delegated" } } },
+        "then": { "required": ["tool"] },
+        "else": { "not": { "required": ["tool"] } }
+      }
+    },
+    "default_strategy": {
+      "description": "The kind's own update, used when no rollout policy names a strategy. Must be one of strategies.",
+      "$ref": "#/$defs/strategy"
+    },
+    "target_settings_schema": {
+      "description": "A JSON Schema (2020-12) object for this kind's target settings.",
+      "type": "object"
+    },
+    "connectors": {
+      "description": "Connector types whose credentials the pool may release to this kind. Apply and observe credentials are separate; observe is read-only.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["apply", "observe"],
+      "properties": {
+        "apply": { "$ref": "#/$defs/connectorTypes" },
+        "observe": { "$ref": "#/$defs/connectorTypes" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "rollback": { "const": "native" } } },
+      "then": { "properties": { "operations": { "required": ["rollback"] } } },
+      "else": { "properties": { "operations": { "not": { "required": ["rollback"] } } } }
+    }
+  ],
+  "$defs": {
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeout_seconds"],
+      "properties": {
+        "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 86400 }
+      }
+    },
+    "strategy": { "enum": ["recreate", "rolling", "blue-green", "canary", "linear", "shadow"] },
+    "connectorTypes": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "common.schema.json#/$defs/name" }
+    }
+  }
+}

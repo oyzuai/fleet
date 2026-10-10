@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oyzu.dev/contracts/kinds-v1alpha1/result.schema.json",
+  "title": "Draft deployment kind protocol v1alpha1: operation result",
+  "description": "The one JSON document a kind writes on standard output. It decides the outcome; the exit code does not.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "type", "operation", "execution_id", "outcome"],
+  "properties": {
+    "schema_version": { "const": "v1alpha1" },
+    "type": { "const": "deployment-kind-result" },
+    "operation": { "$ref": "common.schema.json#/$defs/operation" },
+    "execution_id": { "$ref": "common.schema.json#/$defs/executionId" },
+    "outcome": {
+      "description": "stale-plan: apply refused because the approved plan no longer holds. Nothing changed; the engine plans again.",
+      "enum": ["succeeded", "failed", "stale-plan"]
+    },
+    "plan": { "$ref": "plan.schema.json" },
+    "applied": {
+      "description": "apply and rollback: the component versions the kind claims are now in place. observe must report the same.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": { "$ref": "common.schema.json#/$defs/componentVersion" }
+    },
+    "observed": { "$ref": "common.schema.json#/$defs/observedState" },
+    "staged": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address"],
+      "properties": {
+        "address": {
+          "description": "A private address that reaches the staged version before it takes traffic.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        }
+      }
+    },
+    "drift": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["drifted", "changes"],
+      "properties": {
+        "drifted": { "type": "boolean" },
+        "changes": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": { "$ref": "common.schema.json#/$defs/change" }
+        }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "code", "message"],
+      "properties": {
+        "class": {
+          "description": "retryable: nothing changed. needs-person: a person must act, for example a denied permission or a quota. partial-change: the target may be between versions, so the release run holds.",
+          "enum": ["retryable", "needs-person", "partial-change"]
+        },
+        "code": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "maxLength": 128 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "problems": {
+          "description": "validate: each setting or input that failed, by JSON pointer.",
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "message"],
+            "properties": {
+              "path": { "type": "string", "maxLength": 1024 },
+              "message": { "type": "string", "minLength": 1, "maxLength": 1000 }
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "outcome": { "const": "failed" } } },
+      "then": { "required": ["failure"] },
+      "else": { "not": { "required": ["failure"] } }
+    },
+    {
+      "if": { "properties": { "outcome": { "const": "stale-plan" } } },
+      "then": { "properties": { "operation": { "const": "apply" } } }
+    },
+    {
+      "if": { "properties": { "outcome": { "const": "succeeded" } } },
+      "then": {
+        "allOf": [
+          { "if": { "properties": { "operation": { "const": "plan" } } }, "then": { "required": ["plan"] }, "else": { "not": { "required": ["plan"] } } },
+          { "if": { "properties": { "operation": { "enum": ["apply", "rollback"] } } }, "then": { "required": ["applied"] }, "else": { "not": { "required": ["applied"] } } },
+          { "if": { "properties": { "operation": { "const": "observe" } } }, "then": { "required": ["observed"] }, "else": { "not": { "required": ["observed"] } } },
+          { "if": { "properties": { "operation": { "const": "stage" } } }, "then": { "required": ["staged"] }, "else": { "not": { "required": ["staged"] } } },
+          { "if": { "properties": { "operation": { "const": "drift" } } }, "then": { "required": ["drift"] }, "else": { "not": { "required": ["drift"] } } }
+        ]
+      },
+      "else": {
+        "not": { "anyOf": [{ "required": ["plan"] }, { "required": ["applied"] }, { "required": ["observed"] }, { "required": ["staged"] }, { "required": ["drift"] }] }
+      }
+    }
+  ]
+}
