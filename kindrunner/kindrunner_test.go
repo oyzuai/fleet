@@ -67,6 +67,12 @@ func fakeKind(mode string) {
 		ev(kindprotocol.EventBody{Type: "log", Level: "info", Message: "key=" + string(b)}, 1)
 	case "connectors":
 		reportConnectors(ev)
+	case "ledger":
+		// Counts its runs in its ledger, as the script kind records the
+		// execution IDs it applied.
+		path := filepath.Join(os.Getenv("OYZU_KIND_LEDGER_DIR"), "count")
+		b, _ := os.ReadFile(path)
+		os.WriteFile(path, append(b, 'x'), 0o600)
 	}
 	result(kindprotocol.Result{Outcome: kindprotocol.Succeeded, Observed: &kindprotocol.ObservedState{
 		AsOf: time.Now().UTC(), Components: []kindprotocol.ObservedComponent{}}})
@@ -80,6 +86,9 @@ type fakeRuns struct {
 	finish map[string]json.RawMessage
 	// connectors is what job/kind/connectors answers.
 	connectors runnerclient.KindConnectors
+	// ledger is the ledger runs keeps; saves counts job/kind/ledger posts.
+	ledger []byte
+	saves  int
 }
 
 func (f *fakeRuns) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +106,20 @@ func (f *fakeRuns) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"secrets": []runnerclient.KindSecret{{Name: "deploy_key", Value: []byte("s3cret")}}})
 	case "job/kind/connectors":
 		json.NewEncoder(w).Encode(f.connectors)
+	case "job/kind/ledger/fetch":
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.ledger == nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(f.ledger)
+	case "job/kind/ledger":
+		b, _ := io.ReadAll(r.Body)
+		f.mu.Lock()
+		f.ledger, f.saves = b, f.saves+1
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 	case "job/kind/finish":
 		f.mu.Lock()
 		json.NewDecoder(r.Body).Decode(&f.finish)
@@ -247,6 +270,69 @@ func TestUnpinnedImageNeverStarts(t *testing.T) {
 	}
 	var none runnerclient.KindNoResult
 	if err := json.Unmarshal(f.finish["no_result"], &none); err != nil || none.Code != "kind-not-started" || none.Started {
+		t.Fatalf("finish %s", f.finish)
+	}
+}
+
+func TestLedgerFollowsTheTargetAcrossHosts(t *testing.T) {
+	f, cfg, job, _ := setup(t, "ledger", kindprotocol.OpObserve, 30, 0, nil)
+	job.KindOperation.Ledger = true
+	// Two hosts: each run has its own state directory, and only runs
+	// carries the ledger from one to the other.
+	for host := range 2 {
+		cfg.StateDir = t.TempDir()
+		if err := Run(context.Background(), cfg, job); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(f.finish["result"]), `"succeeded"`) {
+			t.Fatalf("host %d: finish %s", host, f.finish)
+		}
+	}
+	dir := t.TempDir()
+	if err := untarFlat(f.ledger, dir); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "count")); string(b) != "xx" || f.saves != 2 {
+		t.Fatalf("ledger %q after %d saves; want both runs counted", b, f.saves)
+	}
+	if left, _ := filepath.Glob(filepath.Join(cfg.SecretsDir, "*")); len(left) != 0 {
+		t.Fatalf("job directories left behind: %v", left)
+	}
+}
+
+func TestUnchangedLedgerIsNotSent(t *testing.T) {
+	f, cfg, job, _ := setup(t, "ok", kindprotocol.OpObserve, 30, 0, nil)
+	job.KindOperation.Ledger = true
+	if err := Run(context.Background(), cfg, job); err != nil {
+		t.Fatal(err)
+	}
+	if f.saves != 0 {
+		t.Fatalf("an unchanged ledger was sent %d times", f.saves)
+	}
+}
+
+func TestImageKindGetsLedgerAndNetwork(t *testing.T) {
+	f, cfg, job, _ := setup(t, "ok", kindprotocol.OpApply, 30, 0, nil)
+	job.KindOperation.Ledger = true
+	job.KindOperation.Image = "registry.local/kinds/fake@sha256:" + strings.Repeat("b", 64)
+	args := filepath.Join(t.TempDir(), "args")
+	docker := filepath.Join(t.TempDir(), "docker")
+	if err := os.WriteFile(docker, []byte("#!/bin/sh\necho \"$@\" >> "+args+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Docker, cfg.DockerNetwork = docker, "host"
+	if err := Run(context.Background(), cfg, job); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(args)
+	run := strings.SplitN(string(b), "\n", 2)[0]
+	for _, want := range []string{"--network host", "OYZU_KIND_LEDGER_DIR=" + ContainerLedgerDir, ":" + ContainerLedgerDir + " ",
+		" " + job.KindOperation.Image} {
+		if !strings.Contains(run, want) {
+			t.Fatalf("docker %s lacks %q", run, want)
+		}
+	}
+	if !strings.Contains(string(f.finish["no_result"]), "no-result") {
 		t.Fatalf("finish %s", f.finish)
 	}
 }

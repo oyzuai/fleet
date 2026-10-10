@@ -3,7 +3,7 @@
 // it is not meant to be run by hand.
 //
 //	oyzu-executor --server URL (--startup-token-file FILE | --startup-token-env NAME) --work-dir DIR [--oyzu PATH] [--renovate PATH]
-//	              [--kinds-dir DIR] [--kind-state-dir DIR] [--docker PATH]
+//	              [--kinds-dir DIR] [--kind-state-dir DIR] [--docker PATH] [--docker-network NAME]
 package main
 
 import (
@@ -47,6 +47,7 @@ func run(args []string, log *slog.Logger) error {
 	kindsDir := fs.String("kinds-dir", ownDir(), "where the built-in deployment kinds (kind-<name>) are")
 	kindState := fs.String("kind-state-dir", kindrunner.DefaultStateDir(), "where kinds keep state between jobs on this host")
 	docker := fs.String("docker", "docker", "the docker CLI that image kinds run with")
+	dockerNetwork := fs.String("docker-network", "", "the network image kinds join (docker run --network); Docker's default when empty")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -69,6 +70,7 @@ func run(args []string, log *slog.Logger) error {
 		KindsDir:         *kindsDir,
 		KindStateDir:     *kindState,
 		Docker:           *docker,
+		DockerNetwork:    *dockerNetwork,
 		Log:              log,
 	})
 }

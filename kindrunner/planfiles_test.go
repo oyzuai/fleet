@@ -14,7 +14,7 @@ func TestPlanFilesRoundTrip(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(src, "nested"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	archive, n, err := tarFlat(src)
+	archive, n, err := tarFlat(src, maxPlanFiles)
 	if err != nil || n != 1 {
 		t.Fatalf("tar: %d %v", n, err)
 	}
@@ -25,7 +25,7 @@ func TestPlanFilesRoundTrip(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(dst, "terraform.tfplan")); string(b) != "plan" {
 		t.Fatalf("unpacked %q", b)
 	}
-	empty, n, err := tarFlat(t.TempDir())
+	empty, n, err := tarFlat(t.TempDir(), maxPlanFiles)
 	if err != nil || n != 0 || len(empty) == 0 {
 		t.Fatalf("empty dir: %d %v", n, err)
 	}

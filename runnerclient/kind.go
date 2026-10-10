@@ -32,6 +32,11 @@ type KindOperation struct {
 	Placement string   `json:"placement,omitempty"`
 	// Connectors names the connector roles to pull with KindConnectors.
 	Connectors []string `json:"connectors,omitempty"`
+	// Ledger says runs keeps a ledger for this kind and target: the runner
+	// fetches it with KindLedger before the kind starts and sends it back
+	// with KindLedgerSave once the kind stops, so whichever host runs the
+	// next operation sees what this one recorded.
+	Ledger bool `json:"ledger,omitempty"`
 }
 
 // KindBeat is runs' answer to a kind job heartbeat.
@@ -117,7 +122,38 @@ func (c *Client) KindPlanFileSave(ctx context.Context, job, digest string, file 
 // KindPlanFile fetches the plan file of the plan an apply job applies.
 // found is false when runs keeps none.
 func (c *Client) KindPlanFile(ctx context.Context, job string) (file []byte, found bool, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"job/kind/plan-file/fetch", nil)
+	return c.fetchBytes(ctx, "job/kind/plan-file/fetch", job, maxPlanFile, "plan file")
+}
+
+// MaxLedger bounds a kind's ledger, packed.
+const MaxLedger = 1 << 20
+
+// KindLedger fetches the ledger runs keeps for the job's kind and target,
+// as the tar of a directory. found is false when there is none yet.
+func (c *Client) KindLedger(ctx context.Context, job string) (archive []byte, found bool, err error) {
+	return c.fetchBytes(ctx, "job/kind/ledger/fetch", job, MaxLedger, "ledger")
+}
+
+// KindLedgerSave sends the kind's ledger back once it stops, as the tar of
+// its directory. Runs keeps it per job attempt and hands the newest to the
+// next job on the same kind and target.
+func (c *Client) KindLedgerSave(ctx context.Context, job string, archive []byte) error {
+	if len(archive) > MaxLedger {
+		return fmt.Errorf("the ledger is larger than %d bytes", MaxLedger)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"job/kind/ledger", bytes.NewReader(archive))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("Authorization", "Bearer "+job)
+	return c.send(req, nil)
+}
+
+// fetchBytes posts to path and reads at most max bytes back. found is false
+// on 404.
+func (c *Client) fetchBytes(ctx context.Context, path, job string, max int, what string) ([]byte, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, nil)
 	if err != nil {
 		return nil, false, err
 	}
@@ -140,12 +176,12 @@ func (c *Client) KindPlanFile(ctx context.Context, job string) (file []byte, fou
 		_ = json.Unmarshal(raw, &p)
 		return nil, false, &StatusError{Status: resp.StatusCode, Detail: p.Detail, RetryAfter: resp.Header.Get("Retry-After")}
 	}
-	file, err = io.ReadAll(io.LimitReader(resp.Body, maxPlanFile+1))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, int64(max)+1))
 	if err != nil {
 		return nil, false, err
 	}
-	if len(file) > maxPlanFile {
-		return nil, false, fmt.Errorf("the plan file is larger than %d bytes", maxPlanFile)
+	if len(b) > max {
+		return nil, false, fmt.Errorf("the %s is larger than %d bytes", what, max)
 	}
-	return file, true, nil
+	return b, true, nil
 }

@@ -74,7 +74,7 @@ func (r *run) savePlanFiles(ctx context.Context, req *kindprotocol.Request, raw 
 	if err := json.Unmarshal(raw, &res); err != nil || res.Outcome != kindprotocol.Succeeded || res.Plan == nil {
 		return nil
 	}
-	archive, n, err := tarFlat(p.path)
+	archive, n, err := tarFlat(p.path, maxPlanFiles)
 	if err != nil {
 		return fmt.Errorf("pack the plan files: %w", err)
 	}
@@ -89,8 +89,9 @@ func (r *run) savePlanFiles(ctx context.Context, req *kindprotocol.Request, raw 
 	return nil
 }
 
-// tarFlat packs the regular files directly in dir.
-func tarFlat(dir string) ([]byte, int, error) {
+// tarFlat packs the regular files directly in dir, refusing more than max
+// bytes of them. Files go in name order, so the same files pack the same.
+func tarFlat(dir string, max int64) ([]byte, int, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, 0, err
@@ -108,8 +109,8 @@ func tarFlat(dir string) ([]byte, int, error) {
 			return nil, 0, err
 		}
 		total += int64(len(b))
-		if total > maxPlanFiles {
-			return nil, 0, fmt.Errorf("the plan files come to more than %d bytes", maxPlanFiles)
+		if total > max {
+			return nil, 0, fmt.Errorf("the files come to more than %d bytes", max)
 		}
 		if err := tw.WriteHeader(&tar.Header{Name: e.Name(), Mode: 0o600, Size: int64(len(b)), Typeflag: tar.TypeReg}); err != nil {
 			return nil, 0, err
