@@ -321,7 +321,7 @@ func (m *Manager) Run(ctx context.Context) error {
 			sleep(ctx, m.cfg.PollInterval)
 			continue
 		}
-		c, err := m.claim(ctx)
+		c, err := m.Claim(ctx)
 		if err != nil || c == nil {
 			if err != nil && ctx.Err() == nil {
 				log.Warn("claim failed", "error", err)
@@ -488,7 +488,10 @@ func (m *Manager) reap(ctx context.Context, log *slog.Logger) {
 	}
 }
 
-func (m *Manager) claim(ctx context.Context) (*runnerclient.Claim, error) {
+// Claim asks runs for one job with the manager's credentials, logging in
+// when needed. Run calls it in its loop; callers that drive a manager by
+// hand, such as end-to-end tests, call it directly.
+func (m *Manager) Claim(ctx context.Context) (*runnerclient.Claim, error) {
 	tok, err := m.accessToken(ctx)
 	if err != nil {
 		return nil, err
