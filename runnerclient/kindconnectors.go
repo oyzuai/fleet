@@ -16,6 +16,7 @@ type KindConnectorSecret struct {
 // this attempt.
 type KindConnector struct {
 	Role           string                `json:"role"`
+	Alias          string                `json:"alias,omitempty"`
 	Identifier     string                `json:"identifier"`
 	Kind           string                `json:"kind"`
 	Mechanism      string                `json:"mechanism"`

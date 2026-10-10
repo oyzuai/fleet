@@ -75,13 +75,14 @@
       "type": "object"
     },
     "connectors": {
-      "description": "Connector types whose credentials the pool may release to this kind. Apply and observe credentials are separate; observe is read-only.",
+      "description": "Connector types whose credentials the pool may release to this kind. Apply and observe credentials are separate; observe is read-only. named lists the connector types a target may bind beside them under an alias of its choosing, one per alias (a Terraform module's long-tail providers, the metrics sources a check reads); absent or empty means the kind takes no named connectors.",
       "type": "object",
       "additionalProperties": false,
       "required": ["apply", "observe"],
       "properties": {
         "apply": { "$ref": "#/$defs/connectorTypes" },
-        "observe": { "$ref": "#/$defs/connectorTypes" }
+        "observe": { "$ref": "#/$defs/connectorTypes" },
+        "named": { "$ref": "#/$defs/connectorTypes" }
       }
     },
     "observation": {
