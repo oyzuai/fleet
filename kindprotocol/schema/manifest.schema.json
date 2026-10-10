@@ -5,30 +5,35 @@
   "description": "What a kind declares it can do. The platform checks a release plan against these declarations before the release is created.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "type", "name", "version", "operations", "rollback", "strategies", "default_strategy", "target_settings_schema", "connectors"],
+  "required": ["schema_version", "type", "name", "version", "operations", "target_settings_schema", "connectors"],
   "properties": {
     "schema_version": { "const": "v1alpha1" },
     "type": { "const": "deployment-kind-manifest" },
     "name": { "$ref": "common.schema.json#/$defs/name" },
     "version": { "$ref": "common.schema.json#/$defs/semver" },
     "description": { "type": "string", "minLength": 1, "maxLength": 1000 },
+    "role": {
+      "description": "deployment (the default): the kind deploys components to targets. verification: the kind runs verifications (a test suite, an external tool) and never changes a target.",
+      "enum": ["deployment", "verification"]
+    },
     "operations": {
-      "description": "Every operation the kind implements, with its timeout. validate, plan, apply and observe are required.",
+      "description": "Every operation the kind implements, with its timeout. A deployment kind requires validate, plan, apply and observe; a verification kind requires validate and verify and has no others. A watch's timeout is how long one watch runs before the pool starts the next.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["validate", "plan", "apply", "observe"],
       "properties": {
         "validate": { "$ref": "#/$defs/operation" },
         "plan": { "$ref": "#/$defs/operation" },
         "apply": { "$ref": "#/$defs/operation" },
         "observe": { "$ref": "#/$defs/operation" },
+        "watch": { "$ref": "#/$defs/operation" },
         "stage": { "$ref": "#/$defs/operation" },
         "shift": { "$ref": "#/$defs/operation" },
         "switch": { "$ref": "#/$defs/operation" },
         "retire": { "$ref": "#/$defs/operation" },
         "abort": { "$ref": "#/$defs/operation" },
         "rollback": { "$ref": "#/$defs/operation" },
-        "drift": { "$ref": "#/$defs/operation" }
+        "drift": { "$ref": "#/$defs/operation" },
+        "verify": { "$ref": "#/$defs/operation" }
       }
     },
     "rollback": {
@@ -78,13 +83,62 @@
         "apply": { "$ref": "#/$defs/connectorTypes" },
         "observe": { "$ref": "#/$defs/connectorTypes" }
       }
+    },
+    "observation": {
+      "description": "How often the pool observes a target of this kind, and when an observation is too old to trust (IMPL-279, IMPL-281). A kind that declares watch streams observations instead of being polled, and is polled at the active interval only while no watch runs. Absent members take the platform's defaults: every 15 seconds while an execution is in flight, every 300 at rest, drift every 3600 when the kind has drift, and stale after 1200.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "interval_seconds": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "active": { "description": "While an execution is in flight on the target.", "type": "integer", "minimum": 5, "maximum": 3600 },
+            "rest": { "description": "At rest.", "type": "integer", "minimum": 30, "maximum": 86400 }
+          }
+        },
+        "drift_interval_seconds": { "type": "integer", "minimum": 300, "maximum": 604800 },
+        "stale_after_seconds": {
+          "description": "A target not observed for this long becomes Needs attention, and no gate passes on its observation. It must be longer than the rest interval.",
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 604800
+        }
+      }
     }
   },
   "allOf": [
     {
-      "if": { "properties": { "rollback": { "const": "native" } } },
+      "if": { "properties": { "role": { "const": "verification" } }, "required": ["role"] },
+      "then": {
+        "properties": {
+          "operations": {
+            "required": ["validate", "verify"],
+            "propertyNames": { "enum": ["validate", "verify", "abort"] }
+          },
+          "strategies": false,
+          "default_strategy": false,
+          "rollback": false
+        }
+      },
+      "else": {
+        "required": ["rollback", "strategies", "default_strategy"],
+        "properties": {
+          "operations": {
+            "required": ["validate", "plan", "apply", "observe"],
+            "not": { "required": ["verify"] }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "rollback": { "const": "native" } }, "required": ["rollback"] },
       "then": { "properties": { "operations": { "required": ["rollback"] } } },
       "else": { "properties": { "operations": { "not": { "required": ["rollback"] } } } }
+    },
+    {
+      "if": { "required": ["observation"], "properties": { "observation": { "required": ["drift_interval_seconds"] } } },
+      "then": { "properties": { "operations": { "required": ["drift"] } } }
     }
   ],
   "$defs": {

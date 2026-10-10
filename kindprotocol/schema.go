@@ -107,11 +107,14 @@ func DecodeManifest(raw []byte) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	if m.strategy(m.DefaultStrategy) == nil {
+	if !m.Verifies() && m.strategy(m.DefaultStrategy) == nil {
 		return nil, fmt.Errorf("kindprotocol: manifest %s: default strategy %q is not declared", m.Ref(), m.DefaultStrategy)
 	}
 	if _, err := compileSettingsSchema(m.TargetSettingsSchema); err != nil {
 		return nil, fmt.Errorf("kindprotocol: manifest %s: target settings schema: %w", m.Ref(), err)
+	}
+	if err := m.CheckSchedule(); err != nil {
+		return nil, fmt.Errorf("kindprotocol: %w", err)
 	}
 	return m, nil
 }

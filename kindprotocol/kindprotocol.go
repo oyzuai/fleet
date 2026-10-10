@@ -13,6 +13,7 @@ package kindprotocol
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -36,6 +37,7 @@ const (
 	OpPlan     Operation = "plan"
 	OpApply    Operation = "apply"
 	OpObserve  Operation = "observe"
+	OpWatch    Operation = "watch"
 	OpStage    Operation = "stage"
 	OpShift    Operation = "shift"
 	OpSwitch   Operation = "switch"
@@ -43,6 +45,8 @@ const (
 	OpAbort    Operation = "abort"
 	OpRollback Operation = "rollback"
 	OpDrift    Operation = "drift"
+	// OpVerify runs a verification: a verification kind's one operation.
+	OpVerify Operation = "verify"
 )
 
 // KindRef names one version of a kind.
@@ -61,11 +65,13 @@ type Artifact struct {
 	URI       string `json:"uri,omitempty"`
 }
 
-// ComponentVersion is a desired (or claimed) version of one component.
+// ComponentVersion is a desired (or claimed) version of one component. In an
+// observe, watch or drift request Version and Artifacts may both be empty: the
+// target has no desired version and observe reports whatever runs there.
 type ComponentVersion struct {
 	Component string     `json:"component"`
-	Version   string     `json:"version"`
-	Artifacts []Artifact `json:"artifacts"`
+	Version   string     `json:"version,omitempty"`
+	Artifacts []Artifact `json:"artifacts,omitempty"`
 }
 
 // Health is one of the five Oyzu status words as a machine value.
@@ -87,6 +93,109 @@ type ObservedComponent struct {
 	Artifacts []Artifact `json:"artifacts,omitempty"`
 	Health    Health     `json:"health"`
 	Message   string     `json:"message,omitempty"`
+	// Details are the component's family-specific details (IMPL-280).
+	Details *ObservedDetails `json:"details,omitempty"`
+}
+
+// Observation families, the value of ObservedDetails.Family.
+const (
+	FamilyWorkload       = "workload"
+	FamilyInfrastructure = "infrastructure"
+	FamilyDelegated      = "delegated"
+	FamilyPublishing     = "publishing"
+	FamilyData           = "data"
+	FamilyControl        = "control"
+)
+
+// ObservedDetails are one component's family-specific details. Family says
+// which members apply; Raw keeps anything else the kind wants shown.
+type ObservedDetails struct {
+	Family string `json:"family"`
+	// Unmanaged names what runs when the kind cannot attribute it to an Oyzu
+	// release; the component's version is then absent (IMPL-282).
+	Unmanaged   string          `json:"unmanaged,omitempty"`
+	Replicas    *Replicas       `json:"replicas,omitempty"`
+	Instances   []Instance      `json:"instances,omitempty"`
+	Traffic     []TrafficShare  `json:"traffic,omitempty"`
+	StateSerial *int64          `json:"state_serial,omitempty"`
+	LastApply   string          `json:"last_apply,omitempty"` // succeeded, failed, none
+	Outputs     map[string]any  `json:"outputs,omitempty"`
+	Drifted     *bool           `json:"drifted,omitempty"`
+	Sync        *SyncStatus     `json:"sync,omitempty"`
+	Available   []Availability  `json:"available,omitempty"`
+	Migration   *MigrationState `json:"migration,omitempty"`
+	Value       *ControlValue   `json:"value,omitempty"`
+	Raw         map[string]any  `json:"raw,omitempty"`
+}
+
+// Replicas are a workload's desired and ready instances.
+type Replicas struct {
+	Desired  int  `json:"desired"`
+	Ready    int  `json:"ready"`
+	Restarts *int `json:"restarts,omitempty"`
+	Failed   *int `json:"failed,omitempty"`
+}
+
+// Instance roles.
+const (
+	RolePrimary  = "primary"
+	RoleStaged   = "staged"
+	RoleCanary   = "canary"
+	RolePrevious = "previous"
+)
+
+// Instance is one instance, task set, revision or deployment group of a
+// workload. A group carries its own replicas and load balancer targets.
+type Instance struct {
+	Name     string    `json:"name"`
+	Role     string    `json:"role,omitempty"`
+	Version  string    `json:"version,omitempty"`
+	Digest   string    `json:"digest,omitempty"`
+	Health   Health    `json:"health"`
+	Replicas *Replicas `json:"replicas,omitempty"`
+	Targets  *Targets  `json:"targets,omitempty"`
+	Message  string    `json:"message,omitempty"`
+}
+
+// Targets are load balancer targets passing and failing health checks.
+type Targets struct {
+	Healthy   int `json:"healthy"`
+	Unhealthy int `json:"unhealthy"`
+}
+
+// TrafficShare is the share of traffic one version, or one instance when
+// its version is unknown, serves.
+type TrafficShare struct {
+	Version  string `json:"version,omitempty"`
+	Instance string `json:"instance,omitempty"`
+	Percent  int    `json:"percent"`
+}
+
+// SyncStatus is a delegated tool's own view, in its words.
+type SyncStatus struct {
+	Revision string `json:"revision"`
+	Status   string `json:"status"`
+	Health   string `json:"health,omitempty"`
+}
+
+// Availability is whether a published version is where it should be.
+type Availability struct {
+	Location        string `json:"location"`
+	Present         bool   `json:"present"`
+	ChecksumMatches *bool  `json:"checksum_matches,omitempty"`
+}
+
+// MigrationState is a database's applied migration version and phase.
+type MigrationState struct {
+	Version  string `json:"version"`
+	Phase    string `json:"phase,omitempty"` // expanded, contracted, backfilling
+	LockHeld *bool  `json:"lock_held,omitempty"`
+}
+
+// ControlValue is a release control's current value.
+type ControlValue struct {
+	Current        any  `json:"current"`
+	MatchesDesired bool `json:"matches_desired"`
 }
 
 // ObservedState is a target's observed state and when it was read.
@@ -182,6 +291,55 @@ type Request struct {
 	ApprovedPlan   *Plan              `json:"approved_plan,omitempty"`
 	TrafficPercent *int               `json:"traffic_percent,omitempty"`
 	RollbackTo     *ObservedState     `json:"rollback_to,omitempty"`
+	Verification   *Verification      `json:"verification,omitempty"`
+}
+
+// Report formats a suite writes.
+const (
+	ReportJUnit     = "junit"
+	ReportK6Summary = "k6-summary"
+)
+
+// Pass rules (IMPL-272): every test passes, or the tests the suite itself
+// lists as known failures may fail. Oyzu never decides on its own to ignore a
+// test.
+const (
+	PassAll           = "all"
+	PassKnownFailures = "known-failures-in-suite"
+)
+
+// Verification is a verify request's suite: its command and report format
+// from the test-suite component version's manifest, and its inputs resolved.
+type Verification struct {
+	Suite           string            `json:"suite"`
+	Run             []string          `json:"run"`
+	Results         string            `json:"results"`
+	Inputs          map[string]string `json:"inputs"`
+	PassRule        string            `json:"pass_rule"`
+	KnownFailures   []string          `json:"known_failures,omitempty"`
+	DurationSeconds int               `json:"duration_seconds,omitempty"`
+}
+
+// VerificationReport is a verify result's normalized report.
+type VerificationReport struct {
+	Passed          bool          `json:"passed"`
+	Summary         string        `json:"summary,omitempty"`
+	Format          string        `json:"format"`
+	Tests           int           `json:"tests"`
+	Failed          int           `json:"failed"`
+	Skipped         int           `json:"skipped"`
+	KnownFailures   int           `json:"known_failures"`
+	Failures        []TestFailure `json:"failures"`
+	ExitCode        int           `json:"exit_code"`
+	DurationSeconds int           `json:"duration_seconds"`
+}
+
+// TestFailure is one failing test with its first error; Known when the pass
+// rule let it through.
+type TestFailure struct {
+	Name    string `json:"name"`
+	Message string `json:"message"`
+	Known   bool   `json:"known"`
 }
 
 // Outcome is how an operation ended.
@@ -241,7 +399,17 @@ type Result struct {
 	Observed      *ObservedState     `json:"observed,omitempty"`
 	Staged        *Staged            `json:"staged,omitempty"`
 	Drift         *Drift             `json:"drift,omitempty"`
-	Failure       *Failure           `json:"failure,omitempty"`
+	// Outputs are what each component publishes for others to bind, by
+	// component and output name, after apply, rollback or observe.
+	Outputs      map[string]map[string]Output `json:"outputs,omitempty"`
+	Verification *VerificationReport          `json:"verification,omitempty"`
+	Failure      *Failure                     `json:"failure,omitempty"`
+}
+
+// Output is one published output. A sensitive output carries no value.
+type Output struct {
+	Value     json.RawMessage `json:"value,omitempty"`
+	Sensitive bool            `json:"sensitive"`
 }
 
 // Event is one line of a kind's event stream on standard error.
@@ -255,12 +423,14 @@ type Event struct {
 	Event         EventBody `json:"event"`
 }
 
-// EventBody is a heartbeat, progress or log event.
+// EventBody is a heartbeat, progress, log or observed event. Only watch
+// writes observed events, one for each change it sees.
 type EventBody struct {
-	Type    string `json:"type"` // heartbeat, progress, log
-	Message string `json:"message,omitempty"`
-	Percent *int   `json:"percent,omitempty"`
-	Level   string `json:"level,omitempty"` // log: debug, info, warn, error
+	Type     string         `json:"type"` // heartbeat, progress, log, observed
+	Message  string         `json:"message,omitempty"`
+	Percent  *int           `json:"percent,omitempty"`
+	Level    string         `json:"level,omitempty"` // log: debug, info, warn, error
+	Observed *ObservedState `json:"observed,omitempty"`
 }
 
 // Manifest is what a kind declares it can do.
@@ -270,13 +440,26 @@ type Manifest struct {
 	Name                 string                     `json:"name"`
 	Version              string                     `json:"version"`
 	Description          string                     `json:"description,omitempty"`
+	Role                 string                     `json:"role,omitempty"` // deployment (the default) or verification
 	Operations           map[Operation]OperationDef `json:"operations"`
-	Rollback             string                     `json:"rollback"` // native, redeploy, none
-	Strategies           []StrategyDef              `json:"strategies"`
-	DefaultStrategy      string                     `json:"default_strategy"`
+	Rollback             string                     `json:"rollback,omitempty"` // native, redeploy, none
+	Strategies           []StrategyDef              `json:"strategies,omitempty"`
+	DefaultStrategy      string                     `json:"default_strategy,omitempty"`
 	TargetSettingsSchema json.RawMessage            `json:"target_settings_schema"`
 	Connectors           Connectors                 `json:"connectors"`
+	// Observation sets how often the pool observes a target of this kind and
+	// when an observation is stale; absent members take the defaults.
+	Observation *Observation `json:"observation,omitempty"`
 }
+
+// Kind roles.
+const (
+	RoleDeployment   = "deployment"
+	RoleVerification = "verification"
+)
+
+// Verifies reports whether the kind runs verifications rather than deploying.
+func (m *Manifest) Verifies() bool { return m.Role == RoleVerification }
 
 // Ref names this manifest's kind version.
 func (m *Manifest) Ref() KindRef { return KindRef{Name: m.Name, Version: m.Version} }
@@ -308,12 +491,83 @@ type Connectors struct {
 	Observe []string `json:"observe"`
 }
 
+// Observation is a manifest's observation member.
+type Observation struct {
+	IntervalSeconds      *Intervals `json:"interval_seconds,omitempty"`
+	DriftIntervalSeconds int        `json:"drift_interval_seconds,omitempty"`
+	StaleAfterSeconds    int        `json:"stale_after_seconds,omitempty"`
+}
+
+// Intervals are the poll intervals while an execution is in flight and at
+// rest.
+type Intervals struct {
+	Active int `json:"active,omitempty"`
+	Rest   int `json:"rest,omitempty"`
+}
+
+// The platform's observation defaults (IMPL-279, IMPL-281), used for any
+// member a manifest leaves out.
+const (
+	DefaultActiveInterval = 15 * time.Second
+	DefaultRestInterval   = 300 * time.Second
+	DefaultDriftInterval  = 3600 * time.Second
+	DefaultStaleAfter     = 1200 * time.Second
+)
+
+// Schedule is a kind's effective observation schedule.
+type Schedule struct {
+	Active time.Duration `json:"active"`
+	Rest   time.Duration `json:"rest"`
+	// Drift is zero when the kind has no drift operation.
+	Drift      time.Duration `json:"drift,omitempty"`
+	StaleAfter time.Duration `json:"stale_after"`
+	// Watch is true when the kind declares watch.
+	Watch bool `json:"watch,omitempty"`
+}
+
+// Schedule returns the kind's observation schedule with defaults filled in.
+func (m *Manifest) Schedule() Schedule {
+	s := Schedule{Active: DefaultActiveInterval, Rest: DefaultRestInterval, StaleAfter: DefaultStaleAfter, Watch: m.Has(OpWatch)}
+	if m.Has(OpDrift) {
+		s.Drift = DefaultDriftInterval
+	}
+	if o := m.Observation; o != nil {
+		if o.IntervalSeconds != nil && o.IntervalSeconds.Active > 0 {
+			s.Active = time.Duration(o.IntervalSeconds.Active) * time.Second
+		}
+		if o.IntervalSeconds != nil && o.IntervalSeconds.Rest > 0 {
+			s.Rest = time.Duration(o.IntervalSeconds.Rest) * time.Second
+		}
+		if o.DriftIntervalSeconds > 0 {
+			s.Drift = time.Duration(o.DriftIntervalSeconds) * time.Second
+		}
+		if o.StaleAfterSeconds > 0 {
+			s.StaleAfter = time.Duration(o.StaleAfterSeconds) * time.Second
+		}
+	}
+	return s
+}
+
+// CheckSchedule reports what the schema cannot say about a schedule: an
+// observation must be stale only after the next one at rest is due, and the
+// active interval cannot be slower than the rest interval.
+func (m *Manifest) CheckSchedule() error {
+	s := m.Schedule()
+	if s.StaleAfter <= s.Rest {
+		return fmt.Errorf("kind %s: observations go stale after %s, which must be longer than the rest interval of %s", m.Ref(), s.StaleAfter, s.Rest)
+	}
+	if s.Active > s.Rest {
+		return fmt.Errorf("kind %s: the active interval of %s is longer than the rest interval of %s", m.Ref(), s.Active, s.Rest)
+	}
+	return nil
+}
+
 // NoResultClass is how the runner classifies a run that ended without a valid
 // result: nothing can have changed for an operation without side effects, and
 // anything else may have left the target between versions.
 func NoResultClass(op Operation) FailureClass {
 	switch op {
-	case OpValidate, OpPlan, OpObserve, OpDrift:
+	case OpValidate, OpPlan, OpObserve, OpWatch, OpDrift, OpVerify:
 		return Retryable
 	}
 	return PartialChange

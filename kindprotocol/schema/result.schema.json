@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://oyzu.dev/contracts/kinds-v1alpha1/result.schema.json",
   "title": "Draft deployment kind protocol v1alpha1: operation result",
-  "description": "The one JSON document a kind writes on standard output. It decides the outcome; the exit code does not.",
+  "description": "The one JSON document a kind writes on standard output. It decides the outcome; the exit code does not. A verify that ran its suite succeeds whether the tests passed or not; verification.passed carries the verdict, and failed means the suite could not be run.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "type", "operation", "execution_id", "outcome"],
@@ -23,7 +23,33 @@
       "maxItems": 256,
       "items": { "$ref": "common.schema.json#/$defs/componentVersion" }
     },
-    "observed": { "$ref": "common.schema.json#/$defs/observedState" },
+    "observed": {
+      "description": "observe and watch: the observation envelope; for watch, the last state it saw.",
+      "$ref": "common.schema.json#/$defs/observedState"
+    },
+    "outputs": {
+      "description": "apply, rollback and observe: the values each component publishes for other components to bind, by component and then output name, as they stand after the operation. A sensitive output carries no value.",
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": { "$ref": "common.schema.json#/$defs/name" },
+      "additionalProperties": {
+        "type": "object",
+        "maxProperties": 1024,
+        "propertyNames": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]{0,127}$" },
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sensitive"],
+          "properties": {
+            "value": { "description": "The output's value, any JSON. Absent when sensitive." },
+            "sensitive": { "type": "boolean" }
+          },
+          "if": { "properties": { "sensitive": { "const": true } } },
+          "then": { "not": { "required": ["value"] } },
+          "else": { "required": ["value"] }
+        }
+      }
+    },
     "staged": {
       "type": "object",
       "additionalProperties": false,
@@ -37,6 +63,7 @@
         }
       }
     },
+    "verification": { "$ref": "common.schema.json#/$defs/verificationReport" },
     "drift": {
       "type": "object",
       "additionalProperties": false,
@@ -94,13 +121,15 @@
         "allOf": [
           { "if": { "properties": { "operation": { "const": "plan" } } }, "then": { "required": ["plan"] }, "else": { "not": { "required": ["plan"] } } },
           { "if": { "properties": { "operation": { "enum": ["apply", "rollback"] } } }, "then": { "required": ["applied"] }, "else": { "not": { "required": ["applied"] } } },
-          { "if": { "properties": { "operation": { "const": "observe" } } }, "then": { "required": ["observed"] }, "else": { "not": { "required": ["observed"] } } },
+          { "if": { "properties": { "operation": { "enum": ["observe", "watch"] } } }, "then": { "required": ["observed"] }, "else": { "not": { "required": ["observed"] } } },
           { "if": { "properties": { "operation": { "const": "stage" } } }, "then": { "required": ["staged"] }, "else": { "not": { "required": ["staged"] } } },
-          { "if": { "properties": { "operation": { "const": "drift" } } }, "then": { "required": ["drift"] }, "else": { "not": { "required": ["drift"] } } }
+          { "if": { "properties": { "operation": { "const": "drift" } } }, "then": { "required": ["drift"] }, "else": { "not": { "required": ["drift"] } } },
+          { "if": { "properties": { "operation": { "const": "verify" } } }, "then": { "required": ["verification"] }, "else": { "not": { "required": ["verification"] } } },
+          { "if": { "properties": { "operation": { "enum": ["apply", "rollback", "observe"] } } }, "else": { "not": { "required": ["outputs"] } } }
         ]
       },
       "else": {
-        "not": { "anyOf": [{ "required": ["plan"] }, { "required": ["applied"] }, { "required": ["observed"] }, { "required": ["staged"] }, { "required": ["drift"] }] }
+        "not": { "anyOf": [{ "required": ["plan"] }, { "required": ["applied"] }, { "required": ["observed"] }, { "required": ["staged"] }, { "required": ["drift"] }, { "required": ["outputs"] }, { "required": ["verification"] }] }
       }
     }
   ]

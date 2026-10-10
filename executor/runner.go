@@ -335,6 +335,15 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 				Summary: fmt.Sprintf("`%s` on `%s` printed no readable plan.\n\n```text\n%s\n```", strings.Join(job.Command, " "), job.HeadSHA, out.String())}
 		}
 		return runnerclient.Outcome{State: "succeeded", ExitCode: &code, Summary: summary, Plan: rec}
+	case err == nil && job.Operation == "build":
+		// What the build made is published by runs (IMPL-450); a manifest
+		// runs cannot read publishes nothing but fails nothing either.
+		outputs, oerr := readOutputs(cfg.WorkDir)
+		if oerr != nil {
+			log.Warn("build manifest not read", "error", oerr)
+			summary += "\n\nNothing from this build is published: " + replaceForms(oerr.Error(), forms)
+		}
+		return runnerclient.Outcome{State: "succeeded", ExitCode: &code, Summary: summary, Outputs: outputs}
 	case err == nil:
 		return runnerclient.Outcome{State: "succeeded", ExitCode: &code, Summary: summary}
 	case ctx.Err() != nil:

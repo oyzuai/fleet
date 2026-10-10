@@ -88,5 +88,13 @@
     "observe": [
       "aws"
     ]
+  },
+  "observation": {
+    "interval_seconds": {
+      "active": 10,
+      "rest": 120
+    },
+    "drift_interval_seconds": 3600,
+    "stale_after_seconds": 600
   }
 }

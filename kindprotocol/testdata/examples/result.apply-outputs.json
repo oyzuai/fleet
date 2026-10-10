@@ -1,0 +1,28 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-result",
+  "execution_id": "ex_01JA7Y3K2N4",
+  "operation": "apply",
+  "outcome": "succeeded",
+  "applied": [
+    {
+      "component": "queue-infra",
+      "version": "1.3.0",
+      "artifacts": [
+        {
+          "name": "module",
+          "media_type": "application/vnd.oyzu.terraform.module.v1.tar+gzip",
+          "digest": "sha256:7d1a54127b222502f5b79b5fb0803061152a44f92b37e23c6527baf665d4da9a",
+          "uri": "oci://registry.example.com/acme/queue-infra"
+        }
+      ]
+    }
+  ],
+  "outputs": {
+    "queue-infra": {
+      "queue_arn": { "value": "arn:aws:sqs:us-east-1:123456789012:orders", "sensitive": false },
+      "queue_url": { "value": "https://sqs.us-east-1.amazonaws.com/123456789012/orders", "sensitive": false },
+      "admin_token": { "sensitive": true }
+    }
+  }
+}

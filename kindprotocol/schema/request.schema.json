@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://oyzu.dev/contracts/kinds-v1alpha1/request.schema.json",
   "title": "Draft deployment kind protocol v1alpha1: operation request",
-  "description": "The one JSON document a kind reads on standard input. It never carries a credential or a secret value; secrets appear only as references.",
+  "description": "The one JSON document a kind reads on standard input. It never carries a credential or a secret value; secrets appear only as references. For verify, components holds the test-suite component version being run.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "type", "operation", "execution_id", "kind", "target_settings", "components"],
@@ -17,11 +17,11 @@
       "type": "object"
     },
     "components": {
-      "description": "The desired component versions from the release snapshot.",
+      "description": "The desired component versions from the release snapshot. observe, watch and drift may name a component without a version, for a target Oyzu has never deployed.",
       "type": "array",
       "minItems": 1,
       "maxItems": 256,
-      "items": { "$ref": "common.schema.json#/$defs/componentVersion" }
+      "items": { "$ref": "common.schema.json#/$defs/componentRef" }
     },
     "config": {
       "type": "object",
@@ -66,9 +66,14 @@
     "rollback_to": {
       "description": "rollback only: the previously observed state to return to.",
       "$ref": "common.schema.json#/$defs/observedState"
-    }
+    },
+    "verification": { "$ref": "common.schema.json#/$defs/verification" }
   },
   "allOf": [
+    {
+      "if": { "properties": { "operation": { "not": { "enum": ["observe", "watch", "drift"] } } } },
+      "then": { "properties": { "components": { "items": { "$ref": "common.schema.json#/$defs/componentVersion" } } } }
+    },
     {
       "if": { "properties": { "operation": { "const": "apply" } } },
       "then": { "required": ["approved_plan"] },
@@ -83,6 +88,14 @@
       "if": { "properties": { "operation": { "const": "rollback" } } },
       "then": { "required": ["rollback_to"] },
       "else": { "not": { "required": ["rollback_to"] } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "verify" } } },
+      "then": { "required": ["verification"] }
+    },
+    {
+      "if": { "properties": { "operation": { "enum": ["validate", "verify"] } } },
+      "else": { "not": { "required": ["verification"] } }
     }
   ]
 }

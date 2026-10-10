@@ -1,0 +1,35 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-event",
+  "execution_id": "ex_01JA7Y3K2M9",
+  "operation": "watch",
+  "sequence": 3,
+  "time": "2026-10-10T15:12:04Z",
+  "event": {
+    "type": "observed",
+    "observed": {
+      "as_of": "2026-10-10T15:12:04Z",
+      "components": [
+        {
+          "component": "checkout",
+          "version": "2026.10.10-4",
+          "artifacts": [
+            {
+              "name": "image",
+              "digest": "sha256:1c15f70ae16fcafd066713c1a9b8dae73aada96cec23322209c5a2a43f4c3080"
+            }
+          ],
+          "health": "pending",
+          "message": "7 of 12 tasks running the new version",
+          "details": {
+            "family": "workload",
+            "replicas": {
+              "desired": 12,
+              "ready": 7
+            }
+          }
+        }
+      ]
+    }
+  }
+}

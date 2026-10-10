@@ -1,8 +1,12 @@
 package runnerclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"time"
 )
 
@@ -26,6 +30,8 @@ type KindOperation struct {
 	// Secrets names the secrets to pull with KindSecrets.
 	Secrets   []string `json:"secrets"`
 	Placement string   `json:"placement,omitempty"`
+	// Connectors names the connector roles to pull with KindConnectors.
+	Connectors []string `json:"connectors,omitempty"`
 }
 
 // KindBeat is runs' answer to a kind job heartbeat.
@@ -87,4 +93,59 @@ func (c *Client) KindFinish(ctx context.Context, job string, result json.RawMess
 		body["result"] = result
 	}
 	return c.do(ctx, "job/kind/finish", job, body, nil)
+}
+
+// planDigestHeader names the plan a plan file belongs to.
+const planDigestHeader = "Oyzu-Plan-Digest"
+
+// maxPlanFile bounds a fetched plan file.
+const maxPlanFile = 64 << 20
+
+// KindPlanFileSave sends the plan file a plan job's kind saved for the plan
+// with digest, before the job finishes (IMPL-401).
+func (c *Client) KindPlanFileSave(ctx context.Context, job, digest string, file []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"job/kind/plan-file", bytes.NewReader(file))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set(planDigestHeader, digest)
+	req.Header.Set("Authorization", "Bearer "+job)
+	return c.send(req, nil)
+}
+
+// KindPlanFile fetches the plan file of the plan an apply job applies.
+// found is false when runs keeps none.
+func (c *Client) KindPlanFile(ctx context.Context, job string) (file []byte, found bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"job/kind/plan-file/fetch", nil)
+	if err != nil {
+		return nil, false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+job)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, false, err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized:
+		return nil, false, ErrUnauthenticated
+	case resp.StatusCode == http.StatusNotFound:
+		return nil, false, nil
+	case resp.StatusCode != http.StatusOK:
+		var p struct {
+			Detail string `json:"detail"`
+		}
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		_ = json.Unmarshal(raw, &p)
+		return nil, false, &StatusError{Status: resp.StatusCode, Detail: p.Detail, RetryAfter: resp.Header.Get("Retry-After")}
+	}
+	file, err = io.ReadAll(io.LimitReader(resp.Body, maxPlanFile+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(file) > maxPlanFile {
+		return nil, false, fmt.Errorf("the plan file is larger than %d bytes", maxPlanFile)
+	}
+	return file, true, nil
 }

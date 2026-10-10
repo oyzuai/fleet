@@ -65,6 +65,8 @@ func fakeKind(mode string) {
 	case "secrets":
 		b, _ := os.ReadFile(filepath.Join(os.Getenv("OYZU_SECRETS_DIR"), "deploy_key"))
 		ev(kindprotocol.EventBody{Type: "log", Level: "info", Message: "key=" + string(b)}, 1)
+	case "connectors":
+		reportConnectors(ev)
 	}
 	result(kindprotocol.Result{Outcome: kindprotocol.Succeeded, Observed: &kindprotocol.ObservedState{
 		AsOf: time.Now().UTC(), Components: []kindprotocol.ObservedComponent{}}})
@@ -76,6 +78,8 @@ type fakeRuns struct {
 	mu     sync.Mutex
 	events []runnerclient.KindEvent
 	finish map[string]json.RawMessage
+	// connectors is what job/kind/connectors answers.
+	connectors runnerclient.KindConnectors
 }
 
 func (f *fakeRuns) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -91,6 +95,8 @@ func (f *fakeRuns) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case "job/kind/secrets":
 		json.NewEncoder(w).Encode(map[string]any{"secrets": []runnerclient.KindSecret{{Name: "deploy_key", Value: []byte("s3cret")}}})
+	case "job/kind/connectors":
+		json.NewEncoder(w).Encode(f.connectors)
 	case "job/kind/finish":
 		f.mu.Lock()
 		json.NewDecoder(r.Body).Decode(&f.finish)
