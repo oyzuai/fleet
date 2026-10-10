@@ -12,6 +12,14 @@ The Oyzu pool manager and executor.
 This repository is a skeleton. Code moves here from the Oyzu platform as the
 remote builder design settles.
 
+## Releases
+
+Each `v*` tag publishes `oyzu-pool-manager` and `oyzu-executor` for Linux
+(amd64 and arm64) from [the release workflow](.github/workflows/release.yml).
+Every archive comes with a CycloneDX SBOM, and the release carries
+`SHA256SUMS`, its Sigstore signature bundle and SLSA build provenance. The
+workflow's header shows how to verify a download.
+
 ## License
 
 `fleet` is licensed under the [Functional Source License, Version 1.1, ALv2
