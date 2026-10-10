@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/oyzuai/fleet/kindrunner"
@@ -34,6 +35,7 @@ func Command(args []string, log *slog.Logger) error {
 	kindState := fs.String("kind-state-dir", kindrunner.DefaultStateDir(), "where kinds keep state between jobs on this host")
 	docker := fs.String("docker", "docker", "the docker CLI that image kinds run with")
 	dockerNetwork := fs.String("docker-network", "", "the network image kinds join (docker run --network); Docker's default when empty")
+	dockerEnv := fs.String("docker-env", "", "comma-separated names of this process's variables that image kinds also get")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -57,8 +59,20 @@ func Command(args []string, log *slog.Logger) error {
 		KindStateDir:     *kindState,
 		Docker:           *docker,
 		DockerNetwork:    *dockerNetwork,
+		DockerEnv:        splitList(*dockerEnv),
 		Log:              log,
 	})
+}
+
+// splitList splits a comma-separated list, dropping empty entries.
+func splitList(s string) []string {
+	var out []string
+	for _, v := range strings.Split(s, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // ownDir is the directory this executable is in, where pools install the

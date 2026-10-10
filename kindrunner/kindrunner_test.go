@@ -321,17 +321,21 @@ func TestImageKindGetsLedgerAndNetwork(t *testing.T) {
 	if err := os.WriteFile(docker, []byte("#!/bin/sh\necho \"$@\" >> "+args+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg.Docker, cfg.DockerNetwork = docker, "host"
+	cfg.Docker, cfg.DockerNetwork, cfg.DockerEnv = docker, "host", []string{"OYZU_TEST_PROXY", "OYZU_TEST_UNSET", "BAD=NAME"}
+	t.Setenv("OYZU_TEST_PROXY", "http://proxy")
 	if err := Run(context.Background(), cfg, job); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(args)
 	run := strings.SplitN(string(b), "\n", 2)[0]
 	for _, want := range []string{"--network host", fmt.Sprintf("--user %d:%d", os.Getuid(), os.Getgid()), "OYZU_KIND_LEDGER_DIR=" + ContainerLedgerDir, ":" + ContainerLedgerDir + " ",
-		" " + job.KindOperation.Image} {
+		" " + job.KindOperation.Image, "-e OYZU_TEST_PROXY "} {
 		if !strings.Contains(run, want) {
 			t.Fatalf("docker %s lacks %q", run, want)
 		}
+	}
+	if strings.Contains(run, "OYZU_TEST_UNSET") || strings.Contains(run, "BAD=NAME") {
+		t.Fatalf("docker %s passes a variable the runner does not have, or a bad name", run)
 	}
 	if !strings.Contains(string(f.finish["no_result"]), "no-result") {
 		t.Fatalf("finish %s", f.finish)

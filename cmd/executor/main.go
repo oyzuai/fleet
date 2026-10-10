@@ -3,7 +3,7 @@
 // it is not meant to be run by hand.
 //
 //	oyzu-executor --server URL (--startup-token-file FILE | --startup-token-env NAME) --work-dir DIR [--oyzu PATH] [--renovate PATH]
-//	              [--kinds-dir DIR] [--kind-state-dir DIR] [--docker PATH] [--docker-network NAME]
+//	              [--kinds-dir DIR] [--kind-state-dir DIR] [--docker PATH] [--docker-network NAME] [--docker-env A,B]
 package main
 
 import (

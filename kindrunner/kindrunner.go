@@ -72,6 +72,11 @@ type Config struct {
 	// Docker's default bridge when empty. A pool whose targets are on the
 	// host's loopback, as in a development stack, names "host".
 	DockerNetwork string
+	// DockerEnv names variables of the runner's own environment that image
+	// kinds also get (docker run -e NAME), such as a proxy or, in a
+	// development stack, the endpoints of local fakes. A built-in kind sees
+	// the runner's whole environment; an image kind only these.
+	DockerEnv []string
 	// StopGrace is how long a kind has after SIGTERM before it is killed.
 	StopGrace time.Duration
 	Log       *slog.Logger
@@ -390,6 +395,11 @@ func (r *run) start(ctx context.Context, request []byte, dirs jobDirs, label str
 		if r.cfg.DockerNetwork != "" {
 			args = append(args, "--network", r.cfg.DockerNetwork)
 		}
+		for _, name := range r.cfg.DockerEnv {
+			if _, ok := os.LookupEnv(name); ok && envName.MatchString(name) {
+				args = append(args, "-e", name)
+			}
+		}
 		cmd = exec.Command(r.cfg.Docker, append(args, r.op.Image)...)
 		cleanup = func() {
 			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
@@ -420,6 +430,8 @@ func (r *run) start(ctx context.Context, request []byte, dirs jobDirs, label str
 	}()
 	return p, nil
 }
+
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 var safeName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
