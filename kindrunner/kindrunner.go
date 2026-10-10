@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"sync"
 	"syscall"
@@ -55,7 +56,7 @@ type Config struct {
 	// Token is the job token.
 	Token          string
 	HeartbeatEvery time.Duration
-	// KindsDir holds the built-in kinds' executables, kind-<name>.
+	// KindsDir holds the built-in kinds' executables, kind-<name> (kind-<name>.exe on Windows).
 	KindsDir string
 	// StateDir is where kinds keep state between runs on this host, one
 	// directory per kind. It must outlive the job.
@@ -306,7 +307,11 @@ func (r *run) start(ctx context.Context, request []byte, secrets *secretDir, lab
 	var cmd *exec.Cmd
 	cleanup := func() {}
 	if r.op.Image == "" {
-		path := filepath.Join(r.cfg.KindsDir, "kind-"+name)
+		file := "kind-" + name
+		if runtime.GOOS == "windows" {
+			file += ".exe"
+		}
+		path := filepath.Join(r.cfg.KindsDir, file)
 		if r.cfg.KindsDir == "" || !safeName.MatchString(name) {
 			return nil, fmt.Errorf("built-in kind %q is not installed on this pool", name)
 		}
