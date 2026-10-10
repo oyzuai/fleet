@@ -6,7 +6,7 @@ FSL-1.1-ALv2
 
 ## Notice
 
-Copyright 2026 oyzuai
+Copyright 2026 Micah Martin
 
 ## Terms and Conditions
 
