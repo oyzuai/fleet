@@ -68,6 +68,15 @@ type Config struct {
 	SecretsDir string
 	// Docker is the docker CLI for image kinds; "docker" by default.
 	Docker string
+	// DockerNetwork is the network image kinds join (docker run --network);
+	// Docker's default bridge when empty. A pool whose targets are on the
+	// host's loopback, as in a development stack, names "host".
+	DockerNetwork string
+	// DockerEnv names variables of the runner's own environment that image
+	// kinds also get (docker run -e NAME), such as a proxy or, in a
+	// development stack, the endpoints of local fakes. A built-in kind sees
+	// the runner's whole environment; an image kind only these.
+	DockerEnv []string
 	// StopGrace is how long a kind has after SIGTERM before it is killed.
 	StopGrace time.Duration
 	Log       *slog.Logger
@@ -177,7 +186,13 @@ func (r *run) execute(ctx context.Context) (json.RawMessage, *runnerclient.KindN
 		return nil, &runnerclient.KindNoResult{Code: "kind-not-started", Message: err.Error()}
 	}
 	defer plans.remove()
-	main, err := r.start(ctx, r.op.Request, secrets, plans, "")
+	ledger, err := r.ledger(ctx)
+	if err != nil {
+		return nil, &runnerclient.KindNoResult{Code: "kind-not-started", Message: err.Error()}
+	}
+	defer ledger.remove()
+	dirs := jobDirs{secrets: secrets, plans: plans, ledger: ledger}
+	main, err := r.start(ctx, r.op.Request, dirs, "")
 	if err != nil {
 		return nil, &runnerclient.KindNoResult{Code: "kind-not-started", Message: err.Error()}
 	}
@@ -192,11 +207,12 @@ func (r *run) execute(ctx context.Context) (json.RawMessage, *runnerclient.KindN
 		main.stop(r.cfg.StopGrace)
 	case <-r.cancel:
 		reason = "cancelled"
-		r.abort(ctx, req, secrets, plans, main)
+		r.abort(ctx, req, dirs, main)
 	case <-ctx.Done():
 		main.stop(r.cfg.StopGrace)
 	}
 	<-main.done
+	r.saveLedger(ctx, ledger)
 	res, problem := main.result(req)
 	if res != nil {
 		if err := r.savePlanFiles(ctx, req, res, plans); err != nil {
@@ -221,7 +237,7 @@ func (r *run) execute(ctx context.Context) (json.RawMessage, *runnerclient.KindN
 // abort stops a running operation after someone cancelled it: through the
 // kind's abort operation where it declares one, then by signal if the
 // operation is still running a grace period later.
-func (r *run) abort(ctx context.Context, req *kindprotocol.Request, secrets *secretDir, plans *planDir, main *process) {
+func (r *run) abort(ctx context.Context, req *kindprotocol.Request, dirs jobDirs, main *process) {
 	if r.op.AbortTimeoutSeconds <= 0 || req.Operation == kindprotocol.OpAbort {
 		r.events.local("info", "Cancelled; the kind has no abort operation, so it is being stopped.")
 		main.stop(r.cfg.StopGrace)
@@ -234,7 +250,7 @@ func (r *run) abort(ctx context.Context, req *kindprotocol.Request, secrets *sec
 	raw, err := json.Marshal(&ab)
 	if err == nil {
 		var p *process
-		if p, err = r.start(ctx, raw, secrets, plans, "abort"); err == nil {
+		if p, err = r.start(ctx, raw, dirs, "abort"); err == nil {
 			t := time.NewTimer(time.Duration(r.op.AbortTimeoutSeconds) * time.Second)
 			select {
 			case <-p.done:
@@ -303,9 +319,18 @@ func (p *process) result(req *kindprotocol.Request) (json.RawMessage, string) {
 
 var imagePinned = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$`)
 
+// jobDirs are the private directories a job gives its kind, each nil when
+// the job has none.
+type jobDirs struct {
+	secrets *secretDir
+	plans   *planDir
+	ledger  *ledgerDir
+}
+
 // start starts the kind with request on its standard input. label marks the
 // events of a second process, such as an abort.
-func (r *run) start(ctx context.Context, request []byte, secrets *secretDir, plans *planDir, label string) (*process, error) {
+func (r *run) start(ctx context.Context, request []byte, dirs jobDirs, label string) (*process, error) {
+	secrets, plans, ledger := dirs.secrets, dirs.plans, dirs.ledger
 	name := r.op.Kind.Name
 	stateDir := filepath.Join(r.cfg.StateDir, name)
 	if r.cfg.StateDir == "" {
@@ -336,6 +361,9 @@ func (r *run) start(ctx context.Context, request []byte, secrets *secretDir, pla
 		if plans != nil {
 			cmd.Env = append(cmd.Env, "OYZU_PLAN_FILES_DIR="+plans.path)
 		}
+		if ledger != nil {
+			cmd.Env = append(cmd.Env, "OYZU_KIND_LEDGER_DIR="+ledger.path)
+		}
 	} else {
 		if !imagePinned.MatchString(r.op.Image) {
 			return nil, fmt.Errorf("kind image %q is not pinned by digest", r.op.Image)
@@ -346,6 +374,12 @@ func (r *run) start(ctx context.Context, request []byte, secrets *secretDir, pla
 		}
 		args := []string{"run", "--rm", "-i", "--name", container, "--pull", "missing",
 			"-e", "OYZU_KIND_STATE_DIR=" + ContainerStateDir, "-v", stateDir + ":" + ContainerStateDir}
+		// The kind runs as the runner's own user, so it can write the
+		// directories the runner made for it (0700, the runner's) and what
+		// it leaves there stays the runner's to read and remove.
+		if uid, gid := os.Getuid(), os.Getgid(); uid >= 0 && gid >= 0 {
+			args = append(args, "--user", strconv.Itoa(uid)+":"+strconv.Itoa(gid))
+		}
 		if secrets != nil {
 			args = append(args, "-e", "OYZU_SECRETS_DIR="+ContainerSecretsDir, "-v", secrets.path+":"+ContainerSecretsDir+":ro")
 			for _, v := range secrets.vars(ContainerSecretsDir) {
@@ -354,6 +388,17 @@ func (r *run) start(ctx context.Context, request []byte, secrets *secretDir, pla
 		}
 		if plans != nil {
 			args = append(args, "-e", "OYZU_PLAN_FILES_DIR="+ContainerPlanFilesDir, "-v", plans.path+":"+ContainerPlanFilesDir)
+		}
+		if ledger != nil {
+			args = append(args, "-e", "OYZU_KIND_LEDGER_DIR="+ContainerLedgerDir, "-v", ledger.path+":"+ContainerLedgerDir)
+		}
+		if r.cfg.DockerNetwork != "" {
+			args = append(args, "--network", r.cfg.DockerNetwork)
+		}
+		for _, name := range r.cfg.DockerEnv {
+			if _, ok := os.LookupEnv(name); ok && envName.MatchString(name) {
+				args = append(args, "-e", name)
+			}
 		}
 		cmd = exec.Command(r.cfg.Docker, append(args, r.op.Image)...)
 		cleanup = func() {
@@ -385,6 +430,8 @@ func (r *run) start(ctx context.Context, request []byte, secrets *secretDir, pla
 	}()
 	return p, nil
 }
+
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 var safeName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 

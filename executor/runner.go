@@ -68,7 +68,13 @@ type Config struct {
 	KindsDir     string
 	KindStateDir string
 	Docker       string
-	Log          *slog.Logger
+	// DockerNetwork is the network image kinds join; see
+	// kindrunner.Config.DockerNetwork.
+	DockerNetwork string
+	// DockerEnv names runner variables image kinds also get; see
+	// kindrunner.Config.DockerEnv.
+	DockerEnv []string
+	Log       *slog.Logger
 }
 
 // Run runs the job and returns once its outcome is reported, or once runs
@@ -110,7 +116,7 @@ func Run(ctx context.Context, cfg Config) error {
 	if job.Kind == runnerclient.KindOperationJob {
 		return kindrunner.Run(ctx, kindrunner.Config{
 			Client: cfg.Client, Token: st.JobToken, HeartbeatEvery: time.Duration(st.HeartbeatSeconds) * time.Second,
-			KindsDir: cfg.KindsDir, StateDir: cfg.KindStateDir, SecretsDir: cfg.SecretsDir, Docker: cfg.Docker, Log: cfg.Log,
+			KindsDir: cfg.KindsDir, StateDir: cfg.KindStateDir, SecretsDir: cfg.SecretsDir, Docker: cfg.Docker, DockerNetwork: cfg.DockerNetwork, DockerEnv: cfg.DockerEnv, Log: cfg.Log,
 		}, job)
 	}
 	log := cfg.Log.With("job", job.ID, "attempt", job.Attempt, "correlation_id", job.CorrelationID)
