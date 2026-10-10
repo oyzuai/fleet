@@ -1,0 +1,76 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-manifest",
+  "name": "script",
+  "version": "0.1.0",
+  "description": "Runs the team's own apply and observe commands.",
+  "operations": {
+    "validate": {
+      "timeout_seconds": 30
+    },
+    "plan": {
+      "timeout_seconds": 30
+    },
+    "apply": {
+      "timeout_seconds": 3600
+    },
+    "observe": {
+      "timeout_seconds": 300
+    },
+    "abort": {
+      "timeout_seconds": 600
+    },
+    "rollback": {
+      "timeout_seconds": 3600
+    }
+  },
+  "rollback": "native",
+  "strategies": [
+    {
+      "name": "recreate",
+      "mode": "native"
+    }
+  ],
+  "default_strategy": "recreate",
+  "target_settings_schema": {
+    "type": "object",
+    "required": [
+      "apply",
+      "observe"
+    ],
+    "properties": {
+      "apply": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1
+      },
+      "observe": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1
+      },
+      "rollback": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "abort": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "connectors": {
+    "apply": [
+      "ssh"
+    ],
+    "observe": []
+  }
+}

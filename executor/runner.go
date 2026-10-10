@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oyzuai/fleet/kindrunner"
 	"github.com/oyzuai/fleet/runnerclient"
 )
 
@@ -61,7 +62,13 @@ type Config struct {
 	// GitAuthor is who lock fix commits are by, "Name <email>";
 	// DefaultGitAuthor when empty.
 	GitAuthor string
-	Log       *slog.Logger
+	// KindsDir holds the built-in deployment kinds, kind-<name>, and
+	// KindStateDir is where kinds keep state between jobs on this host; both
+	// only for kind jobs. Docker is the docker CLI image kinds run with.
+	KindsDir     string
+	KindStateDir string
+	Docker       string
+	Log          *slog.Logger
 }
 
 // Run runs the job and returns once its outcome is reported, or once runs
@@ -100,6 +107,12 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("start the job: %w", err)
 	}
 	job := st.Job
+	if job.Kind == runnerclient.KindOperationJob {
+		return kindrunner.Run(ctx, kindrunner.Config{
+			Client: cfg.Client, Token: st.JobToken, HeartbeatEvery: time.Duration(st.HeartbeatSeconds) * time.Second,
+			KindsDir: cfg.KindsDir, StateDir: cfg.KindStateDir, SecretsDir: cfg.SecretsDir, Docker: cfg.Docker, Log: cfg.Log,
+		}, job)
+	}
 	log := cfg.Log.With("job", job.ID, "attempt", job.Attempt, "correlation_id", job.CorrelationID)
 	log.Info("job started", "repository", job.Repository, "sha", job.HeadSHA, "command", strings.Join(job.Command, " "))
 

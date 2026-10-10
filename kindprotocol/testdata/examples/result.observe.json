@@ -1,0 +1,26 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-result",
+  "execution_id": "ex_01JA7Y3K2M9",
+  "operation": "observe",
+  "outcome": "succeeded",
+  "observed": {
+    "as_of": "2026-10-10T15:20:00Z",
+    "components": [
+      {
+        "component": "checkout",
+        "version": "2026.10.10-4",
+        "artifacts": [
+          {
+            "name": "image",
+            "media_type": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:1c15f70ae16fcafd066713c1a9b8dae73aada96cec23322209c5a2a43f4c3080",
+            "uri": "registry.example.com/acme/checkout"
+          }
+        ],
+        "health": "healthy",
+        "message": "12 of 12 tasks running"
+      }
+    ]
+  }
+}

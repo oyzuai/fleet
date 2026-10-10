@@ -1,0 +1,10 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-result",
+  "execution_id": "ex_01JA7Y3K2M9",
+  "operation": "stage",
+  "outcome": "succeeded",
+  "staged": {
+    "address": "http://checkout-green.prod-use1.internal:8080"
+  }
+}

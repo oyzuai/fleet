@@ -1,0 +1,30 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-request",
+  "execution_id": "ex_01JA7Y3K2M9",
+  "kind": {
+    "name": "aws-ecs-service",
+    "version": "1.4.0"
+  },
+  "target_settings": {
+    "region": "us-east-1",
+    "cluster": "prod-use1",
+    "service": "checkout"
+  },
+  "components": [
+    {
+      "component": "checkout",
+      "version": "2026.10.10-4",
+      "artifacts": [
+        {
+          "name": "image",
+          "media_type": "application/vnd.oci.image.index.v1+json",
+          "digest": "sha256:1c15f70ae16fcafd066713c1a9b8dae73aada96cec23322209c5a2a43f4c3080",
+          "uri": "registry.example.com/acme/checkout"
+        }
+      ]
+    }
+  ],
+  "operation": "shift",
+  "traffic_percent": 25
+}

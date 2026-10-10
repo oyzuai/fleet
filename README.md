@@ -17,7 +17,11 @@ Alongside them:
   [`vm`](manager/vm/) drivers (AWS, Google Cloud and Azure adapters). Drivers
   are compiled in and chosen by configuration.
 - [`executor`](executor/) runs one job: startup, checkout, the `oyzu` command,
-  heartbeats, Renovate and lock fixes, and the outcome.
+  heartbeats, Renovate and lock fixes, and the outcome. Deployment kind jobs
+  go to [`kindrunner`](kindrunner/), which runs the kind's operation and
+  reports its events and result.
+- [`kindprotocol`](kindprotocol/) is the deployment kind protocol: its
+  documents, their published JSON Schemas, and the checks on them.
 - [`runnerclient`](runnerclient/) and [`assertion`](assertion/) are the client
   side of the runs runner protocol: its calls, and the Ed25519 client
   assertions a manager logs in and rotates keys with.

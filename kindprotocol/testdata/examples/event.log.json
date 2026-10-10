@@ -1,0 +1,13 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-event",
+  "execution_id": "ex_01JA7Y3K2M9",
+  "operation": "apply",
+  "sequence": 5,
+  "time": "2026-10-10T15:12:35Z",
+  "event": {
+    "type": "log",
+    "level": "warn",
+    "message": "task 7f3a failed its health check; ECS is replacing it"
+  }
+}

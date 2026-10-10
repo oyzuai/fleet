@@ -199,6 +199,9 @@ type Job struct {
 	Command       []string `json:"command"`
 	// Secrets are the build secret variables to pull before running.
 	Secrets []string `json:"secrets"`
+	// KindOperation is set on a kind job (Kind is KindOperation): the runner
+	// runs this deployment kind operation instead of a command.
+	KindOperation *KindOperation `json:"kind_operation,omitempty"`
 }
 
 // Started is a runner's job token and job.

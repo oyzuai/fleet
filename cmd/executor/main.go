@@ -3,6 +3,7 @@
 // it is not meant to be run by hand.
 //
 //	oyzu-executor --server URL (--startup-token-file FILE | --startup-token-env NAME) --work-dir DIR [--oyzu PATH] [--renovate PATH]
+//	              [--kinds-dir DIR] [--kind-state-dir DIR] [--docker PATH]
 package main
 
 import (
@@ -13,9 +14,11 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/oyzuai/fleet/executor"
+	"github.com/oyzuai/fleet/kindrunner"
 	"github.com/oyzuai/fleet/runnerclient"
 )
 
@@ -41,6 +44,9 @@ func run(args []string, log *slog.Logger) error {
 	apiURL := fs.String("github-api", "https://api.github.com", "the Git host's REST API, for Renovate")
 	renovate := fs.String("renovate", "", "the Renovate executable; renovate jobs fail without it")
 	gitAuthor := fs.String("git-author", executor.DefaultGitAuthor, "who lock fix commits are by, \"Name <email>\"")
+	kindsDir := fs.String("kinds-dir", ownDir(), "where the built-in deployment kinds (kind-<name>) are")
+	kindState := fs.String("kind-state-dir", kindrunner.DefaultStateDir(), "where kinds keep state between jobs on this host")
+	docker := fs.String("docker", "docker", "the docker CLI that image kinds run with")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -60,6 +66,19 @@ func run(args []string, log *slog.Logger) error {
 		Renovate:         *renovate,
 		GitHubAPI:        *apiURL,
 		GitAuthor:        *gitAuthor,
+		KindsDir:         *kindsDir,
+		KindStateDir:     *kindState,
+		Docker:           *docker,
 		Log:              log,
 	})
+}
+
+// ownDir is the directory this executable is in, where pools install the
+// built-in kinds beside it.
+func ownDir() string {
+	self, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return filepath.Dir(self)
 }

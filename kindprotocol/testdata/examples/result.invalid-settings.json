@@ -1,0 +1,18 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-result",
+  "execution_id": "ex_01JA7Y3K2M9",
+  "operation": "validate",
+  "outcome": "failed",
+  "failure": {
+    "class": "needs-person",
+    "code": "invalid-target-settings",
+    "message": "The target settings do not match this kind.",
+    "problems": [
+      {
+        "path": "/region",
+        "message": "use-east-1 is not an AWS region"
+      }
+    ]
+  }
+}

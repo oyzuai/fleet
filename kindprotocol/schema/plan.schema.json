@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oyzu.dev/contracts/kinds-v1alpha1/plan.schema.json",
+  "title": "Draft deployment kind protocol v1alpha1: plan document",
+  "description": "What a person approves. digest is sha256 over the RFC 8785 canonical JSON of this document without the digest member. Nothing in it may vary between two plans of the same inputs, so it holds no execution ID or timestamp.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "type", "kind", "summary", "changes", "risk_flags", "digest"],
+  "properties": {
+    "schema_version": { "const": "v1alpha1" },
+    "type": { "const": "deployment-plan" },
+    "kind": { "$ref": "common.schema.json#/$defs/kindRef" },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "changes": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": { "$ref": "common.schema.json#/$defs/change" }
+    },
+    "risk_flags": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["flag", "reason"],
+        "properties": {
+          "flag": { "enum": ["destroy", "replace", "permission-change", "data-loss", "irreversible", "untyped"] },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 1000 },
+          "resource": { "type": "string", "minLength": 1, "maxLength": 1024 }
+        }
+      }
+    },
+    "capacity": {
+      "description": "Extra capacity the change needs and for how long (IMPL-270), as readable text.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "digest": { "$ref": "common.schema.json#/$defs/digest" }
+  }
+}

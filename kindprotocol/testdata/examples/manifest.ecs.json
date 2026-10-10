@@ -1,0 +1,92 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-manifest",
+  "name": "aws-ecs-service",
+  "version": "1.4.0",
+  "description": "Updates an Amazon ECS service to a new task definition.",
+  "operations": {
+    "validate": {
+      "timeout_seconds": 60
+    },
+    "plan": {
+      "timeout_seconds": 120
+    },
+    "apply": {
+      "timeout_seconds": 1800
+    },
+    "observe": {
+      "timeout_seconds": 60
+    },
+    "stage": {
+      "timeout_seconds": 900
+    },
+    "shift": {
+      "timeout_seconds": 300
+    },
+    "switch": {
+      "timeout_seconds": 300
+    },
+    "retire": {
+      "timeout_seconds": 600
+    },
+    "abort": {
+      "timeout_seconds": 600
+    },
+    "drift": {
+      "timeout_seconds": 120
+    }
+  },
+  "rollback": "redeploy",
+  "strategies": [
+    {
+      "name": "rolling",
+      "mode": "native"
+    },
+    {
+      "name": "canary",
+      "mode": "native"
+    },
+    {
+      "name": "blue-green",
+      "mode": "native"
+    },
+    {
+      "name": "linear",
+      "mode": "delegated",
+      "tool": "AWS CodeDeploy"
+    }
+  ],
+  "default_strategy": "rolling",
+  "target_settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "region",
+      "cluster",
+      "service"
+    ],
+    "properties": {
+      "region": {
+        "type": "string",
+        "pattern": "^[a-z]{2}-[a-z]+-[0-9]$"
+      },
+      "cluster": {
+        "type": "string",
+        "minLength": 1
+      },
+      "service": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "connectors": {
+    "apply": [
+      "aws"
+    ],
+    "observe": [
+      "aws"
+    ]
+  }
+}

@@ -1,0 +1,98 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-request",
+  "execution_id": "ex_01JA7Y3K2M9",
+  "kind": {
+    "name": "aws-ecs-service",
+    "version": "1.4.0"
+  },
+  "target_settings": {
+    "region": "us-east-1",
+    "cluster": "prod-use1",
+    "service": "checkout"
+  },
+  "components": [
+    {
+      "component": "checkout",
+      "version": "2026.10.10-4",
+      "artifacts": [
+        {
+          "name": "image",
+          "media_type": "application/vnd.oci.image.index.v1+json",
+          "digest": "sha256:1c15f70ae16fcafd066713c1a9b8dae73aada96cec23322209c5a2a43f4c3080",
+          "uri": "registry.example.com/acme/checkout"
+        }
+      ]
+    }
+  ],
+  "operation": "apply",
+  "approved_plan": {
+    "schema_version": "v1alpha1",
+    "type": "deployment-plan",
+    "kind": {
+      "name": "aws-ecs-service",
+      "version": "1.4.0"
+    },
+    "summary": "Update service checkout in cluster prod-use1 from 2026.10.09-2 to 2026.10.10-4; the task role gains s3:PutObject on acme-receipts.",
+    "changes": [
+      {
+        "action": "create",
+        "resource": {
+          "type": "aws.ecs.task-definition",
+          "name": "checkout:58"
+        },
+        "attributes": [
+          {
+            "path": "/containerDefinitions/0/image",
+            "after": "registry.example.com/acme/checkout@sha256:1c15f70ae16fcafd066713c1a9b8dae73aada96cec23322209c5a2a43f4c3080"
+          },
+          {
+            "path": "/containerDefinitions/0/secrets/0/valueFrom",
+            "sensitive": true
+          }
+        ]
+      },
+      {
+        "action": "update",
+        "resource": {
+          "type": "aws.ecs.service",
+          "name": "prod-use1/checkout"
+        },
+        "attributes": [
+          {
+            "path": "/taskDefinition",
+            "before": "checkout:57",
+            "after": "checkout:58"
+          }
+        ]
+      },
+      {
+        "action": "update",
+        "resource": {
+          "type": "aws.iam.role-policy",
+          "name": "checkout-task/receipts"
+        },
+        "attributes": [
+          {
+            "path": "/Statement/0/Action",
+            "before": [
+              "s3:GetObject"
+            ],
+            "after": [
+              "s3:GetObject",
+              "s3:PutObject"
+            ]
+          }
+        ]
+      }
+    ],
+    "risk_flags": [
+      {
+        "flag": "permission-change",
+        "reason": "The task role gains s3:PutObject.",
+        "resource": "checkout-task/receipts"
+      }
+    ],
+    "digest": "sha256:0d3255f12bc1d072ad5be67ba746ab84dd28248a11121ec3fcedfc725f260473"
+  }
+}

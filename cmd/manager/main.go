@@ -103,6 +103,7 @@ func run(args []string, log *slog.Logger) error {
 		concurrency := fs.Int("concurrency", 1, "jobs run at once")
 		docker := fs.Bool("docker", false, "report that jobs may use this host's Docker or BuildKit (oyzu.io/docker)")
 		renovate := fs.String("renovate", "", "the Renovate executable; when set, the pool takes renovate jobs (oyzu.io/renovate)")
+		kindState := fs.String("kind-state-dir", "", "process driver: where deployment kinds keep state between jobs; <state-dir>/kinds by default")
 		passEnv := fs.String("pass-env", "", "comma-separated extra variables executors inherit")
 		drain := fs.Duration("drain-timeout", 30*time.Minute, "how long running jobs may finish after an interrupt")
 		driverName := fs.String("driver", "process", "how jobs run: process, container or kubernetes")
@@ -134,7 +135,10 @@ func run(args []string, log *slog.Logger) error {
 		if *passEnv != "" {
 			extra = strings.Split(*passEnv, ",")
 		}
-		runnerArgs := []string{"--oyzu", *oyzu}
+		if *kindState == "" {
+			*kindState = filepath.Join(*stateDir, "kinds")
+		}
+		runnerArgs := []string{"--oyzu", *oyzu, "--kind-state-dir", *kindState}
 		if *renovate != "" {
 			runnerArgs = append(runnerArgs, "--renovate", *renovate)
 		}
