@@ -2,6 +2,7 @@ package kindrunner
 
 import (
 	"context"
+	"fmt"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -326,7 +327,7 @@ func TestImageKindGetsLedgerAndNetwork(t *testing.T) {
 	}
 	b, _ := os.ReadFile(args)
 	run := strings.SplitN(string(b), "\n", 2)[0]
-	for _, want := range []string{"--network host", "OYZU_KIND_LEDGER_DIR=" + ContainerLedgerDir, ":" + ContainerLedgerDir + " ",
+	for _, want := range []string{"--network host", fmt.Sprintf("--user %d:%d", os.Getuid(), os.Getgid()), "OYZU_KIND_LEDGER_DIR=" + ContainerLedgerDir, ":" + ContainerLedgerDir + " ",
 		" " + job.KindOperation.Image} {
 		if !strings.Contains(run, want) {
 			t.Fatalf("docker %s lacks %q", run, want)

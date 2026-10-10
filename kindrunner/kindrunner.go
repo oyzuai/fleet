@@ -369,6 +369,12 @@ func (r *run) start(ctx context.Context, request []byte, dirs jobDirs, label str
 		}
 		args := []string{"run", "--rm", "-i", "--name", container, "--pull", "missing",
 			"-e", "OYZU_KIND_STATE_DIR=" + ContainerStateDir, "-v", stateDir + ":" + ContainerStateDir}
+		// The kind runs as the runner's own user, so it can write the
+		// directories the runner made for it (0700, the runner's) and what
+		// it leaves there stays the runner's to read and remove.
+		if uid, gid := os.Getuid(), os.Getgid(); uid >= 0 && gid >= 0 {
+			args = append(args, "--user", strconv.Itoa(uid)+":"+strconv.Itoa(gid))
+		}
 		if secrets != nil {
 			args = append(args, "-e", "OYZU_SECRETS_DIR="+ContainerSecretsDir, "-v", secrets.path+":"+ContainerSecretsDir+":ro")
 			for _, v := range secrets.vars(ContainerSecretsDir) {
