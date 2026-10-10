@@ -103,6 +103,49 @@ func TestConnectorsAreFiles(t *testing.T) {
 	}
 }
 
+// A named binding is written under connectors/named/<alias>/, beside the
+// apply and observe connectors, and never points the AWS SDKs anywhere.
+func TestNamedConnectorsAreFiles(t *testing.T) {
+	f, cfg, job, _ := setup(t, "connectors", kindprotocol.OpPlan, 30, 0, nil)
+	f.connectors = testConnectors()
+	f.connectors.Connectors = append(f.connectors.Connectors, runnerclient.KindConnector{
+		Role: "apply", Alias: "cloudflare", Identifier: "cf-dns", Kind: "credentials", Mechanism: "secrets",
+		Settings:   map[string]any{"variables": map[string]any{"api_token": "CLOUDFLARE_API_TOKEN"}},
+		Parameters: map[string]any{}, Secrets: []runnerclient.KindConnectorSecret{{Field: "api_token", Value: []byte("cf_abc")}}},
+		runnerclient.KindConnector{Role: "apply", Alias: "aws-dns", Identifier: "aws-dns", Kind: "aws", Mechanism: "aws-workload-identity",
+			Parameters: map[string]any{"role_arn": "arn:aws:iam::210987654321:role/dns"}, Secrets: []runnerclient.KindConnectorSecret{},
+			IDToken: "dns.jwt"})
+	job.KindOperation.Connectors = []string{"apply", "observe", "named/cloudflare", "named/aws-dns"}
+	if err := Run(context.Background(), cfg, job); err != nil {
+		t.Fatal(err)
+	}
+	got := connectorLines(f)
+	for _, want := range []string{
+		"file connectors/named/cloudflare/connector.json=cf-dns credentials web-prod api_token ",
+		"file connectors/named/cloudflare/api_token=cf_abc",
+		"file connectors/named/aws-dns/id_token=dns.jwt",
+		"env AWS_ROLE_ARN=arn:aws:iam::123456789012:role/deploy",
+	} {
+		if !got[want] {
+			t.Errorf("missing %q in %v", want, got)
+		}
+	}
+	if got["env AWS_ROLE_ARN=arn:aws:iam::210987654321:role/dns"] {
+		t.Error("a named aws connector took over the AWS SDKs' default chain")
+	}
+
+	// An alias that is not a directory name is refused.
+	f, cfg, job, _ = setup(t, "connectors", kindprotocol.OpPlan, 30, 0, nil)
+	f.connectors = testConnectors()
+	f.connectors.Connectors = append(f.connectors.Connectors, runnerclient.KindConnector{Role: "apply", Alias: "../x",
+		Identifier: "x", Kind: "credentials", Mechanism: "secrets", Secrets: []runnerclient.KindConnectorSecret{}})
+	job.KindOperation.Connectors = []string{"apply", "named/../x"}
+	_ = Run(context.Background(), cfg, job)
+	if got := connectorLines(f); len(got) != 0 {
+		t.Fatalf("the kind ran with a bad alias: %v", got)
+	}
+}
+
 func TestReadOnlyOperationActsThroughObserve(t *testing.T) {
 	f, cfg, job, _ := setup(t, "connectors", kindprotocol.OpObserve, 30, 0, nil)
 	f.connectors = testConnectors()

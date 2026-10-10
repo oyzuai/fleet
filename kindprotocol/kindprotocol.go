@@ -486,9 +486,12 @@ type StrategyDef struct {
 }
 
 // Connectors lists the connector types a kind accepts, apply and observe apart.
+// Named lists the types a target may bind beside them under an alias of its
+// choosing; empty means the kind takes no named connectors.
 type Connectors struct {
 	Apply   []string `json:"apply"`
 	Observe []string `json:"observe"`
+	Named   []string `json:"named,omitempty"`
 }
 
 // Observation is a manifest's observation member.

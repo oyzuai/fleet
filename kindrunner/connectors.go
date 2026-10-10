@@ -23,7 +23,11 @@ import (
 //	connectors/<role>/id_token        a job ID token, for a federating mechanism
 //
 // role is apply or observe. A read-only operation (observe, drift, watch)
-// gets only observe; every other operation gets both. For an aws connector
+// gets only observe; every other operation gets both. Each of the target's
+// named bindings (IMPL-628) is written the same way to
+// connectors/named/<alias>/, one connector per alias: its observe side for a
+// read-only operation and its apply side otherwise, or its only side, which
+// connector.json's role names. For an aws connector
 // that federates, the runner also points the AWS SDKs' default chain at the
 // role and the token, and removes any other AWS credentials from a built-in
 // kind's environment, so a kind that loads the default configuration
@@ -32,6 +36,7 @@ const (
 	ConnectorsDir     = "connectors"
 	ConnectorFile     = "connector.json"
 	ConnectorIDToken  = "id_token"
+	NamedConnectorDir = "named"
 	awsConnectorKind  = "aws"
 	awsRoleParameter  = "role_arn"
 	awsSessionNameMax = 64
@@ -40,9 +45,11 @@ const (
 // ConnectorDescription is connector.json: what a kind needs to know about a
 // connector besides the values in the files beside it.
 type ConnectorDescription struct {
-	Target     string         `json:"target"`
-	Grant      string         `json:"grant,omitempty"`
-	Role       string         `json:"role"`
+	Target string `json:"target"`
+	Grant  string `json:"grant,omitempty"`
+	Role   string `json:"role"`
+	// Alias names the named binding; empty for apply or observe.
+	Alias      string         `json:"alias,omitempty"`
 	Identifier string         `json:"identifier"`
 	Kind       string         `json:"kind"`
 	Mechanism  string         `json:"mechanism"`
@@ -62,6 +69,7 @@ var awsCredentialVariables = []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KE
 
 var (
 	connectorField = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	connectorAlias = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	sessionUnsafe  = regexp.MustCompile(`[^A-Za-z0-9+=,.@-]`)
 )
 
@@ -115,10 +123,19 @@ func (r *run) connectors(ctx context.Context, sd *secretDir) error {
 			return fmt.Errorf("connector role %q is not apply or observe", c.Role)
 		}
 		dir := filepath.Join(sd.path, ConnectorsDir, c.Role)
+		if c.Alias != "" {
+			if !connectorAlias.MatchString(c.Alias) {
+				return fmt.Errorf("connector binding %q is not a directory name", c.Alias)
+			}
+			dir = filepath.Join(sd.path, ConnectorsDir, NamedConnectorDir, c.Alias)
+			if _, err := os.Stat(dir); err == nil {
+				return fmt.Errorf("connector binding %s is delivered twice", c.Alias)
+			}
+		}
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
-		desc := ConnectorDescription{Target: got.Target, Grant: got.Grant, Role: c.Role, Identifier: c.Identifier,
+		desc := ConnectorDescription{Target: got.Target, Grant: got.Grant, Role: c.Role, Alias: c.Alias, Identifier: c.Identifier,
 			Kind: c.Kind, Mechanism: c.Mechanism, Settings: c.Settings, Parameters: c.Parameters, SecretFiles: []string{}}
 		for _, s := range c.Secrets {
 			if !connectorField.MatchString(s.Field) || s.Field == ConnectorIDToken {
@@ -142,7 +159,7 @@ func (r *run) connectors(ctx context.Context, sd *secretDir) error {
 		if err := os.WriteFile(filepath.Join(dir, ConnectorFile), raw, 0o400); err != nil {
 			return err
 		}
-		if c.Role == r.primaryRole() {
+		if c.Alias == "" && c.Role == r.primaryRole() {
 			primary = c.Role
 			r.awsDefaults(sd, c)
 		}
