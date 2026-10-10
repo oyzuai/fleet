@@ -1,0 +1,7 @@
+# Build targets for fleet. `oyzu build` builds them all.
+builds:
+  # The Go module: one binary per cmd/ directory, `manager` (released as
+  # oyzu-pool-manager) and `executor` (released as oyzu-executor).
+  fleet:
+    uses: go/app
+    path: .

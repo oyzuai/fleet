@@ -1,0 +1,5 @@
+# Tools for fleet. `oyzu build` builds and tests the module (build.yaml).
+# Run `oyzu pin` on a machine that can reach the download hosts and commit
+# the regenerated oyzu.lock.
+[tools]
+go = "1.24"
