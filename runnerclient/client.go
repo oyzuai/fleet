@@ -197,6 +197,8 @@ type Job struct {
 	AffectedBase  string   `json:"affected_base"`
 	Mandatory     bool     `json:"mandatory"`
 	Command       []string `json:"command"`
+	// Secrets are the build secret variables to pull before running.
+	Secrets []string `json:"secrets"`
 }
 
 // Started is a runner's job token and job.
@@ -231,6 +233,59 @@ func (c *Client) Source(ctx context.Context, job string) (Source, error) {
 	return out, c.do(ctx, "job/source", job, nil, &out)
 }
 
+// IDToken is an OIDC ID token naming the job, for one audience.
+type IDToken struct {
+	Token   string    `json:"token"`
+	Expires time.Time `json:"expires_at"`
+}
+
+// IDToken asks for an ID token bound to audience.
+func (c *Client) IDToken(ctx context.Context, job, audience string) (IDToken, error) {
+	var out IDToken
+	return out, c.do(ctx, "job/id-token", job, map[string]string{"audience": audience}, &out)
+}
+
+// JobSecret is one build secret: an environment variable's value, or with
+// File the contents of a file the variable will name.
+type JobSecret struct {
+	Variable string `json:"variable"`
+	File     bool   `json:"file"`
+	Value    []byte `json:"value"`
+}
+
+// Secrets pulls the job's build secrets.
+func (c *Client) Secrets(ctx context.Context, job string) ([]JobSecret, error) {
+	var out struct {
+		Secrets []JobSecret `json:"secrets"`
+	}
+	return out.Secrets, c.do(ctx, "job/secrets", job, nil, &out)
+}
+
+// EgressGrant is a host the runner's egress proxy adds a credential to.
+type EgressGrant struct {
+	Host          string    `json:"host"`
+	Authorization string    `json:"authorization"`
+	Expires       time.Time `json:"expires_at"`
+}
+
+// Egress is what the job's egress proxy may add credentials to.
+type Egress struct {
+	Grants       []EgressGrant `json:"grants"`
+	Repositories []string      `json:"repositories"`
+}
+
+// Egress asks for the job's egress grants, each minted for this call. A
+// runs that predates them answers 404, which is no grants.
+func (c *Client) Egress(ctx context.Context, job string) (Egress, error) {
+	var out Egress
+	err := c.do(ctx, "job/egress", job, nil, &out)
+	var se *StatusError
+	if errors.As(err, &se) && se.Status == http.StatusNotFound {
+		return Egress{}, nil
+	}
+	return out, err
+}
+
 // WriteToken is a token that can write to the job's repository.
 type WriteToken struct {
 	Token      string    `json:"token"`
@@ -252,6 +307,9 @@ type Outcome struct {
 	State    string `json:"state"`
 	ExitCode *int   `json:"exit_code,omitempty"`
 	Summary  string `json:"summary"`
+	// ReasonCode says why a job failed before oyzu exited, such as
+	// SOURCE_UNAVAILABLE or RUNNER_ERROR.
+	ReasonCode string `json:"reason_code,omitempty"`
 	// Plan is what a plan job's command printed, sent when it succeeded.
 	Plan json.RawMessage `json:"plan,omitempty"`
 }

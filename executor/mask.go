@@ -107,6 +107,33 @@ func (m *maskWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// Add masks more values from now on, such as an ID token handed to the
+// build mid-job.
+func (m *maskWriter) Add(values ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.forms = mergeForms(m.forms, maskForms(values...))
+}
+
+// mergeForms joins two form lists, longest first as maskForms orders them.
+func mergeForms(a, b []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(a)+len(b))
+	for _, f := range append(append([]string{}, a...), b...) {
+		if !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if len(out[i]) != len(out[j]) {
+			return len(out[i]) > len(out[j])
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+
 // Flush writes what was held back. At the end of the stream a partial match
 // is not a value, so it goes out as written.
 func (m *maskWriter) Flush() error {

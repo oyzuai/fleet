@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -81,6 +82,21 @@ func fakeOyzu() {
 		fmt.Fprintf(os.Stderr, "source %s and %s\n", "ghs_secret", base64.StdEncoding.EncodeToString([]byte("x:ghs_secret")))
 		os.Stdout.WriteString("startup oyzu_start_ok\n")
 	}
+	if os.Getenv("FAKE_OYZU_ID_TOKEN") != "" {
+		fetchIDToken()
+	}
+	if os.Getenv("FAKE_OYZU_SECRETS") != "" {
+		// Print the secret, then report what the build could see.
+		fmt.Printf("npm token %s\n", os.Getenv("NPM_TOKEN"))
+		path := os.Getenv("GCP_KEY")
+		b, err := os.ReadFile(path)
+		info, _ := os.Stat(path)
+		fmt.Printf("key file %v %s mode %v\n", err, b, info.Mode().Perm())
+		fmt.Printf("key path %s\n", filepath.Dir(path))
+	}
+	if os.Getenv("FAKE_OYZU_EGRESS") != "" {
+		reportEgress()
+	}
 	if d := os.Getenv("FAKE_OYZU_SLEEP"); d != "" {
 		t, _ := time.ParseDuration(d)
 		time.Sleep(t)
@@ -91,6 +107,51 @@ func fakeOyzu() {
 	os.Exit(0)
 }
 
+// fetchIDToken asks the runner for an ID token the way a build tool would,
+// prints it (the log must mask it) and reports what it could see.
+func fetchIDToken() {
+	for _, kv := range os.Environ() {
+		if strings.Contains(kv, "oyzu_job_ok") {
+			fmt.Println("job token visible to the build")
+		}
+	}
+	req, _ := http.NewRequest(http.MethodGet, os.Getenv(EnvIDTokenURL)+"?audience=sts.amazonaws.com", nil)
+	req.Header.Set("Authorization", "Bearer "+os.Getenv(EnvIDTokenRequestToken))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Println("id token request failed:", err)
+		return
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Value string `json:"value"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	fmt.Printf("id token status %d value %s\n", resp.StatusCode, out.Value)
+
+	bad, _ := http.NewRequest(http.MethodGet, os.Getenv(EnvIDTokenURL)+"?audience=vault", nil)
+	bad.Header.Set("Authorization", "Bearer wrong")
+	if resp, err := http.DefaultClient.Do(bad); err == nil {
+		fmt.Printf("wrong request token status %d\n", resp.StatusCode)
+		resp.Body.Close()
+	}
+}
+
+// reportEgress prints what a build sees of the egress proxy: the proxy URL
+// (whose password the log must mask), whether the CA file is there, and
+// whether the credential leaked into its environment.
+func reportEgress() {
+	fmt.Println("proxy", os.Getenv("HTTPS_PROXY"))
+	if b, err := os.ReadFile(os.Getenv(EnvEgressCAFile)); err == nil && strings.Contains(string(b), "BEGIN CERTIFICATE") {
+		fmt.Println("job CA present")
+	}
+	for _, kv := range os.Environ() {
+		if strings.Contains(kv, "ghs_egress") {
+			fmt.Println("egress credential visible to the build")
+		}
+	}
+}
+
 // fakeRuns is the runner API as a runner sees it.
 type fakeRuns struct {
 	job        runnerclient.Job
@@ -99,6 +160,14 @@ type fakeRuns struct {
 	mu         sync.Mutex
 	finished   *runnerclient.Outcome
 	startups   []string
+	audiences  []string
+	// secretsStatus, when set, is job/secrets' answer.
+	secretsStatus int
+	secretPulls   int
+	// egress is the job/egress answer; empty answers 404, as a runs
+	// without egress does.
+	egress string
+
 	// writeTokens counts tokens that can write handed out.
 	writeTokens int
 }
@@ -131,6 +200,32 @@ func (f *fakeRuns) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{}`))
 	case "job/source":
 		_, _ = w.Write([]byte(`{"token":"ghs_secret","repository":"oyzuai/platform"}`))
+	case "job/secrets":
+		f.mu.Lock()
+		f.secretPulls++
+		f.mu.Unlock()
+		if f.secretsStatus != 0 {
+			w.WriteHeader(f.secretsStatus)
+			return
+		}
+		_, _ = w.Write([]byte(`{"secrets":[{"variable":"NPM_TOKEN","file":false,"value":"bnBtX3NlY3JldF92YWx1ZQ=="},` +
+			`{"variable":"GCP_KEY","file":true,"value":"eyJwcml2YXRlX2tleSI6InNla3JpdCJ9"}]}`))
+	case "job/id-token":
+		var in struct {
+			Audience string `json:"audience"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		f.mu.Lock()
+		f.audiences = append(f.audiences, in.Audience)
+		f.mu.Unlock()
+		_, _ = w.Write([]byte(`{"token":"eyJhbGciOiJSUzI1NiJ9.fake-id-token.c2ln","expires_at":"2030-01-01T00:00:00Z"}`))
+	case "job/egress":
+		if f.egress == "" {
+			w.WriteHeader(404)
+			return
+		}
+		_, _ = w.Write([]byte(f.egress))
+
 	case "job/write-token":
 		f.mu.Lock()
 		f.writeTokens++
@@ -397,5 +492,141 @@ func captureStdio(t *testing.T, buf *bytes.Buffer) (restore func()) {
 		os.Stdout, os.Stderr = stdout, stderr
 		w.Close()
 		<-done
+	}
+}
+
+func TestBuildGetsIDTokensWithoutTheJobToken(t *testing.T) {
+	runs, cfg, _ := setup(t, buildJob("build", "oyzu", "build"))
+	t.Setenv("FAKE_OYZU_ID_TOKEN", "1")
+	t.Setenv(EnvIDTokenURL, "http://attacker.example/")
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	o := runs.finished
+	if o == nil || o.State != "succeeded" {
+		t.Fatalf("outcome = %+v", o)
+	}
+	if !strings.Contains(o.Summary, "id token status 200 value ***") {
+		t.Errorf("the build did not get a masked ID token:\n%s", o.Summary)
+	}
+	if strings.Contains(o.Summary, "fake-id-token") {
+		t.Errorf("the ID token is in the summary:\n%s", o.Summary)
+	}
+	if !strings.Contains(o.Summary, "wrong request token status 401") {
+		t.Errorf("a wrong request token was not refused:\n%s", o.Summary)
+	}
+	if strings.Contains(o.Summary, "job token visible") || strings.Contains(o.Summary, "failed") {
+		t.Errorf("summary:\n%s", o.Summary)
+	}
+	if len(runs.audiences) != 1 || runs.audiences[0] != "sts.amazonaws.com" {
+		t.Errorf("audiences asked for = %q", runs.audiences)
+	}
+}
+
+func TestBuildSecretsReachTheBuildMasked(t *testing.T) {
+	job := buildJob("build", "oyzu", "build")
+	job.Secrets = []string{"GCP_KEY", "NPM_TOKEN"}
+	runs, cfg, _ := setup(t, job)
+	cfg.SecretsDir = t.TempDir()
+	t.Setenv("FAKE_OYZU_SECRETS", "1")
+	t.Setenv("NPM_TOKEN", "inherited-from-the-host")
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	o := runs.finished
+	if o == nil || o.State != "succeeded" {
+		t.Fatalf("outcome = %+v", o)
+	}
+	for _, leak := range []string{"npm_secret_value", "sekrit", "inherited-from-the-host"} {
+		if strings.Contains(o.Summary, leak) {
+			t.Errorf("%q is in the summary:\n%s", leak, o.Summary)
+		}
+	}
+	// Windows reports a read-only file as 0444 whatever its owner-only mode.
+	mode := "-r--------"
+	if runtime.GOOS == "windows" {
+		mode = "-r--r--r--"
+	}
+	if !strings.Contains(o.Summary, "npm token ***") || !strings.Contains(o.Summary, "key file <nil> *** mode "+mode) {
+		t.Errorf("summary:\n%s", o.Summary)
+	}
+	entries, _ := os.ReadDir(cfg.SecretsDir)
+	if len(entries) != 0 {
+		t.Errorf("secret files left behind: %v", entries)
+	}
+}
+
+func TestNoSecretsPulledUnlessTheJobNamesThem(t *testing.T) {
+	runs, cfg, _ := setup(t, buildJob("build", "oyzu", "build"))
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if runs.secretPulls != 0 {
+		t.Errorf("pulled secrets %d times for a job with none", runs.secretPulls)
+	}
+}
+
+func TestRefusedSecretsFailTheJob(t *testing.T) {
+	job := buildJob("build", "oyzu", "build")
+	job.Secrets = []string{"NPM_TOKEN"}
+	runs, cfg, _ := setup(t, job)
+	runs.secretsStatus = http.StatusForbidden
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if o := runs.finished; o == nil || o.State != "failed" || !strings.Contains(o.Summary, "build secrets") {
+		t.Fatalf("outcome = %+v", o)
+	}
+
+	// Released variables the job did not name are refused too.
+	job.Secrets = []string{"NPM_TOKEN"}
+	runs, cfg, _ = setup(t, job)
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if o := runs.finished; o == nil || o.State != "failed" || strings.Contains(o.Summary, "npm_secret_value") {
+		t.Fatalf("outcome = %+v", o)
+	}
+}
+
+func TestRunnerStartsTheEgressProxyForGrants(t *testing.T) {
+	runs, cfg, _ := setup(t, buildJob("build", "oyzu", "build"))
+	runs.egress = `{"grants":[{"host":"github.com","authorization":"Bearer ghs_egress","expires_at":"2030-01-01T00:00:00Z"}],"repositories":["oyzuai/oyzu"]}`
+	t.Setenv("FAKE_OYZU_EGRESS", "1")
+	t.Setenv("HTTPS_PROXY", "http://corp.example:3128")
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	o := runs.finished
+	if o == nil || o.State != "succeeded" {
+		t.Fatalf("outcome = %+v", o)
+	}
+	if !strings.Contains(o.Summary, "proxy http://oyzu:***@127.0.0.1:") || !strings.Contains(o.Summary, "job CA present") ||
+		strings.Contains(o.Summary, "visible to the build") || strings.Contains(o.Summary, "corp.example") {
+		t.Fatalf("summary:\n%s", o.Summary)
+	}
+}
+
+func TestRunnerWithoutGrantsLeavesTheProxyAlone(t *testing.T) {
+	runs, cfg, _ := setup(t, buildJob("build", "oyzu", "build"))
+	t.Setenv("FAKE_OYZU_EGRESS", "1")
+	t.Setenv("HTTPS_PROXY", "http://corp.example:3128")
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if o := runs.finished; o == nil || o.State != "succeeded" || !strings.Contains(o.Summary, "proxy http://corp.example:3128") ||
+		strings.Contains(o.Summary, "job CA present") {
+		t.Fatalf("outcome = %+v", o)
+	}
+}
+
+func TestRunnerFailsWhenEgressGrantsFail(t *testing.T) {
+	runs, cfg, _ := setup(t, buildJob("build", "oyzu", "build"))
+	runs.egress = `not json`
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if o := runs.finished; o == nil || o.State != "failed" || !strings.Contains(o.Summary, "egress grants") {
+		t.Fatalf("outcome = %+v", o)
 	}
 }

@@ -44,6 +44,10 @@ type Config struct {
 	StartupTokenEnv string
 	// WorkDir is where the source is checked out; it must not exist or be empty.
 	WorkDir string
+	// SecretsDir is where the job's file secrets are written, in a private
+	// directory removed when the job ends; the system temp directory by
+	// default. Point it at a tmpfs so they never reach a disk.
+	SecretsDir string
 	// GitURL is the Git host, https://github.com by default.
 	GitURL string
 	// Git and Oyzu are the executables; "git" and "oyzu" on PATH by default.
@@ -208,23 +212,24 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	_, name, _ := strings.Cut(job.Repository, "/")
 	if !shaPattern.MatchString(job.HeadSHA) || !repoPattern.MatchString(job.Repository) || strings.Trim(name, ".") == "" ||
 		(job.AffectedBase != "" && !shaPattern.MatchString(job.AffectedBase)) {
-		return failed("The job names an invalid repository or commit.")
+		return failedWith("INVALID_JOB", "The job names an invalid repository or commit.")
 	}
 	if len(job.Command) < 2 || job.Command[0] != "oyzu" {
-		return failed("The job's command is not an oyzu command.")
+		return failedWith("INVALID_JOB", "The job's command is not an oyzu command.")
 	}
 	if err := os.MkdirAll(cfg.WorkDir, 0o700); err != nil {
 		return failed("Could not create the work directory: " + err.Error())
 	}
 	src, err := cfg.Client.Source(ctx, token)
 	if err != nil {
-		return failed("Could not get a token to read the repository: " + err.Error())
+		return failedWith("SOURCE_UNAVAILABLE", "Could not get a token to read the repository: "+err.Error())
 	}
-	forms := maskForms(token, startup, src.Token, "x-access-token:"+src.Token)
+	secrets := []string{token, startup, src.Token, "x-access-token:" + src.Token}
+	forms := maskForms(secrets...)
 	if err := checkout(ctx, cfg, src.Token, job); err != nil {
 		msg := replaceForms(err.Error(), forms)
 		log.Warn("checkout failed", "error", msg)
-		return failed("Could not check out " + job.HeadSHA + ": " + msg)
+		return failedWith("SOURCE_UNAVAILABLE", "Could not check out "+job.HeadSHA+": "+msg)
 	}
 	if job.Operation == "run" && !declaresTask(filepath.Join(cfg.WorkDir, "oyzu.toml"), job.Task) {
 		return runnerclient.Outcome{State: "skipped", Summary: fmt.Sprintf("`oyzu.toml` at `%s` declares no task `%s`.", job.HeadSHA, job.Task)}
@@ -240,9 +245,55 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	if job.Kind == "plan" {
 		stdout = newMaskWriter(&capped{w: &record, n: runnerclient.MaxPlanRecord + 1}, forms)
 	}
+	env := buildEnv(os.Environ())
+	if job.Kind != "plan" && len(job.Secrets) > 0 {
+		secretEnv, cleanup, err := pullSecrets(ctx, cfg, token, job.Secrets, func(v string) {
+			stdout.Add(v)
+			stderr.Add(v)
+		})
+		defer cleanup()
+		if err != nil {
+			msg := replaceForms(err.Error(), forms)
+			log.Warn("build secrets not delivered", "error", msg)
+			return failed("Could not get the job's build secrets: " + msg)
+		}
+		env = withEnv(env, secretEnv)
+	}
+	var proxy *egressProxy
+	// A plan runs without credentials: no ID token, no egress.
+	if job.Kind != "plan" {
+		broker, err := startIDBroker(cfg.Client, token, func(idToken string) {
+			stdout.Add(idToken)
+			stderr.Add(idToken)
+		})
+		if err != nil {
+			return failed("Could not start the ID token endpoint: " + err.Error())
+		}
+		defer broker.stop()
+		stdout.Add(broker.secret)
+		stderr.Add(broker.secret)
+		env = append(env, broker.env()...)
+		egress, err := cfg.Client.Egress(ctx, token)
+		if err != nil {
+			return failed("Could not get the job's egress grants: " + err.Error())
+		}
+		if len(egress.Grants) > 0 {
+			proxy, err = startEgress(egress, func(ctx context.Context) (runnerclient.Egress, error) {
+				return cfg.Client.Egress(ctx, token)
+			}, func(values ...string) {
+				stdout.Add(values...)
+				stderr.Add(values...)
+			}, log)
+			if err != nil {
+				return failed("Could not start the egress proxy: " + err.Error())
+			}
+			defer proxy.stop()
+			env = proxy.env(env)
+		}
+	}
 	cmd := exec.CommandContext(ctx, cfg.Oyzu, job.Command[1:]...)
 	cmd.Dir = cfg.WorkDir
-	cmd.Env = os.Environ()
+	cmd.Env = env
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.Cancel = func() error {
 		if err := cmd.Process.Signal(os.Interrupt); err != nil {
@@ -258,6 +309,11 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	}
 	code := cmd.ProcessState.ExitCode()
 	summary := fmt.Sprintf("`%s` on `%s` exited %d.\n\n```text\n%s\n```", strings.Join(job.Command, " "), job.HeadSHA, code, out.String())
+	if proxy != nil {
+		if r := proxy.report(); r != "" {
+			summary += "\n\n" + r
+		}
+	}
 	switch {
 	case err == nil && job.Kind == "plan":
 		rec := bytes.TrimSpace(record.Bytes())
@@ -274,8 +330,27 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	return runnerclient.Outcome{State: "failed", ExitCode: &code, Summary: summary}
 }
 
+// buildEnv is the runner's environment without anything that would let the
+// build reach for an ID token some other way.
+func buildEnv(environ []string) []string {
+	out := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		if strings.HasPrefix(kv, EnvIDTokenURL+"=") || strings.HasPrefix(kv, EnvIDTokenRequestToken+"=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// failed is a failure before oyzu exited, which runs counts against the
+// executor unless a more specific code says otherwise.
 func failed(summary string) runnerclient.Outcome {
-	return runnerclient.Outcome{State: "failed", Summary: summary}
+	return failedWith("RUNNER_ERROR", summary)
+}
+
+func failedWith(code, summary string) runnerclient.Outcome {
+	return runnerclient.Outcome{State: "failed", Summary: summary, ReasonCode: code}
 }
 
 // checkout fetches exactly the job's commit. The token goes to git as an
