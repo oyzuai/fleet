@@ -53,7 +53,7 @@ var (
 func renovate(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger) runnerclient.Outcome {
 	_, name, _ := strings.Cut(job.Repository, "/")
 	if !repoPattern.MatchString(job.Repository) || strings.Trim(name, ".") == "" {
-		return failed("The job names an invalid repository.")
+		return failedWith("INVALID_JOB", "The job names an invalid repository.")
 	}
 	if cfg.Renovate == "" {
 		return failed("This executor has no Renovate. Start its pool manager with --renovate.")
@@ -114,13 +114,13 @@ func renovateConfig(cfg Config, repository string) ([]byte, error) {
 func lockFix(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger) runnerclient.Outcome {
 	_, name, _ := strings.Cut(job.Repository, "/")
 	if !shaPattern.MatchString(job.HeadSHA) || !repoPattern.MatchString(job.Repository) || strings.Trim(name, ".") == "" {
-		return failed("The job names an invalid repository or commit.")
+		return failedWith("INVALID_JOB", "The job names an invalid repository or commit.")
 	}
 	if job.HeadBranch == "" {
 		return runnerclient.Outcome{State: "skipped", Summary: "`oyzu lock` needs a branch to push to, and this commit has none."}
 	}
 	if !branchPattern.MatchString(job.HeadBranch) || strings.Contains(job.HeadBranch, "..") || strings.HasSuffix(job.HeadBranch, ".lock") {
-		return failed("The job names a branch the lock fix will not push to.")
+		return failedWith("INVALID_JOB", "The job names a branch the lock fix will not push to.")
 	}
 	userName, userEmail, ok := splitAuthor(cfg.GitAuthor)
 	if !ok {
@@ -131,13 +131,13 @@ func lockFix(ctx context.Context, cfg Config, token, startup string, job runnerc
 	}
 	src, err := cfg.Client.Source(ctx, token)
 	if err != nil {
-		return failed("Could not get a token to read the repository: " + err.Error())
+		return failedWith("SOURCE_UNAVAILABLE", "Could not get a token to read the repository: "+err.Error())
 	}
 	forms := maskForms(token, startup, src.Token, "x-access-token:"+src.Token)
 	if err := checkout(ctx, cfg, src.Token, job); err != nil {
 		msg := replaceForms(err.Error(), forms)
 		log.Warn("checkout failed", "error", msg)
-		return failed("Could not check out " + job.HeadSHA + ": " + msg)
+		return failedWith("SOURCE_UNAVAILABLE", "Could not check out "+job.HeadSHA+": "+msg)
 	}
 
 	what := "`oyzu lock` on `" + job.HeadSHA + "`"
