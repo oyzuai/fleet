@@ -1,0 +1,25 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-result",
+  "operation": "verify",
+  "execution_id": "rr_01JA7Y3K2M9.4f1c2a9e0b7d3c55",
+  "outcome": "succeeded",
+  "verification": {
+    "passed": false,
+    "summary": "smoke failed: 1 of 12 tests failed, first checkout.pays with a saved card",
+    "format": "junit",
+    "tests": 12,
+    "failed": 1,
+    "skipped": 0,
+    "known_failures": 0,
+    "failures": [
+      {
+        "name": "checkout.pays with a saved card",
+        "message": "expected 200, got 502",
+        "known": false
+      }
+    ],
+    "exit_code": 1,
+    "duration_seconds": 48
+  }
+}

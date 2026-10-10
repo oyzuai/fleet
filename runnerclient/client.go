@@ -315,6 +315,24 @@ type Outcome struct {
 	ReasonCode string `json:"reason_code,omitempty"`
 	// Plan is what a plan job's command printed, sent when it succeeded.
 	Plan json.RawMessage `json:"plan,omitempty"`
+	// Outputs are what a succeeded build's manifest lists: the manifest
+	// itself and every artifact, by digest (IMPL-450).
+	Outputs []Output `json:"outputs,omitempty"`
+}
+
+// Output is one file a build wrote, as its build manifest records it. Target,
+// Name and Version are set on artifacts only; OCIDigest on OCI images and
+// indexes, the digest a registry addresses them by.
+type Output struct {
+	Path      string `json:"path"`
+	Kind      string `json:"kind"`
+	MediaType string `json:"media_type"`
+	Digest    string `json:"digest"`
+	Size      int64  `json:"size"`
+	Target    string `json:"target,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Version   string `json:"version,omitempty"`
+	OCIDigest string `json:"oci_digest,omitempty"`
 }
 
 // Finish reports the outcome; the job token stops working.

@@ -1,0 +1,32 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-manifest",
+  "name": "test-suite",
+  "version": "0.1.0",
+  "description": "Runs a suite of a test-suite component against the environment and reports its results.",
+  "role": "verification",
+  "operations": {
+    "validate": {
+      "timeout_seconds": 30
+    },
+    "verify": {
+      "timeout_seconds": 86400
+    }
+  },
+  "target_settings_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "runtime": {
+        "enum": [
+          "docker",
+          "process"
+        ]
+      }
+    }
+  },
+  "connectors": {
+    "apply": [],
+    "observe": []
+  }
+}

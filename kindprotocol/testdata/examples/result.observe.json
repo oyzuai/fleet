@@ -19,7 +19,25 @@
           }
         ],
         "health": "healthy",
-        "message": "12 of 12 tasks running"
+        "message": "12 of 12 tasks running",
+        "details": {
+          "family": "workload",
+          "replicas": {
+            "desired": 12,
+            "ready": 12,
+            "restarts": 0,
+            "failed": 0
+          },
+          "traffic": [
+            {
+              "version": "2026.10.10-4",
+              "percent": 100
+            }
+          ],
+          "raw": {
+            "deployment_id": "ecs-svc/4892211790"
+          }
+        }
       }
     ]
   }

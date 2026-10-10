@@ -97,6 +97,10 @@ func fakeOyzu() {
 	if os.Getenv("FAKE_OYZU_EGRESS") != "" {
 		reportEgress()
 	}
+	if m, ok := os.LookupEnv("FAKE_OYZU_MANIFEST"); ok {
+		_ = os.MkdirAll("dist", 0o700)
+		_ = os.WriteFile(filepath.Join("dist", "manifest.json"), []byte(m), 0o600)
+	}
 	if d := os.Getenv("FAKE_OYZU_SLEEP"); d != "" {
 		t, _ := time.ParseDuration(d)
 		time.Sleep(t)

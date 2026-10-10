@@ -1,0 +1,49 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-request",
+  "execution_id": "rr_01JA7Y3K2M9.4f1c2a9e0b7d3c55",
+  "kind": {
+    "name": "test-suite",
+    "version": "0.1.0"
+  },
+  "target_settings": {},
+  "components": [
+    {
+      "component": "checkout-tests",
+      "version": "2026.10.0-rc.3",
+      "artifacts": [
+        {
+          "name": "image",
+          "media_type": "application/vnd.oci.image.index.v1+json",
+          "digest": "sha256:9b1d0c4e7a2f5b8c3d6e9f0a1b4c7d2e5f8a3b6c9d0e1f4a7b2c5d8e1f0a3b6c",
+          "uri": "registry.example.com/acme/checkout-tests"
+        }
+      ]
+    }
+  ],
+  "operation": "verify",
+  "config": {
+    "secrets": [
+      {
+        "name": "qa_test_user",
+        "ref": "secret://acme/checkout/staging/qa_test_user"
+      }
+    ]
+  },
+  "verification": {
+    "suite": "smoke",
+    "run": [
+      "npm",
+      "run",
+      "test:smoke"
+    ],
+    "results": "junit",
+    "inputs": {
+      "web_url": "https://green.staging.checkout.internal"
+    },
+    "pass_rule": "known-failures-in-suite",
+    "known_failures": [
+      "checkout.refund flaky on Safari"
+    ]
+  }
+}

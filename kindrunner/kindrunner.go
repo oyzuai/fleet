@@ -36,6 +36,8 @@ const (
 	// its secrets and its state.
 	ContainerSecretsDir = "/run/oyzu/secrets"
 	ContainerStateDir   = "/var/lib/oyzu/kind"
+	// ContainerPlanFilesDir is where an image kind sees its plan files.
+	ContainerPlanFilesDir = "/run/oyzu/plan"
 	// maxResult bounds what a kind may write on standard output.
 	maxResult = 4 << 20
 	// flushEvery and flushAt decide when events are posted.
@@ -170,7 +172,12 @@ func (r *run) execute(ctx context.Context) (json.RawMessage, *runnerclient.KindN
 	if err != nil {
 		return nil, &runnerclient.KindNoResult{Code: "kind-not-started", Message: "the request is not valid: " + err.Error()}
 	}
-	main, err := r.start(ctx, r.op.Request, secrets, "")
+	plans, err := r.planFiles(ctx, req)
+	if err != nil {
+		return nil, &runnerclient.KindNoResult{Code: "kind-not-started", Message: err.Error()}
+	}
+	defer plans.remove()
+	main, err := r.start(ctx, r.op.Request, secrets, plans, "")
 	if err != nil {
 		return nil, &runnerclient.KindNoResult{Code: "kind-not-started", Message: err.Error()}
 	}
@@ -185,13 +192,16 @@ func (r *run) execute(ctx context.Context) (json.RawMessage, *runnerclient.KindN
 		main.stop(r.cfg.StopGrace)
 	case <-r.cancel:
 		reason = "cancelled"
-		r.abort(ctx, req, secrets, main)
+		r.abort(ctx, req, secrets, plans, main)
 	case <-ctx.Done():
 		main.stop(r.cfg.StopGrace)
 	}
 	<-main.done
 	res, problem := main.result(req)
 	if res != nil {
+		if err := r.savePlanFiles(ctx, req, res, plans); err != nil {
+			return nil, &runnerclient.KindNoResult{Code: "plan-file-unsaved", Message: err.Error(), Started: true}
+		}
 		return res, nil
 	}
 	switch {
@@ -211,7 +221,7 @@ func (r *run) execute(ctx context.Context) (json.RawMessage, *runnerclient.KindN
 // abort stops a running operation after someone cancelled it: through the
 // kind's abort operation where it declares one, then by signal if the
 // operation is still running a grace period later.
-func (r *run) abort(ctx context.Context, req *kindprotocol.Request, secrets *secretDir, main *process) {
+func (r *run) abort(ctx context.Context, req *kindprotocol.Request, secrets *secretDir, plans *planDir, main *process) {
 	if r.op.AbortTimeoutSeconds <= 0 || req.Operation == kindprotocol.OpAbort {
 		r.events.local("info", "Cancelled; the kind has no abort operation, so it is being stopped.")
 		main.stop(r.cfg.StopGrace)
@@ -224,7 +234,7 @@ func (r *run) abort(ctx context.Context, req *kindprotocol.Request, secrets *sec
 	raw, err := json.Marshal(&ab)
 	if err == nil {
 		var p *process
-		if p, err = r.start(ctx, raw, secrets, "abort"); err == nil {
+		if p, err = r.start(ctx, raw, secrets, plans, "abort"); err == nil {
 			t := time.NewTimer(time.Duration(r.op.AbortTimeoutSeconds) * time.Second)
 			select {
 			case <-p.done:
@@ -295,7 +305,7 @@ var imagePinned = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64
 
 // start starts the kind with request on its standard input. label marks the
 // events of a second process, such as an abort.
-func (r *run) start(ctx context.Context, request []byte, secrets *secretDir, label string) (*process, error) {
+func (r *run) start(ctx context.Context, request []byte, secrets *secretDir, plans *planDir, label string) (*process, error) {
 	name := r.op.Kind.Name
 	stateDir := filepath.Join(r.cfg.StateDir, name)
 	if r.cfg.StateDir == "" {
@@ -321,7 +331,10 @@ func (r *run) start(ctx context.Context, request []byte, secrets *secretDir, lab
 		cmd = exec.Command(path)
 		cmd.Env = append(os.Environ(), "OYZU_KIND_STATE_DIR="+stateDir)
 		if secrets != nil {
-			cmd.Env = append(cmd.Env, "OYZU_SECRETS_DIR="+secrets.path)
+			cmd.Env = append(append(secrets.scrub(cmd.Env), "OYZU_SECRETS_DIR="+secrets.path), secrets.vars(secrets.path)...)
+		}
+		if plans != nil {
+			cmd.Env = append(cmd.Env, "OYZU_PLAN_FILES_DIR="+plans.path)
 		}
 	} else {
 		if !imagePinned.MatchString(r.op.Image) {
@@ -335,6 +348,12 @@ func (r *run) start(ctx context.Context, request []byte, secrets *secretDir, lab
 			"-e", "OYZU_KIND_STATE_DIR=" + ContainerStateDir, "-v", stateDir + ":" + ContainerStateDir}
 		if secrets != nil {
 			args = append(args, "-e", "OYZU_SECRETS_DIR="+ContainerSecretsDir, "-v", secrets.path+":"+ContainerSecretsDir+":ro")
+			for _, v := range secrets.vars(ContainerSecretsDir) {
+				args = append(args, "-e", v)
+			}
+		}
+		if plans != nil {
+			args = append(args, "-e", "OYZU_PLAN_FILES_DIR="+ContainerPlanFilesDir, "-v", plans.path+":"+ContainerPlanFilesDir)
 		}
 		cmd = exec.Command(r.cfg.Docker, append(args, r.op.Image)...)
 		cleanup = func() {
@@ -401,8 +420,15 @@ func prefixed(prefix, msg string) string {
 	return prefix + msg
 }
 
-// secretDir is a private directory holding one file per secret.
-type secretDir struct{ path string }
+// secretDir is a private directory holding one file per secret and the
+// target's connectors, with the variables that point a kind at them.
+type secretDir struct {
+	path string
+	// env are variables the kind receives; unset are variables a built-in
+	// kind must not inherit from the runner.
+	env   []envVar
+	unset []string
+}
 
 func (s *secretDir) remove() {
 	if s != nil {
@@ -411,14 +437,18 @@ func (s *secretDir) remove() {
 }
 
 // secrets pulls the run's secrets into a private directory, one file named
-// after each secret, readable only by this user. Nil when there are none.
+// after each secret, readable only by this user, and the target's connectors
+// beside them. Nil when there are none.
 func (r *run) secrets(ctx context.Context) (*secretDir, error) {
-	if len(r.op.Secrets) == 0 {
+	if len(r.op.Secrets) == 0 && len(r.op.Connectors) == 0 {
 		return nil, nil
 	}
-	released, err := r.cfg.Client.KindSecrets(ctx, r.cfg.Token)
-	if err != nil {
-		return nil, fmt.Errorf("pull the run's secrets: %w", err)
+	var released []runnerclient.KindSecret
+	if len(r.op.Secrets) > 0 {
+		var err error
+		if released, err = r.cfg.Client.KindSecrets(ctx, r.cfg.Token); err != nil {
+			return nil, fmt.Errorf("pull the run's secrets: %w", err)
+		}
 	}
 	defer func() {
 		for _, s := range released {
@@ -436,6 +466,12 @@ func (r *run) secrets(ctx context.Context) (*secretDir, error) {
 			return nil, fmt.Errorf("secret name %q is not a file name", s.Name)
 		}
 		if err := os.WriteFile(filepath.Join(dir, s.Name), s.Value, 0o400); err != nil {
+			sd.remove()
+			return nil, err
+		}
+	}
+	if len(r.op.Connectors) > 0 {
+		if err := r.connectors(ctx, sd); err != nil {
 			sd.remove()
 			return nil, err
 		}

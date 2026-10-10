@@ -1,0 +1,74 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-result",
+  "execution_id": "ex_01JA7Y3K2M9",
+  "operation": "observe",
+  "outcome": "succeeded",
+  "observed": {
+    "as_of": "2026-10-10T15:20:00Z",
+    "components": [
+      {
+        "component": "checkout",
+        "version": "2026.10.10-4",
+        "artifacts": [
+          {
+            "name": "image",
+            "media_type": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:1c15f70ae16fcafd066713c1a9b8dae73aada96cec23322209c5a2a43f4c3080",
+            "uri": "registry.example.com/acme/checkout"
+          }
+        ],
+        "health": "paused",
+        "message": "Production traffic is split between two task sets.",
+        "details": {
+          "family": "workload",
+          "replicas": {
+            "desired": 14,
+            "ready": 14
+          },
+          "instances": [
+            {
+              "name": "ecs-svc/4892211790",
+              "role": "primary",
+              "version": "2026.10.10-3",
+              "health": "healthy",
+              "replicas": {
+                "desired": 12,
+                "ready": 12
+              },
+              "targets": {
+                "healthy": 12,
+                "unhealthy": 0
+              }
+            },
+            {
+              "name": "ecs-svc/5011837422",
+              "role": "canary",
+              "version": "2026.10.10-4",
+              "digest": "sha256:1c15f70ae16fcafd066713c1a9b8dae73aada96cec23322209c5a2a43f4c3080",
+              "health": "healthy",
+              "replicas": {
+                "desired": 2,
+                "ready": 2
+              },
+              "targets": {
+                "healthy": 2,
+                "unhealthy": 0
+              }
+            }
+          ],
+          "traffic": [
+            {
+              "version": "2026.10.10-3",
+              "percent": 90
+            },
+            {
+              "instance": "ecs-svc/5011837422",
+              "percent": 10
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

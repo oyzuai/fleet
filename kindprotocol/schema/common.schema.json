@@ -23,7 +23,7 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
     },
     "operation": {
-      "enum": ["validate", "plan", "apply", "observe", "stage", "shift", "switch", "retire", "abort", "rollback", "drift"]
+      "enum": ["validate", "plan", "apply", "observe", "watch", "stage", "shift", "switch", "retire", "abort", "rollback", "drift", "verify"]
     },
     "kindRef": {
       "type": "object",
@@ -61,6 +61,23 @@
         }
       }
     },
+    "componentRef": {
+      "description": "observe, watch and drift only: a component to look for, with its desired version when it has one. A target Oyzu has never deployed has none.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component"],
+      "properties": {
+        "component": { "$ref": "#/$defs/name" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/artifact" }
+        }
+      },
+      "dependentRequired": { "version": ["artifacts"], "artifacts": ["version"] }
+    },
     "health": {
       "description": "The five Oyzu status words as machine values.",
       "enum": ["healthy", "pending", "paused", "needs-attention", "failed"]
@@ -83,10 +100,167 @@
           "items": { "$ref": "#/$defs/artifact" }
         },
         "health": { "$ref": "#/$defs/health" },
-        "message": { "type": "string", "maxLength": 4000 }
+        "message": { "type": "string", "maxLength": 4000 },
+        "details": { "$ref": "#/$defs/observedDetails" }
       }
     },
+    "replicas": {
+      "description": "Desired and ready instances, and restarts and failed instances since the last observation.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["desired", "ready"],
+      "properties": {
+        "desired": { "$ref": "#/$defs/count" },
+        "ready": { "$ref": "#/$defs/count" },
+        "restarts": { "$ref": "#/$defs/count" },
+        "failed": { "$ref": "#/$defs/count" }
+      }
+    },
+    "observedDetails": {
+      "description": "Family-specific details of one component's observation (IMPL-280). family says which members apply; every other member is optional, and raw keeps anything else the kind wants a person to see, one click from the summary.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["family"],
+      "properties": {
+        "family": {
+          "description": "workload: Kubernetes, ECS, Lambda, Cloud Run, VMs. infrastructure: Terraform, CloudFormation, Pulumi. delegated: Argo CD, Flux, run starters. publishing: packages, images, static sites. data: migrations. control: feature flags, DNS.",
+          "enum": ["workload", "infrastructure", "delegated", "publishing", "data", "control"]
+        },
+        "unmanaged": {
+          "description": "Set when something runs that the kind cannot attribute to an Oyzu release, naming what runs (an ECS task definition, a Helm chart revision). The component's version is then absent and a release that pins it adopts it as the starting point (IMPL-282).",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "replicas": {
+          "description": "workload: desired and ready instances across the component.",
+          "$ref": "#/$defs/replicas"
+        },
+        "instances": {
+          "description": "workload: each instance, task set, revision or deployment group, with the version and digest it runs. A group (an ECS task set, a Kubernetes ReplicaSet) carries its own replicas and load balancer target counts.",
+          "type": "array",
+          "maxItems": 1024,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "health"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+              "role": {
+                "description": "primary takes production traffic at rest; staged is a new version alongside it; canary takes a share of traffic; previous is kept for rollback.",
+                "enum": ["primary", "staged", "canary", "previous"]
+              },
+              "version": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "digest": { "$ref": "#/$defs/digest" },
+              "health": { "$ref": "#/$defs/health" },
+              "replicas": { "$ref": "#/$defs/replicas" },
+              "targets": {
+                "description": "Load balancer targets passing and failing health checks; targets registering or draining count as neither.",
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["healthy", "unhealthy"],
+                "properties": {
+                  "healthy": { "$ref": "#/$defs/count" },
+                  "unhealthy": { "$ref": "#/$defs/count" }
+                }
+              },
+              "message": { "type": "string", "maxLength": 1000 }
+            }
+          }
+        },
+        "traffic": {
+          "description": "workload: how traffic splits between versions, or between instances when a version is unknown.",
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["percent"],
+            "anyOf": [{ "required": ["version"] }, { "required": ["instance"] }],
+            "properties": {
+              "version": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "instance": { "description": "The name of an entry in instances.", "type": "string", "minLength": 1, "maxLength": 256 },
+              "percent": { "type": "integer", "minimum": 0, "maximum": 100 }
+            }
+          }
+        },
+        "state_serial": {
+          "description": "infrastructure: the state's serial after the last apply.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "last_apply": {
+          "description": "infrastructure: how the last apply ended.",
+          "enum": ["succeeded", "failed", "none"]
+        },
+        "outputs": {
+          "description": "infrastructure: output values by name, with sensitive outputs left out.",
+          "type": "object",
+          "maxProperties": 256,
+          "additionalProperties": { "type": ["string", "number", "boolean"] }
+        },
+        "drifted": {
+          "description": "infrastructure and delegated: whether the last drift check found changes made outside Oyzu.",
+          "type": "boolean"
+        },
+        "sync": {
+          "description": "delegated: the tool's own view, in the tool's words.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["revision", "status"],
+          "properties": {
+            "revision": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "status": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "health": { "type": "string", "minLength": 1, "maxLength": 64 }
+          }
+        },
+        "available": {
+          "description": "publishing: each place the version should be, and whether it is there with the right checksum.",
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["location", "present"],
+            "properties": {
+              "location": { "type": "string", "minLength": 1, "maxLength": 2048 },
+              "present": { "type": "boolean" },
+              "checksum_matches": { "type": "boolean" }
+            }
+          }
+        },
+        "migration": {
+          "description": "data: the applied migration version, its phase, and whether a migration lock is held.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version"],
+          "properties": {
+            "version": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "phase": { "enum": ["expanded", "contracted", "backfilling"] },
+            "lock_held": { "type": "boolean" }
+          }
+        },
+        "value": {
+          "description": "control: the current flag state or record value, and whether it matches what is desired.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["current", "matches_desired"],
+          "properties": {
+            "current": { "type": ["string", "number", "boolean"] },
+            "matches_desired": { "type": "boolean" }
+          }
+        },
+        "raw": {
+          "description": "Anything else the kind observed, shown as it is.",
+          "type": "object",
+          "maxProperties": 64
+        }
+      }
+    },
+    "count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
     "observedState": {
+      "description": "The observation envelope (IMPL-280): for each component the running version and artifact digests, health and family-specific details, and when it was read.",
       "type": "object",
       "additionalProperties": false,
       "required": ["as_of", "components"],
@@ -135,6 +309,84 @@
             "then": { "not": { "anyOf": [{ "required": ["before"] }, { "required": ["after"] }] } }
           }
         }
+      }
+    },
+    "verification": {
+      "description": "verify, and validate of a verification kind: the suite to run, from the test-suite component version's own manifest, with its inputs resolved by the engine. Values here are never secrets; secrets come as config.secrets references.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suite", "run", "results", "inputs", "pass_rule"],
+      "properties": {
+        "suite": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" },
+        "run": {
+          "description": "The suite's command as an argument vector, run without a shell.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+        },
+        "results": {
+          "description": "The report format the suite writes into OYZU_RESULTS_DIR.",
+          "enum": ["junit", "k6-summary"]
+        },
+        "inputs": {
+          "description": "Each input the suite declares, bound to a resolved output value.",
+          "type": "object",
+          "maxProperties": 256,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+          "additionalProperties": { "type": "string", "maxLength": 4096 }
+        },
+        "pass_rule": {
+          "description": "all: every test in the report passes. known-failures-in-suite: tests the suite itself lists as known failures may fail, and are reported.",
+          "enum": ["all", "known-failures-in-suite"]
+        },
+        "known_failures": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
+        },
+        "duration_seconds": {
+          "description": "A soak's load suite: how long the load should run.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2592000
+        }
+      }
+    },
+    "verificationReport": {
+      "description": "verify only: the suite's report, normalized. passed is decided by the pass rule over the report; a suite that exits non-zero never passes.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "format", "tests", "failed", "skipped", "known_failures", "failures", "exit_code", "duration_seconds"],
+      "properties": {
+        "passed": { "type": "boolean" },
+        "summary": { "type": "string", "maxLength": 1000 },
+        "format": { "enum": ["junit", "k6-summary"] },
+        "tests": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "known_failures": {
+          "description": "How many failing tests the pass rule let through because the suite lists them.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "failures": {
+          "description": "Failing tests with their first error, up to 100.",
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "message", "known"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1, "maxLength": 1024 },
+              "message": { "type": "string", "maxLength": 4000 },
+              "known": { "type": "boolean" }
+            }
+          }
+        },
+        "exit_code": { "type": "integer" },
+        "duration_seconds": { "type": "integer", "minimum": 0 }
       }
     }
   }

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://oyzu.dev/contracts/kinds-v1alpha1/event.schema.json",
   "title": "Draft deployment kind protocol v1alpha1: progress event",
-  "description": "One line of the event stream a kind writes on standard error while it works: progress, heartbeats and log lines, one JSON object per line.",
+  "description": "One line of the event stream a kind writes on standard error while it works: progress, heartbeats, log lines and, from watch, each change it observes, one JSON object per line.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "type", "execution_id", "operation", "sequence", "time", "event"],
@@ -39,6 +39,15 @@
             "type": { "const": "log" },
             "level": { "enum": ["debug", "info", "warn", "error"] },
             "message": { "type": "string", "maxLength": 16384 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "observed"],
+          "properties": {
+            "type": { "const": "observed" },
+            "observed": { "$ref": "common.schema.json#/$defs/observedState" }
           }
         }
       ]

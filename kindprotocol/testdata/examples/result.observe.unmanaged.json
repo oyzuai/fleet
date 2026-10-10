@@ -1,0 +1,25 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-kind-result",
+  "execution_id": "ex_01JA7Y3K2M9",
+  "operation": "observe",
+  "outcome": "succeeded",
+  "observed": {
+    "as_of": "2026-10-10T15:20:00Z",
+    "components": [
+      {
+        "component": "checkout",
+        "health": "healthy",
+        "message": "Unmanaged: the service runs a task definition Oyzu did not register. 3 of 3 tasks running.",
+        "details": {
+          "family": "workload",
+          "unmanaged": "arn:aws:ecs:us-east-1:111122223333:task-definition/checkout:41",
+          "replicas": {
+            "desired": 3,
+            "ready": 3
+          }
+        }
+      }
+    ]
+  }
+}
