@@ -61,7 +61,7 @@ const (
 // using an attempt.
 type Driver struct {
 	API API
-	// Image is the pinned executor image, by digest or exact tag.
+	// Image is the pinned executor image, by SHA-256 digest.
 	Image string
 	// Command starts the runner in the image; the job's flags follow it.
 	Command []string
@@ -114,6 +114,8 @@ type job struct {
 
 var _ manager.Driver = (*Driver)(nil)
 
+var imagePinned = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$`)
+
 // labelValue is what Kubernetes accepts as a label value.
 var labelValue = regexp.MustCompile(`^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$`)
 
@@ -123,6 +125,8 @@ func (d *Driver) Check() error {
 	switch {
 	case d.API == nil || d.Image == "" || len(d.Command) == 0 || d.Server == "":
 		return errors.New("kubernetes: API, Image, Command and Server are required")
+	case !imagePinned.MatchString(d.Image):
+		return fmt.Errorf("kubernetes: executor image %q is not pinned by digest", d.Image)
 	case d.User < 0:
 		return errors.New("kubernetes: User must be a non-root uid")
 	case d.Docker && d.RuntimeClass == "":

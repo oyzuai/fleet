@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,7 +61,7 @@ const (
 // image is still being pulled.
 type Driver struct {
 	Engine Engine
-	// Image is the pinned executor image, by digest or exact tag.
+	// Image is the pinned executor image, by SHA-256 digest.
 	Image string
 	// Command starts the runner in the image; the job's flags follow it.
 	Command []string
@@ -106,11 +107,15 @@ type job struct {
 
 var _ manager.Driver = (*Driver)(nil)
 
+var imagePinned = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$`)
+
 // Check refuses configurations that would weaken a job's isolation.
 func (d *Driver) Check() error {
 	switch {
 	case d.Engine == nil || d.Image == "" || len(d.Command) == 0 || d.Server == "":
 		return errors.New("container: Engine, Image, Command and Server are required")
+	case !imagePinned.MatchString(d.Image):
+		return fmt.Errorf("container: executor image %q is not pinned by digest", d.Image)
 	case d.Network == "host" || strings.HasPrefix(d.Network, "container:"):
 		return fmt.Errorf("container: network %q shares another namespace; jobs need their own", d.Network)
 	}

@@ -43,6 +43,8 @@ const usage = `usage:
                         [--cpus N] [--memory-mib N] [--network bridge] [--user 1000:1000]
                         [--namespace NS] [--runtime-class NAME] [--node-selector K=V,...]
                         [--disk-gib N] [--kube-server URL --kube-token-file FILE --kube-ca FILE]
+      Both container and kubernetes require --image NAME@sha256:DIGEST, with
+      a 64-character lowercase hex digest; tag-only references are refused.
       Claim and run jobs for the manager's pool until interrupted. The
       container driver runs each job in a fresh container from --image on the
       Docker or Podman engine at --engine (DOCKER_HOST by default), with no
@@ -107,7 +109,7 @@ func run(args []string, log *slog.Logger) error {
 		passEnv := fs.String("pass-env", "", "comma-separated extra variables executors inherit")
 		drain := fs.Duration("drain-timeout", 30*time.Minute, "how long running jobs may finish after an interrupt")
 		driverName := fs.String("driver", "process", "how jobs run: process, container or kubernetes")
-		image := fs.String("image", "", "container and kubernetes drivers: the pinned executor image")
+		image := fs.String("image", "", "container and kubernetes drivers: executor image pinned by SHA-256 digest")
 		engine := fs.String("engine", os.Getenv("DOCKER_HOST"), "container driver: the engine, unix:///path or tcp://host:port")
 		cpus := fs.Float64("cpus", 0, "container and kubernetes drivers: CPUs per job, 0 for no cap")
 		memory := fs.Int64("memory-mib", 0, "container and kubernetes drivers: memory per job in MiB, 0 for no cap")
