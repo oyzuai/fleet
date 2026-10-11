@@ -103,7 +103,7 @@ func run(args []string, log *slog.Logger) error {
 		executor := fs.String("executor", siblingExecutable("oyzu-executor"), "the oyzu-executor executable")
 		oyzu := fs.String("oyzu", "oyzu", "the oyzu executable executors use")
 		concurrency := fs.Int("concurrency", 1, "jobs run at once")
-		docker := fs.Bool("docker", false, "report that jobs may use this host's Docker or BuildKit (oyzu.io/docker)")
+		docker := fs.Bool("docker", false, "report that jobs may use this host's Docker or BuildKit (oyzu.io/docker); without it, runners get OYZU_NO_DOCKER=1")
 		renovate := fs.String("renovate", "", "the Renovate executable; when set, the pool takes renovate jobs (oyzu.io/renovate)")
 		kindState := fs.String("kind-state-dir", "", "process driver: where deployment kinds keep state between jobs; <state-dir>/kinds by default")
 		passEnv := fs.String("pass-env", "", "comma-separated extra variables executors inherit")

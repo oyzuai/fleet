@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,5 +158,24 @@ func TestProcessDriverFacts(t *testing.T) {
 	}
 	if n, err := strconv.Atoi(f[FactCPU]); err != nil || n < 1 {
 		t.Fatalf("cpu fact = %q", f[FactCPU])
+	}
+}
+
+func TestProcessDriverTellsOyzuWhenThereIsNoDocker(t *testing.T) {
+	environ := func() []string {
+		return []string{"PATH=/bin", "OYZU_NO_DOCKER=0", "SECRET=x"}
+	}
+	has := func(env []string, kv string) bool { return slices.Contains(env, kv) }
+
+	without := (&Process{environ: environ}).env()
+	if !has(without, "OYZU_NO_DOCKER=1") || has(without, "OYZU_NO_DOCKER=0") || has(without, "SECRET=x") || !has(without, "PATH=/bin") {
+		t.Fatalf("env without Docker = %v", without)
+	}
+	with := (&Process{Docker: true, environ: environ, ExtraEnv: []string{"OYZU_NO_DOCKER"}}).env()
+	if has(with, "OYZU_NO_DOCKER=1") || !has(with, "OYZU_NO_DOCKER=0") {
+		t.Fatalf("env with Docker = %v", with)
+	}
+	if env := (&Process{Docker: true, environ: environ}).env(); slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "OYZU_NO_DOCKER=") }) {
+		t.Fatalf("env with Docker and no pass-through = %v", env)
 	}
 }
