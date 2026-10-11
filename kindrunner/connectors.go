@@ -138,6 +138,7 @@ func (r *run) connectors(ctx context.Context, sd *secretDir) error {
 		desc := ConnectorDescription{Target: got.Target, Grant: got.Grant, Role: c.Role, Alias: c.Alias, Identifier: c.Identifier,
 			Kind: c.Kind, Mechanism: c.Mechanism, Settings: c.Settings, Parameters: c.Parameters, SecretFiles: []string{}}
 		for _, s := range c.Secrets {
+			r.events.mask.Add(string(s.Value))
 			if !connectorField.MatchString(s.Field) || s.Field == ConnectorIDToken {
 				return fmt.Errorf("connector setting %q is not a file name", s.Field)
 			}
@@ -147,6 +148,7 @@ func (r *run) connectors(ctx context.Context, sd *secretDir) error {
 			desc.SecretFiles = append(desc.SecretFiles, s.Field)
 		}
 		if c.IDToken != "" {
+			r.events.mask.Add(c.IDToken)
 			if err := os.WriteFile(filepath.Join(dir, ConnectorIDToken), []byte(c.IDToken), 0o400); err != nil {
 				return err
 			}

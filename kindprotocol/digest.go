@@ -21,6 +21,7 @@ var ErrDigestMismatch = errors.New("kindprotocol: plan digest does not match its
 // SHA-256 of the RFC 8785 canonical JSON of the plan without its digest
 // member. Nil slices become empty ones, as the schema requires arrays.
 func (p *Plan) Seal() error {
+	p.rawPlan, p.decodedPlan = nil, nil
 	p.SchemaVersion, p.Type = SchemaVersion, TypePlan
 	if p.Changes == nil {
 		p.Changes = []Change{}
@@ -38,16 +39,47 @@ func (p *Plan) Seal() error {
 
 // Verify reports ErrDigestMismatch when the digest does not recompute.
 func (p *Plan) Verify() error {
-	d, err := p.computeDigest()
+	raw, err := json.Marshal(p)
 	if err != nil {
 		return err
 	}
-	if d != p.Digest {
-		return fmt.Errorf("%w: has %s, content gives %s", ErrDigestMismatch, p.Digest, d)
+	return verifyPlanJSON(raw, p.Digest)
+}
+
+// planJSON avoids recursively calling the plan's JSON methods.
+type planJSON Plan
+
+// UnmarshalJSON retains optional zero values for verification and forwarding.
+func (p *Plan) UnmarshalJSON(raw []byte) error {
+	var v planJSON
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	d.DisallowUnknownFields()
+	if err := d.Decode(&v); err != nil {
+		return err
 	}
+	snapshot, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	*p = Plan(v)
+	p.rawPlan = bytes.Clone(raw)
+	p.decodedPlan = snapshot
 	return nil
 }
 
+// MarshalJSON preserves the received document while the typed plan is unchanged.
+// Editing a plan requires Seal, which discards the received representation.
+func (p Plan) MarshalJSON() ([]byte, error) {
+	raw, err := json.Marshal(planJSON(p))
+	if err != nil {
+		return nil, err
+	}
+	if p.rawPlan != nil && bytes.Equal(raw, p.decodedPlan) {
+		return p.rawPlan, nil
+	}
+	return raw, nil
+}
 func (p *Plan) computeDigest() (string, error) {
 	body := *p
 	body.Digest = ""
@@ -55,6 +87,10 @@ func (p *Plan) computeDigest() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return digestJSON(raw)
+}
+
+func digestJSON(raw []byte) (string, error) {
 	var v map[string]any
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
@@ -201,4 +237,24 @@ func lessUTF16(a, b string) bool {
 		}
 	}
 	return len(ua) < len(ub)
+}
+
+// verifyPlanJSON checks the document as received, including optional zero values.
+func verifyPlanJSON(raw []byte, digest string) error {
+	got, err := digestJSON(raw)
+	if err != nil {
+		return err
+	}
+	if got != digest {
+		return fmt.Errorf("%w: has %s, content gives %s", ErrDigestMismatch, digest, got)
+	}
+	return nil
+}
+
+func verifyNestedPlan(raw []byte, member, digest string) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	return verifyPlanJSON(fields[member], digest)
 }

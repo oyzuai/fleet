@@ -245,6 +245,8 @@ type RiskFlag struct {
 
 // Plan is what a person approves. Digest covers everything else (see Seal).
 type Plan struct {
+	rawPlan       json.RawMessage
+	decodedPlan   json.RawMessage
 	SchemaVersion string     `json:"schema_version"`
 	Type          string     `json:"type"`
 	Kind          KindRef    `json:"kind"`

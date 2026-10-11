@@ -169,6 +169,9 @@ func (p *Process) start(pr *proc, c runnerclient.Claim) error {
 		return err
 	}
 	tokenFile := filepath.Join(jobDir, StartupTokenFile)
+	if err := os.MkdirAll(filepath.Join(jobDir, "kind-tmp"), 0o700); err != nil {
+		return err
+	}
 	if err := writeAtomic(tokenFile, []byte(c.StartupToken)); err != nil {
 		return err
 	}
@@ -180,7 +183,7 @@ func (p *Process) start(pr *proc, c runnerclient.Claim) error {
 		return err
 	}
 	args := append(append([]string{}, p.Args...),
-		"--server", p.Server, "--startup-token-file", tokenFile, "--work-dir", filepath.Join(jobDir, "work"))
+		"--server", p.Server, "--startup-token-file", tokenFile, "--work-dir", filepath.Join(jobDir, "work"), "--secrets-dir", filepath.Join(jobDir, "kind-tmp"), "--job-dir", jobDir)
 	cmd := exec.Command(p.Runner, args...)
 	cmd.Dir = pr.dir
 	cmd.Env = p.env()
@@ -286,17 +289,15 @@ func (p *Process) Teardown(_ context.Context, h Handle) error {
 
 // Reap implements Driver. It removes job directories under this manager's
 // directory that belong to no live job and no runner this driver started,
-// such as those a crashed manager left. A runner such a crash orphaned, as
-// its directory's executor record proves by PID and process start time,
-// is adopted instead: its directory stays and it holds a slot until it
-// exits. It is never killed, since its job may still finish; nothing is
-// killed by a PID that cannot be verified, because PIDs are reused.
-func (p *Process) Reap(_ context.Context, live []JobID) error {
+// such as those a crashed manager left, and the kind containers those jobs'
+// executors left. A runner such a crash orphaned, as its directory's
+// executor record proves by PID and process start time, is adopted instead:
+// its directory and kind containers stay and it holds a slot until it exits.
+// It is never killed, since its job may still finish; nothing is killed by
+// a PID that cannot be verified, because PIDs are reused.
+func (p *Process) Reap(ctx context.Context, live []JobID) error {
 	entries, err := os.ReadDir(p.jobsDir())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	keepJob := map[JobID]bool{}
@@ -306,13 +307,59 @@ func (p *Process) Reap(_ context.Context, live []JobID) error {
 	p.mu.Lock()
 	keepDir := map[string]bool{}
 	for _, pr := range p.inUse {
-		keepDir[filepath.Base(pr.dir)] = true
+		select {
+		case <-pr.done:
+		default:
+			keepDir[filepath.Base(pr.dir)] = true
+		}
 	}
 	p.mu.Unlock()
+	// Executors a crashed predecessor left running keep their directories
+	// and, below, their kind containers.
+	for _, e := range entries {
+		if job, ok := jobOfDir(e.Name()); ok && !keepDir[e.Name()] && !keepJob[job] && p.survives(e.Name()) {
+			keepDir[e.Name()] = true
+		}
+	}
 	var errs []error
+	blocked := map[string]bool{}
+	// Scan labels independently of directories: teardown may already have
+	// removed the directory of a crashed executor.
+	if p.Docker {
+		reapCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		format := "{{.ID}}	{{.Label \"oyzu.kind.runner\"}}	{{.Label \"oyzu.kind.job\"}}"
+		list := exec.CommandContext(reapCtx, "docker", "ps", "-a", "--filter", "label=oyzu.kind.runner", "--filter", "label=oyzu.kind.manager="+filepath.Clean(p.jobsDir()), "--format", format)
+		list.WaitDelay = time.Second
+		rows, listErr := list.Output()
+		if listErr != nil {
+			cancel()
+			return fmt.Errorf("list kind containers: %w", listErr)
+		}
+		for _, row := range strings.Split(strings.TrimSpace(string(rows)), "\n") {
+			fields := strings.Split(strings.TrimSuffix(row, "\r"), "\t")
+			if len(fields) != 3 {
+				continue
+			}
+			owner := filepath.Clean(fields[1])
+			if filepath.Dir(owner) != filepath.Clean(p.jobsDir()) {
+				continue
+			}
+			job, ok := jobOfDir(filepath.Base(owner))
+			if !ok || fields[2] != strconv.FormatInt(job, 10) || keepJob[job] || keepDir[filepath.Base(owner)] {
+				continue
+			}
+			remove := exec.CommandContext(reapCtx, "docker", "rm", "-f", fields[0])
+			remove.WaitDelay = time.Second
+			if err := remove.Run(); err != nil {
+				blocked[filepath.Base(owner)] = true
+				errs = append(errs, fmt.Errorf("reap kind container %s: %w", fields[0], err))
+			}
+		}
+		cancel()
+	}
 	for _, e := range entries {
 		job, ok := jobOfDir(e.Name())
-		if !ok || keepDir[e.Name()] || keepJob[job] || p.survives(e.Name()) {
+		if !ok || keepDir[e.Name()] || keepJob[job] || blocked[e.Name()] {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(p.jobsDir(), e.Name())); err != nil {
