@@ -35,6 +35,13 @@ var passEnv = []string{
 	"LANG", "LC_ALL", "TZ", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "DOCKER_HOST",
 }
 
+// noDockerEnv tells oyzu not to use a Docker engine. A pool without Docker
+// sets it on every runner, so a job placed there that needs Docker (a slice
+// that runs isolated actions) stops with NEEDS_DOCKER_DAEMON and exit 3,
+// which runs requeues on a Docker pool, instead of using a daemon the pool
+// never offered.
+const noDockerEnv = "OYZU_NO_DOCKER"
+
 // defaultStopGrace is how long a runner has to report after it is asked to
 // stop, before it is killed.
 const defaultStopGrace = 30 * time.Second
@@ -451,6 +458,8 @@ func jobOfDir(name string) (JobID, bool) {
 	return n, err == nil
 }
 
+// env is the runner's environment: passEnv and ExtraEnv from the manager's,
+// plus OYZU_NO_DOCKER=1 when the pool does not offer Docker.
 func (p *Process) env() []string {
 	environ := p.environ
 	if environ == nil {
@@ -463,12 +472,18 @@ func (p *Process) env() []string {
 		if !ok || name == "" {
 			continue
 		}
+		if !p.Docker && strings.EqualFold(name, noDockerEnv) {
+			continue
+		}
 		for _, k := range keep {
 			if strings.EqualFold(name, k) {
 				out = append(out, kv)
 				break
 			}
 		}
+	}
+	if !p.Docker {
+		out = append(out, noDockerEnv+"=1")
 	}
 	return out
 }
