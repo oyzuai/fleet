@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -35,6 +36,9 @@ type API interface {
 	// gone succeeds.
 	DeletePod(ctx context.Context, name string, grace time.Duration) error
 	ListPods(ctx context.Context, selector string) ([]ObjectMeta, error)
+	// PodLog returns the last lines of the job container's output. The
+	// manager's role needs get on pods/log.
+	PodLog(ctx context.Context, name string, lines int) ([]byte, error)
 }
 
 // ErrNotFound is returned for an object that does not exist.
@@ -285,7 +289,12 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, query
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Accept", "application/json")
+	raw, isRaw := out.(*[]byte)
+	if isRaw {
+		req.Header.Set("Accept", "*/*")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
 	if body != nil {
 		if contentType == "" {
 			contentType = "application/json"
@@ -316,8 +325,15 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, query
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
+	if isRaw {
+		*raw, err = io.ReadAll(io.LimitReader(resp.Body, maxRaw))
+		return err
+	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
+
+// maxRaw bounds a plain-text response such as a pod's log.
+const maxRaw = 1 << 20
 
 func ignoreNotFound(err error) error {
 	if errors.Is(err, ErrNotFound) {
@@ -389,6 +405,14 @@ func (c *Client) GetPod(ctx context.Context, name string) (PodStatus, error) {
 func (c *Client) DeletePod(ctx context.Context, name string, grace time.Duration) error {
 	body := map[string]any{"gracePeriodSeconds": int64(grace / time.Second), "propagationPolicy": "Background"}
 	return ignoreNotFound(c.do(ctx, http.MethodDelete, "/pods/"+url.PathEscape(name), "", nil, body, nil))
+}
+
+// PodLog implements API.
+func (c *Client) PodLog(ctx context.Context, name string, lines int) ([]byte, error) {
+	var out []byte
+	q := url.Values{"container": {container}, "tailLines": {strconv.Itoa(lines)}}
+	err := c.do(ctx, http.MethodGet, "/pods/"+url.PathEscape(name)+"/log", "", q, nil, &out)
+	return out, err
 }
 
 // ListPods implements API.

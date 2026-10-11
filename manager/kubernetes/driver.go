@@ -110,6 +110,8 @@ type job struct {
 	name    string
 	secret  string
 	started time.Time
+	// token is the claim's startup token, masked out of the log tail.
+	token string
 }
 
 var _ manager.Driver = (*Driver)(nil)
@@ -232,7 +234,7 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
 	name := fmt.Sprintf("oyzu-%d-job-%d-%d-%s", d.Manager, c.JobID, c.Attempt, hex.EncodeToString(suffix))
-	j := &job{name: name, secret: name + "-token", started: d.now()}
+	j := &job{name: name, secret: name + "-token", started: d.now(), token: c.StartupToken}
 	d.mu.Lock()
 	if _, busy := d.inUse[slot]; busy {
 		d.mu.Unlock()
@@ -337,12 +339,29 @@ var fatalWaiting = map[string]bool{
 
 // Wait implements manager.Driver by reading the pod's status until it
 // ends. A pod that is evicted, killed for memory, deleted from under the
-// manager, or not running within StartTimeout was lost.
+// manager, or not running within StartTimeout was lost. An executor that
+// did not end cleanly has the masked end of its output in the exit's
+// detail, read before Teardown deletes the pod.
 func (d *Driver) Wait(ctx context.Context, h manager.Handle) (manager.Exit, error) {
 	j, err := d.job(h)
 	if err != nil {
 		return manager.Exit{}, err
 	}
+	exit, err := d.wait(ctx, j)
+	if err != nil || exit.Clean() {
+		return exit, err
+	}
+	out, lerr := d.API.PodLog(ctx, j.name, manager.LogTailLines)
+	if lerr != nil {
+		if !errors.Is(lerr, ErrNotFound) {
+			d.log().Warn("could not read the pod's output", "pod", j.name, "error", lerr)
+		}
+		return exit, nil
+	}
+	return exit.WithLogTail(manager.LogTail(out, j.token)), nil
+}
+
+func (d *Driver) wait(ctx context.Context, j *job) (manager.Exit, error) {
 	timeout := orDefault(d.StartTimeout, defaultStartTimeout)
 	poll := orDefault(d.PollInterval, defaultPoll)
 	running := false

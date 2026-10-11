@@ -3,6 +3,8 @@ package container
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -24,21 +28,54 @@ const apiVersion = "v1.41"
 type Docker struct {
 	client *http.Client
 	base   string
+	// callTimeout bounds every call but waiting for a container and
+	// pulling an image.
+	callTimeout time.Duration
 }
 
 var _ Engine = (*Docker)(nil)
 
-// NewDocker connects to the engine at host: unix:///path/to.sock or
-// tcp://host:port, as in DOCKER_HOST; the local Docker socket when empty.
-// Windows named pipes are not supported; point it at a TCP or Unix socket.
-func NewDocker(host string) (*Docker, error) {
+// defaultCallTimeout bounds one engine call, so a stalled engine fails the
+// call instead of holding a job's start or teardown.
+const defaultCallTimeout = 2 * time.Minute
+
+// DockerOptions are how the manager reaches a remote engine.
+type DockerOptions struct {
+	// CertPath is a directory holding ca.pem, cert.pem and key.pem, as in
+	// DOCKER_CERT_PATH. When set, or when TLSVerify is, a tcp:// engine is
+	// reached over TLS with that client certificate, and its server
+	// certificate is verified against ca.pem (the system roots when there is
+	// none). Verification is never turned off.
+	CertPath string
+	// TLSVerify asks for TLS as DOCKER_TLS_VERIFY does; with no CertPath the
+	// certificates come from ~/.docker.
+	TLSVerify bool
+	// AllowPlaintext permits a plain-HTTP tcp:// engine on a host other than
+	// this one. Anyone on the path could read the startup tokens copied into
+	// containers and change what is created, so it is refused by default.
+	AllowPlaintext bool
+	// CallTimeout bounds each call; 2 minutes when 0.
+	CallTimeout time.Duration
+}
+
+// NewDocker connects to the engine at host, as in DOCKER_HOST:
+// unix:///path/to.sock, npipe:////./pipe/name on Windows, or tcp://host:port.
+// When host is empty it is the local engine: the Docker socket, or Docker
+// Desktop's named pipe on Windows. A tcp:// engine on another host must use
+// TLS unless opts.AllowPlaintext says otherwise.
+func NewDocker(host string, opts DockerOptions) (*Docker, error) {
 	if host == "" {
-		host = "unix:///var/run/docker.sock"
+		host = defaultHost
 	}
 	u, err := url.Parse(host)
 	if err != nil {
 		return nil, fmt.Errorf("container engine %q: %w", host, err)
 	}
+	callTimeout := opts.CallTimeout
+	if callTimeout <= 0 {
+		callTimeout = defaultCallTimeout
+	}
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
 	switch u.Scheme {
 	case "unix":
 		path := u.Path
@@ -46,16 +83,90 @@ func NewDocker(host string) (*Docker, error) {
 			path = u.Opaque
 		}
 		t := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", path)
+			return dialer.DialContext(ctx, "unix", path)
 		}}
-		return &Docker{client: &http.Client{Transport: t}, base: "http://engine/" + apiVersion}, nil
-	case "tcp", "http":
-		return &Docker{client: &http.Client{}, base: "http://" + u.Host + "/" + apiVersion}, nil
+		return &Docker{client: &http.Client{Transport: t}, base: "http://engine/" + apiVersion, callTimeout: callTimeout}, nil
 	case "npipe":
-		return nil, errors.New("container engine: Windows named pipes are not supported; expose the engine on tcp:// or a unix socket")
+		path := pipePath(u)
+		t := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialPipe(ctx, path)
+		}}
+		return &Docker{client: &http.Client{Transport: t}, base: "http://engine/" + apiVersion, callTimeout: callTimeout}, nil
+	case "tcp", "http", "https":
+		if u.Host == "" {
+			return nil, fmt.Errorf("container engine %q: no host", host)
+		}
+		t := &http.Transport{DialContext: dialer.DialContext, TLSHandshakeTimeout: 30 * time.Second}
+		useTLS := u.Scheme == "https" || opts.CertPath != "" || opts.TLSVerify
+		if !useTLS {
+			if !opts.AllowPlaintext && !loopback(u.Hostname()) {
+				return nil, fmt.Errorf("container engine %q is plain HTTP on another host, where anyone on the path "+
+					"could read job startup tokens; use TLS (--engine-cert-path or DOCKER_CERT_PATH and DOCKER_TLS_VERIFY), "+
+					"or pass --engine-allow-plaintext if the network is trusted", host)
+			}
+			return &Docker{client: &http.Client{Transport: t}, base: "http://" + u.Host + "/" + apiVersion, callTimeout: callTimeout}, nil
+		}
+		cfg, err := clientTLS(opts.CertPath)
+		if err != nil {
+			return nil, fmt.Errorf("container engine %q: %w", host, err)
+		}
+		t.TLSClientConfig = cfg
+		return &Docker{client: &http.Client{Transport: t}, base: "https://" + u.Host + "/" + apiVersion, callTimeout: callTimeout}, nil
 	}
-	return nil, fmt.Errorf("container engine %q: scheme must be unix or tcp", host)
+	return nil, fmt.Errorf("container engine %q: scheme must be unix, npipe or tcp", host)
+}
+
+// pipePath turns npipe:////./pipe/docker_engine into \\.\pipe\docker_engine.
+func pipePath(u *url.URL) string {
+	p := u.Path
+	if u.Host != "" {
+		p = "//" + u.Host + p
+	}
+	return strings.ReplaceAll(p, "/", `\`)
+}
+
+// loopback reports whether host names this machine.
+func loopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// clientTLS loads a client certificate from dir, as the Docker CLI does:
+// ca.pem, cert.pem and key.pem. dir defaults to ~/.docker.
+func clientTLS(dir string) (*tls.Config, error) {
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("no certificate directory: %w", err)
+		}
+		dir = filepath.Join(home, ".docker")
+	}
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	ca, err := os.ReadFile(filepath.Join(dir, "ca.pem"))
+	switch {
+	case err == nil:
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(ca) {
+			return nil, fmt.Errorf("no certificates in %s", filepath.Join(dir, "ca.pem"))
+		}
+		cfg.RootCAs = roots
+	case !errors.Is(err, os.ErrNotExist):
+		return nil, err
+	}
+	certFile, keyFile := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	if _, err := os.Stat(certFile); err == nil {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("client certificate: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 // apiError is an engine error response.
@@ -79,9 +190,20 @@ func isStatus(err error, codes ...int) bool {
 	return false
 }
 
-// do sends a request; body is JSON-encoded unless it is already a []byte,
-// which is sent as a tar. out, when not nil, receives the JSON response.
+// do sends a request under the call timeout; body is JSON-encoded unless it
+// is already a []byte, which is sent as a tar. out, when not nil, receives
+// the JSON response.
 func (d *Docker) do(ctx context.Context, method, path string, query url.Values, body any, out any) error {
+	return d.doFor(ctx, d.callTimeout, method, path, query, body, out)
+}
+
+// doFor is do with its own timeout; 0 leaves the call bounded only by ctx.
+func (d *Docker) doFor(ctx context.Context, timeout time.Duration, method, path string, query url.Values, body any, out any) error {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	var r io.Reader
 	contentType := ""
 	switch b := body.(type) {
@@ -298,7 +420,8 @@ func (d *Docker) WaitContainer(ctx context.Context, id string) (int, error) {
 		StatusCode int
 		Error      *struct{ Message string }
 	}
-	if err := d.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/wait",
+	// Waiting lasts as long as the job, so only ctx bounds it.
+	if err := d.doFor(ctx, 0, http.MethodPost, "/containers/"+url.PathEscape(id)+"/wait",
 		url.Values{"condition": {"not-running"}}, nil, &out); err != nil {
 		return 0, err
 	}
@@ -317,9 +440,55 @@ func (d *Docker) InspectContainer(ctx context.Context, id string) (State, error)
 	return out.State, nil
 }
 
+// maxLogs bounds what ContainerLogs reads, whatever the engine sends.
+const maxLogs = 1 << 20
+
+// ContainerLogs implements Engine. A container without a TTY, which is
+// every job's, gets its output as a multiplexed stream: an 8-byte header
+// (stream, three zeros, big-endian length) before each frame.
+func (d *Docker) ContainerLogs(ctx context.Context, id string, lines int) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, d.callTimeout)
+	defer cancel()
+	q := url.Values{"stdout": {"1"}, "stderr": {"1"}, "tail": {strconv.Itoa(lines)}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.base+"/containers/"+url.PathEscape(id)+"/logs?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxLogs))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 300 {
+		return nil, &apiError{Status: resp.StatusCode, Message: strings.TrimSpace(string(b))}
+	}
+	return demux(b), nil
+}
+
+// demux joins the frames of a multiplexed log stream; anything that is not
+// one is returned as it is.
+func demux(b []byte) []byte {
+	var out []byte
+	for rest := b; len(rest) > 0; {
+		if len(rest) < 8 || rest[0] > 2 || rest[1] != 0 || rest[2] != 0 || rest[3] != 0 {
+			return b
+		}
+		n := int(rest[4])<<24 | int(rest[5])<<16 | int(rest[6])<<8 | int(rest[7])
+		rest = rest[8:]
+		n = min(n, len(rest))
+		out = append(out, rest[:n]...)
+		rest = rest[n:]
+	}
+	return out
+}
+
 // StopContainer implements Engine.
 func (d *Docker) StopContainer(ctx context.Context, id string, grace time.Duration) error {
-	err := d.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/stop",
+	err := d.doFor(ctx, d.callTimeout+grace, http.MethodPost, "/containers/"+url.PathEscape(id)+"/stop",
 		url.Values{"t": {strconv.Itoa(int(grace / time.Second))}}, nil, nil)
 	if isStatus(err, http.StatusNotModified, http.StatusNotFound) {
 		return nil

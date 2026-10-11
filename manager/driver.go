@@ -14,9 +14,12 @@ import (
 // key. Every executor a driver creates carries the pool, manager and job it
 // belongs to, so Reap can find what a crashed predecessor left behind.
 //
-// The manager calls Capacity, Provision and Start from one goroutine; Wait
+// The manager calls Capacity and Provision from one goroutine. Start, Wait
 // and Teardown are called from one goroutine per job, concurrently with the
-// others.
+// others; a slot is never passed to Start again until its Start returned.
+// Every call gets a context that ends: Start's ends at the claim's startup
+// expiry or the drain timeout, Teardown's after the manager's teardown
+// timeout, so a driver must pass it to every call to its engine.
 type Driver interface {
 	// Facts reports the discovered oyzu.io/* labels and limits for this pool.
 	Facts(ctx context.Context) (Facts, error)

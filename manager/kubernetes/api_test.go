@@ -37,6 +37,8 @@ func TestClient(t *testing.T) {
 			_, _ = w.Write([]byte(`{"metadata":{"name":"p1","uid":"u-1"}}`))
 		case "GET " + base + "/pods/p1":
 			_, _ = w.Write([]byte(`{"status":{"phase":"Failed","containerStatuses":[{"name":"job","state":{"terminated":{"exitCode":3}}}]}}`))
+		case "GET " + base + "/pods/p1/log":
+			_, _ = w.Write([]byte("last line\n"))
 		case "GET " + base + "/pods":
 			_, _ = w.Write([]byte(`{"items":[{"metadata":{"name":"p1","labels":{"oyzu.io/job":"9"}}}]}`))
 		case "DELETE " + base + "/pods/p1":
@@ -122,6 +124,12 @@ func TestClient(t *testing.T) {
 	}
 	if !slices.Equal(methods, []string{"POST", "POST", "PATCH", "GET", "GET", "GET", "GET", "DELETE", "DELETE", "DELETE"}) {
 		t.Fatalf("requests = %v", methods)
+	}
+	if out, err := c.PodLog(ctx, "p1", 40); err != nil || string(out) != "last line\n" {
+		t.Fatalf("PodLog = %q, %v", out, err)
+	}
+	if last := seen[len(seen)-1]; last.path != "/api/v1/namespaces/oyzu-jobs/pods/p1/log" || last.query != "container=job&tailLines=40" {
+		t.Fatalf("log request = %+v", last)
 	}
 }
 

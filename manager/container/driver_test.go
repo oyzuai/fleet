@@ -39,6 +39,7 @@ type fakeContainer struct {
 	stopped bool
 	exit    chan int
 	oom     bool
+	logs    string
 }
 
 func newFakeEngine() *fakeEngine {
@@ -172,6 +173,14 @@ func (e *fakeEngine) InspectContainer(_ context.Context, id string) (State, erro
 		return State{}, err
 	}
 	return State{OOMKilled: c.oom}, nil
+}
+
+func (e *fakeEngine) ContainerLogs(_ context.Context, id string, _ int) ([]byte, error) {
+	c, err := e.container(id)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(c.logs), nil
 }
 
 func (e *fakeEngine) StopContainer(_ context.Context, id string, _ time.Duration) error {
@@ -385,6 +394,37 @@ func TestOutOfMemoryIsLost(t *testing.T) {
 	exit, err := d.Wait(context.Background(), h)
 	if err != nil || exit.Reason != manager.ExitLost {
 		t.Fatalf("Wait = %+v, %v", exit, err)
+	}
+}
+
+func TestAFailedExecutorKeepsTheEndOfItsOutput(t *testing.T) {
+	e := newFakeEngine()
+	e.present = true
+	d := newDriver(e)
+	ready(t, d)
+	h, err := d.Start(context.Background(), "0", runnerclient.Claim{JobID: 5, Attempt: 1, StartupToken: "startup-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := e.container("c1")
+	c.logs = "reading startup-secret\nx509: certificate signed by unknown authority\n"
+	c.exit <- 1
+	exit, err := d.Wait(context.Background(), h)
+	if err != nil || exit.Code != 1 || !strings.Contains(exit.Detail, "x509: certificate signed by unknown authority") ||
+		strings.Contains(exit.Detail, "startup-secret") {
+		t.Fatalf("Wait = %+v, %v", exit, err)
+	}
+	if err := d.Teardown(context.Background(), h); err != nil {
+		t.Fatal(err)
+	}
+
+	// A clean exit carries no output.
+	h, _ = d.Start(context.Background(), "0", runnerclient.Claim{JobID: 6, Attempt: 1})
+	c, _ = e.container("c2")
+	c.logs = "all good"
+	c.exit <- 0
+	if exit, _ := d.Wait(context.Background(), h); !exit.Clean() || strings.Contains(exit.Detail, "all good") {
+		t.Fatalf("clean Wait = %+v", exit)
 	}
 }
 
