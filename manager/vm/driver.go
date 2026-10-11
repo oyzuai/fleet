@@ -23,6 +23,7 @@ const (
 	defaultMaxIdle      = 10 * time.Minute
 	defaultMaxAge       = 24 * time.Hour
 	defaultPollInterval = 15 * time.Second
+	defaultLeaseGrace   = 5 * time.Minute
 	// reapGrace leaves alone instances launched this recently, so a Create
 	// whose id is not registered yet is never mistaken for a leftover.
 	reapGrace = 2 * time.Minute
@@ -33,8 +34,8 @@ var (
 	ErrUnknownInstance = errors.New("the instance is not one this manager launched for its pool")
 	ErrWrongAddress    = errors.New("the request did not come from the instance's own address")
 	ErrWrongImage      = errors.New("the instance was not booted from the pool's image")
-	ErrAlreadyHanded   = errors.New("the instance already collected its startup token")
-	ErrNotAssigned     = errors.New("the instance has no job to report on")
+	ErrAlreadyHanded   = errors.New("the instance already started its executor")
+	ErrNotAssigned     = errors.New("the instance has not collected a job to report on")
 )
 
 // Driver runs each job on a fresh cloud VM. It keeps Warm booted instances
@@ -45,7 +46,11 @@ var (
 //
 // Instances report through Handler, which the manager serves inside the
 // pool's network: an agent on each instance checks in when booted, collects
-// its assignment once, and reports how the executor exited.
+// its assignment, acknowledges it once the executor has the token, and
+// reports how the executor exited. Until the acknowledgement the instance
+// may collect the assignment again, so a response lost on the way does not
+// strand the job; an instance that collected but never acknowledges is
+// failed once the startup token and a job lease after it have run out.
 type Driver struct {
 	Cloud Cloud
 	Spec  Spec
@@ -69,8 +74,14 @@ type Driver struct {
 	// PollInterval is how often Wait asks the provider about an assigned
 	// instance.
 	PollInterval time.Duration
-	Log          *slog.Logger
-	Now          func() time.Time
+	// LeaseGrace is how long past the startup token's expiry an instance
+	// that collected its assignment may go without acknowledging it before
+	// its slot is failed: at least the job lease runs gives a started
+	// runner, so an executor that did start has lost its job by then. 5
+	// minutes when 0.
+	LeaseGrace time.Duration
+	Log        *slog.Logger
+	Now        func() time.Time
 
 	mu       sync.Mutex
 	pending  int
@@ -95,6 +106,10 @@ type machine struct {
 	readyAt time.Time
 	address string
 	claim   runnerclient.Claim
+	// fetched is set once the agent collected the assignment, and handed
+	// once it acknowledged starting the executor; after that the
+	// assignment is not served again.
+	fetched bool
 	handed  bool
 	// assignedCh closes when a job is assigned, waking a waiting agent.
 	assignedCh chan struct{}
@@ -319,10 +334,16 @@ func (d *Driver) Wait(ctx context.Context, h manager.Handle) (manager.Exit, erro
 // check looks for an assigned instance that will never report.
 func (d *Driver) check(ctx context.Context, m *machine) (manager.Exit, bool) {
 	d.mu.Lock()
-	handed, expires := m.handed, m.claim.StartupExpires
+	fetched, handed, expires := m.fetched, m.handed, m.claim.StartupExpires
 	d.mu.Unlock()
-	if !handed && !expires.IsZero() && d.now().After(expires) {
-		return lost("the instance never collected its startup token"), true
+	if !handed && !expires.IsZero() {
+		now := d.now()
+		switch {
+		case !fetched && now.After(expires):
+			return lost("the instance never collected its startup token"), true
+		case fetched && now.After(expires.Add(or(d.LeaseGrace, defaultLeaseGrace))):
+			return lost("the instance collected its startup token but never acknowledged starting the executor"), true
+		}
 	}
 	found, err := d.Cloud.Describe(ctx, []string{m.id})
 	if err != nil {
@@ -419,8 +440,9 @@ func (d *Driver) Reap(ctx context.Context, live []manager.JobID) error {
 // instance's own private address. A proof can be replayed while it is valid:
 // AWS's identity document never changes for an instance's life, and the
 // tokens Google Cloud and Azure issue last about an hour. So the address
-// check and the single-use handover are what stop a copied proof from being
-// used elsewhere, and agents fetch a fresh proof for every request.
+// check, and the handover closing once the instance acknowledges it, are what
+// stop a copied proof from being used elsewhere, and agents fetch a fresh
+// proof for every request.
 func (d *Driver) verify(ctx context.Context, proof Proof, remote string) (*machine, error) {
 	ident, err := d.Cloud.VerifyIdentity(ctx, proof)
 	if err != nil {
@@ -475,8 +497,10 @@ func (d *Driver) checkIn(ctx context.Context, proof Proof, remote string) error 
 	return nil
 }
 
-// assignment hands an instance its job's claim exactly once, waiting up to
-// wait for one to be assigned. It returns nil when none was assigned yet.
+// assignment hands an instance its job's claim, waiting up to wait for one
+// to be assigned. It returns nil when none was assigned yet. The same
+// verified instance may collect it again until it acknowledges, so a lost
+// response is retried rather than holding the slot.
 func (d *Driver) assignment(ctx context.Context, proof Proof, remote string, wait time.Duration) (*runnerclient.Claim, error) {
 	m, err := d.verify(ctx, proof, remote)
 	if err != nil {
@@ -496,9 +520,25 @@ func (d *Driver) assignment(ctx context.Context, proof Proof, remote string, wai
 	if m.handed {
 		return nil, ErrAlreadyHanded
 	}
-	m.handed = true
+	m.fetched = true
 	c := m.claim
 	return &c, nil
+}
+
+// acknowledge records that the instance's executor has its startup token;
+// the assignment is not served again. Acknowledging twice succeeds.
+func (d *Driver) acknowledge(ctx context.Context, proof Proof, remote string) error {
+	m, err := d.verify(ctx, proof, remote)
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !m.fetched {
+		return ErrNotAssigned
+	}
+	m.handed = true
+	return nil
 }
 
 // reportExit records how the instance's executor exited.
@@ -507,10 +547,12 @@ func (d *Driver) reportExit(ctx context.Context, proof Proof, remote string, cod
 	if err != nil {
 		return err
 	}
+	// An exit report implies the acknowledgement it may have overtaken.
 	d.mu.Lock()
-	handed := m.handed
+	fetched := m.fetched
+	m.handed = m.handed || fetched
 	d.mu.Unlock()
-	if !handed {
+	if !fetched {
 		return ErrNotAssigned
 	}
 	d.finish(m, manager.Exit{Reason: manager.ExitExited, Code: code, Detail: detail})
