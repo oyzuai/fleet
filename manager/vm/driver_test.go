@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -265,8 +266,46 @@ func TestStartHandsTheTokenOnlyToTheAssignedInstanceOnce(t *testing.T) {
 	if err != nil || got == nil || got.StartupToken != "startup-41" {
 		t.Fatalf("assignment: %v, %v", got, err)
 	}
+	// The response can be lost, so the same instance may collect again
+	// until it acknowledges; another instance still cannot.
+	if got, err := d.assignment(ctx, proof(h.Ref), cloud.address(h.Ref)+":1", time.Millisecond); err != nil || got.StartupToken != "startup-41" {
+		t.Fatalf("re-collection: %v, %v", got, err)
+	}
+	if err := d.acknowledge(ctx, proof(other), cloud.address(other)+":1"); !errors.Is(err, ErrNotAssigned) {
+		t.Fatalf("acknowledging another instance: %v", err)
+	}
+	if err := d.acknowledge(ctx, proof(h.Ref), cloud.address(h.Ref)+":1"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := d.assignment(ctx, proof(h.Ref), cloud.address(h.Ref)+":1", time.Millisecond); !errors.Is(err, ErrAlreadyHanded) {
-		t.Fatalf("second collection: %v", err)
+		t.Fatalf("collection after the acknowledgement: %v", err)
+	}
+}
+
+// An instance that collected its token but whose acknowledgement never
+// arrives holds its slot only until the token and a lease after it are
+// spent.
+func TestUnacknowledgedAssignmentIsLostAfterTheLease(t *testing.T) {
+	cloud := newFakeCloud()
+	d, clk := newDriver(cloud, 1, 1)
+	capacity(t, d)
+	bootAll(t, d, cloud)
+	h, err := d.Start(context.Background(), capacity(t, d).Ready[0], claim(12))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.assignment(context.Background(), proof(h.Ref), cloud.address(h.Ref)+":1", time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	m := d.machines[h.Ref]
+	clk.advance(6 * time.Minute) // past the token's expiry, within the lease
+	if _, done := d.check(context.Background(), m); done {
+		t.Fatal("failed an instance still within its lease")
+	}
+	clk.advance(5 * time.Minute)
+	exit, done := d.check(context.Background(), m)
+	if !done || exit.Reason != manager.ExitLost || !strings.Contains(exit.Detail, "never acknowledged") {
+		t.Fatalf("check = %+v, %v", exit, done)
 	}
 }
 
@@ -430,8 +469,17 @@ func TestHandlerServesTheAssignment(t *testing.T) {
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.StartupToken != "startup-21" {
 		t.Fatalf("assignment: %d %s", w.Code, w.Body)
 	}
+	if w := post("/v1/assignment", addr, readyRequest{Proof: proof("i-1")}); w.Code != http.StatusOK {
+		t.Fatalf("unacknowledged second assignment: %d", w.Code)
+	}
+	if w := post("/v1/started", addr, readyRequest{Proof: proof("i-1")}); w.Code != http.StatusNoContent {
+		t.Fatalf("started: %d %s", w.Code, w.Body)
+	}
+	if w := post("/v1/started", addr, readyRequest{Proof: proof("i-1")}); w.Code != http.StatusNoContent {
+		t.Fatalf("started again: %d %s", w.Code, w.Body)
+	}
 	if w := post("/v1/assignment", addr, readyRequest{Proof: proof("i-1")}); w.Code != http.StatusConflict {
-		t.Fatalf("second assignment: %d", w.Code)
+		t.Fatalf("assignment after the acknowledgement: %d", w.Code)
 	}
 	if w := post("/v1/exit", addr, exitRequest{Proof: proof("i-1"), Code: 0}); w.Code != http.StatusNoContent {
 		t.Fatalf("exit: %d %s", w.Code, w.Body)

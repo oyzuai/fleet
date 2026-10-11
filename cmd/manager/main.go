@@ -41,13 +41,14 @@ const usage = `usage:
   oyzu-pool-manager run [--state-dir DIR] [--work-dir DIR] [--executor PATH] [--oyzu PATH]
                         [--concurrency 1] [--docker] [--pass-env NAME,...] [--drain-timeout 30m]
                         [--driver container|kubernetes|process] [--image REF] [--engine URL]
+                        [--engine-cert-path DIR] [--engine-allow-plaintext]
                         [--cpus N] [--memory-mib N] [--network bridge] [--user 1000:1000]
                         [--namespace NS] [--runtime-class NAME] [--node-selector K=V,...]
                         [--disk-gib N] [--kube-server URL --kube-token-file FILE --kube-ca FILE]
       The default driver is container. The process driver runs jobs as this
       user and is for trusted code only. --executor, --oyzu, --renovate,
       --pass-env, --work-dir and --kind-state-dir are for the process driver,
-      --engine, --network and --user for the container driver, --namespace,
+      --engine, --engine-*, --network and --user for the container driver, --namespace,
       --runtime-class, --node-selector, --disk-gib and --kube-* for the
       kubernetes driver, and --image, --cpus and --memory-mib for container
       and kubernetes; a flag for another driver is an error. --docker is for
@@ -57,7 +58,9 @@ const usage = `usage:
       Claim and run jobs for the manager's pool until interrupted. The
       container driver runs each job in a fresh container from --image on the
       Docker or Podman engine at --engine (DOCKER_HOST by default), with no
-      engine socket and no capabilities. The kubernetes driver runs each job
+      engine socket and no capabilities. A tcp:// engine on another host needs
+      TLS (--engine-cert-path, DOCKER_CERT_PATH and DOCKER_TLS_VERIFY, as for
+      the Docker CLI) unless --engine-allow-plaintext is given. The kubernetes driver runs each job
       in a fresh pod from --image in --namespace, through the manager pod's
       service account unless --kube-server is given; --concurrency caps pods. On the
       first interrupt it claims no more and lets running jobs finish for up
@@ -126,7 +129,9 @@ func run(args []string, log *slog.Logger) error {
 		drain := fs.Duration("drain-timeout", 30*time.Minute, "how long running jobs may finish after an interrupt")
 		driverName := fs.String("driver", "container", "how jobs run: container (default), kubernetes, or process (trusted code only: jobs run as the manager's own OS user and can read its key)")
 		image := fs.String("image", "", "container and kubernetes drivers: executor image pinned by SHA-256 digest")
-		engine := fs.String("engine", os.Getenv("DOCKER_HOST"), "container driver: the engine, unix:///path or tcp://host:port")
+		engine := fs.String("engine", os.Getenv("DOCKER_HOST"), "container driver: the engine, unix:///path, npipe:////./pipe/name or tcp://host:port")
+		engineCerts := fs.String("engine-cert-path", os.Getenv("DOCKER_CERT_PATH"), "container driver: directory with ca.pem, cert.pem and key.pem for a tcp:// engine over TLS")
+		enginePlaintext := fs.Bool("engine-allow-plaintext", false, "container driver: allow a plain-HTTP tcp:// engine on another host (startup tokens cross the network unencrypted)")
 		cpus := fs.Float64("cpus", 0, "container and kubernetes drivers: CPUs per job, 0 for no cap")
 		memory := fs.Int64("memory-mib", 0, "container and kubernetes drivers: memory per job in MiB, 0 for no cap")
 		network := fs.String("network", "bridge", "container driver: the network jobs join")
@@ -146,7 +151,7 @@ func run(args []string, log *slog.Logger) error {
 		if err := checkDriverFlags(*driverName, set); err != nil {
 			return err
 		}
-		for _, p := range []*string{stateDir, workDir, kindState, kubeToken, kubeCA} {
+		for _, p := range []*string{stateDir, workDir, kindState, kubeToken, kubeCA, engineCerts} {
 			abs, err := absPath(*p)
 			if err != nil {
 				return err
@@ -192,7 +197,9 @@ func run(args []string, log *slog.Logger) error {
 			if *image == "" {
 				return errors.New("the container driver needs --image NAME@sha256:DIGEST; to run jobs on this host as the manager's own user instead, pass --driver process (trusted code only)")
 			}
-			eng, err := container.NewDocker(*engine)
+			eng, err := container.NewDocker(*engine, container.DockerOptions{
+				CertPath: *engineCerts, TLSVerify: os.Getenv("DOCKER_TLS_VERIFY") != "", AllowPlaintext: *enginePlaintext,
+			})
 			if err != nil {
 				return err
 			}

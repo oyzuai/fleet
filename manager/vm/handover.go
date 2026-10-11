@@ -40,7 +40,11 @@ type assignmentResponse struct {
 // internet, and the manager still makes only outbound connections to runs.
 //
 //	POST /v1/ready       a booted instance checks in, proving its identity
-//	POST /v1/assignment  waits for and returns the instance's job, once
+//	POST /v1/assignment  waits for and returns the instance's job; served
+//	                     again until it is acknowledged, then 409
+//	POST /v1/started     acknowledges the assignment once the executor has
+//	                     its startup token; the agent retries it until it
+//	                     succeeds
 //	POST /v1/exit        reports how the executor exited
 func (d *Driver) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -71,9 +75,23 @@ func (d *Driver) Handler() http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(w).Encode(assignmentResponse{
+		if err := json.NewEncoder(w).Encode(assignmentResponse{
 			JobID: c.JobID, Attempt: c.Attempt, StartupToken: c.StartupToken, StartupExpires: c.StartupExpires,
-		})
+		}); err != nil {
+			// Not acknowledged, so the agent can collect it again.
+			d.log().Warn("sending an assignment failed; the instance may collect it again", "remote", r.RemoteAddr, "error", err)
+		}
+	})
+	mux.HandleFunc("POST /v1/started", func(w http.ResponseWriter, r *http.Request) {
+		var req readyRequest
+		if !decode(w, r, &req) {
+			return
+		}
+		if err := d.acknowledge(r.Context(), req.Proof, r.RemoteAddr); err != nil {
+			d.refuse(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /v1/exit", func(w http.ResponseWriter, r *http.Request) {
 		var req exitRequest

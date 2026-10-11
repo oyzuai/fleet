@@ -27,6 +27,9 @@ type Engine interface {
 	// code.
 	WaitContainer(ctx context.Context, id string) (int, error)
 	InspectContainer(ctx context.Context, id string) (State, error)
+	// ContainerLogs returns the last lines of the container's stdout and
+	// stderr, interleaved.
+	ContainerLogs(ctx context.Context, id string, lines int) ([]byte, error)
 	// StopContainer asks the container to stop and kills it after grace;
 	// one that is not running or is gone succeeds.
 	StopContainer(ctx context.Context, id string, grace time.Duration) error

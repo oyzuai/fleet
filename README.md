@@ -47,6 +47,36 @@ but bare names and tag-only references (including version tags) are refused
 at startup. This matches kindrunner's digest requirement and keeps executor
 images immutable across jobs. Use the digest published by your image registry.
 
+## Running the manager
+
+A remote container engine (`--engine tcp://host:port`) must be reached over
+TLS: give `--engine-cert-path` (or `DOCKER_CERT_PATH`, with
+`DOCKER_TLS_VERIFY` as for the Docker CLI) a directory holding `ca.pem`,
+`cert.pem` and `key.pem`. The engine's certificate is always verified.
+Plain HTTP is accepted only for an engine on this machine (`localhost`,
+`127.0.0.1`, `::1`); `--engine-allow-plaintext` lifts that for a network you
+trust, since every job's startup token crosses it. On Windows the engine
+defaults to Docker Desktop's named pipe, `npipe:////./pipe/docker_engine`.
+
+Every call to the engine or cluster has a deadline, executors start off the
+claim loop, and teardown is bounded, so a stalled engine cannot keep the
+manager from draining or stopping. A container or pod executor that ends
+badly has the last 2 KiB of its output, with its startup token and anything
+shaped like a bearer token masked, in the reason the job is handed back
+with. Kubernetes managers need `get` on `pods/log` for that; without it the
+reason carries no output.
+
+The process driver starts each executor in its own process group and
+records its PID and process start time in the job directory. A manager
+restarted after a crash adopts an executor that is still running: its
+directory stays and it holds a slot until it exits. A recorded PID that is
+gone or now names another process means the executor is dead and its
+directory is removed. Nothing is ever killed by a PID that cannot be
+verified. Under systemd, `KillMode=mixed` with `TimeoutStopSec` longer than
+`--drain-timeout` lets a stop drain running jobs; the default
+`KillMode=control-group` signals executors at once and kills any survivors
+with the manager, so nothing is left to adopt.
+
 ## Building
 
 Build and test with [Oyzu](https://github.com/oyzuai/oyzu): `oyzu build`. The

@@ -76,6 +76,11 @@ type Process struct {
 
 	mu    sync.Mutex
 	inUse map[SlotID]*proc
+	// adopted holds executors a crashed predecessor left running, by job
+	// directory name; each counts as a running slot until it exits.
+	adopted map[string]record
+	// poll is how often an adopted executor is checked; survivorPoll when 0.
+	poll time.Duration
 }
 
 // proc is one running runner.
@@ -114,8 +119,9 @@ func (p *Process) Facts(context.Context) (Facts, error) {
 func (p *Process) Capacity(context.Context) (Capacity, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	c := Capacity{Max: p.slots(), Running: len(p.inUse)}
-	for i := range p.slots() {
+	c := Capacity{Max: p.slots(), Running: len(p.inUse) + len(p.adopted)}
+	free := p.slots() - c.Running
+	for i := 0; i < p.slots() && len(c.Ready) < free; i++ {
 		id := SlotID(strconv.Itoa(i))
 		if _, busy := p.inUse[id]; !busy {
 			c.Ready = append(c.Ready, id)
@@ -182,11 +188,21 @@ func (p *Process) start(pr *proc, c runnerclient.Claim) error {
 	cmd.Dir = pr.dir
 	cmd.Env = p.env()
 	cmd.Stdout, cmd.Stderr = logFile, logFile
+	ownProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
 		return fmt.Errorf("oyzu-executor: %w", err)
 	}
 	pr.cmd, pr.log = cmd, logFile
+	// Recorded so a manager restarted after a crash can tell this executor
+	// is still running before it touches the directory.
+	if start, err := processStart(cmd.Process.Pid); errors.Is(err, errProcessGone) {
+		// Already exited; there is nothing to record.
+	} else if err != nil {
+		p.logger().Warn("could not record the executor's process", "dir", pr.dir, "error", err)
+	} else if err := writeRecord(pr.dir, record{PID: cmd.Process.Pid, Start: start, Job: c.JobID, Attempt: c.Attempt}); err != nil {
+		p.logger().Warn("could not record the executor's process", "dir", pr.dir, "error", err)
+	}
 	go func() {
 		pr.err = cmd.Wait()
 		close(pr.done)
@@ -254,7 +270,10 @@ func (p *Process) Teardown(_ context.Context, h Handle) error {
 			select {
 			case <-pr.done:
 			case <-t.C:
-				_ = pr.cmd.Process.Kill()
+				// Its whole process group, so nothing it started outlives it.
+				if killGroup(pr.cmd.Process.Pid) != nil {
+					_ = pr.cmd.Process.Kill()
+				}
 				<-pr.done
 			}
 			t.Stop()
@@ -270,10 +289,12 @@ func (p *Process) Teardown(_ context.Context, h Handle) error {
 
 // Reap implements Driver. It removes job directories under this manager's
 // directory that belong to no live job and no runner this driver started,
-// such as those a crashed manager left. A runner orphaned by such a crash
-// is not killed: process IDs are reused, so killing by a recorded ID could
-// hit an unrelated process. Its job tokens stop working when its lease
-// expires.
+// such as those a crashed manager left, and the kind containers those jobs'
+// executors left. A runner such a crash orphaned, as its directory's
+// executor record proves by PID and process start time, is adopted instead:
+// its directory and kind containers stay and it holds a slot until it exits.
+// It is never killed, since its job may still finish; nothing is killed by
+// a PID that cannot be verified, because PIDs are reused.
 func (p *Process) Reap(ctx context.Context, live []JobID) error {
 	entries, err := os.ReadDir(p.jobsDir())
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -293,6 +314,13 @@ func (p *Process) Reap(ctx context.Context, live []JobID) error {
 		}
 	}
 	p.mu.Unlock()
+	// Executors a crashed predecessor left running keep their directories
+	// and, below, their kind containers.
+	for _, e := range entries {
+		if job, ok := jobOfDir(e.Name()); ok && !keepDir[e.Name()] && !keepJob[job] && p.survives(e.Name()) {
+			keepDir[e.Name()] = true
+		}
+	}
 	var errs []error
 	blocked := map[string]bool{}
 	// Scan labels independently of directories: teardown may already have
@@ -341,6 +369,72 @@ func (p *Process) Reap(ctx context.Context, live []JobID) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// survives reports whether a job directory's executor outlived the manager
+// that started it, adopting it the first time.
+func (p *Process) survives(name string) bool {
+	p.mu.Lock()
+	_, known := p.adopted[name]
+	p.mu.Unlock()
+	if known {
+		return true
+	}
+	dir := filepath.Join(p.jobsDir(), name)
+	state, r, err := survivor(dir)
+	switch state {
+	case survivorDead:
+		return false
+	case survivorUnknown:
+		p.logger().Warn("could not tell whether a job directory's executor is still running; leaving it", "dir", name, "error", err)
+		return true
+	}
+	p.mu.Lock()
+	if p.adopted == nil {
+		p.adopted = map[string]record{}
+	}
+	p.adopted[name] = r
+	p.mu.Unlock()
+	p.logger().Info("adopted an executor that outlived the previous manager; it holds a slot until it exits",
+		"dir", name, "pid", r.PID, "job", r.Job, "attempt", r.Attempt)
+	go p.watchSurvivor(name, r)
+	return true
+}
+
+// watchSurvivor waits for an adopted executor to exit, then removes its
+// directory and frees its slot.
+func (p *Process) watchSurvivor(name string, r record) {
+	poll := p.poll
+	if poll <= 0 {
+		poll = survivorPoll
+	}
+	for {
+		time.Sleep(poll)
+		start, err := processStart(r.PID)
+		if err == nil && start == r.Start {
+			continue
+		}
+		if err != nil && !errors.Is(err, errProcessGone) {
+			continue
+		}
+		break
+	}
+	err := os.RemoveAll(filepath.Join(p.jobsDir(), name))
+	p.mu.Lock()
+	delete(p.adopted, name)
+	p.mu.Unlock()
+	if err != nil {
+		p.logger().Warn("an adopted executor exited; removing its directory failed, the reaper will retry", "dir", name, "error", err)
+		return
+	}
+	p.logger().Info("an adopted executor exited", "dir", name, "job", r.Job, "attempt", r.Attempt)
+}
+
+func (p *Process) logger() *slog.Logger {
+	if p.Log != nil {
+		return p.Log
+	}
+	return slog.Default()
 }
 
 // jobOfDir parses the job id from a job-<job>-<attempt>-<suffix> name.
