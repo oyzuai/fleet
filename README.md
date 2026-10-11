@@ -92,8 +92,12 @@ The JSON body contains `attempt`, gapless `seq`, `first_sequence`,
 `next_seq` rewinds delivery to the retained spool; identical retries are safe.
 `FinishLogs` posts to `/runner/v1/job/logs/finish` with `attempt`, `final_seq`,
 `total_entries`, and the SHA-256 of all uncompressed chunks concatenated in
-order; `incomplete` reports a capture failure. These calls precede job finish.
-Transient failures back off from 100 ms to five seconds. The default drain is
-15 minutes (`Config.LogDrainTimeout` can shorten it); expiration never changes
-the build's outcome. Spool/network failures log only administrative metadata.
+order; `incomplete` reports a capture failure. The executor waits at most
+30 seconds for logs before reporting the job outcome. Pending uploads then
+continue with the same token for up to 15 minutes after job finish; `Run`
+waits for delivery to stop before removing the spool. Fast uploads complete
+the log handshake before job finish. `Config.LogDrainTimeout` can shorten the
+post-finish window and caps the pre-outcome wait too. Transient failures back
+off from 100 ms to five seconds; expiration never changes the build's outcome.
+Spool/network failures log only administrative metadata.
 Spool files close before cleanup, including on Windows.

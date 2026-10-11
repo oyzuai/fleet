@@ -66,6 +66,11 @@ func fakeGit() {
 }
 
 func fakeOyzu() {
+	if output, ok := os.LookupEnv("FAKE_OYZU_EVENTS"); ok {
+		fmt.Fprint(os.Stderr, output)
+		fmt.Fprint(os.Stdout, "native stdout\n")
+		os.Exit(0)
+	}
 	if p, ok := os.LookupEnv("FAKE_OYZU_PLAN"); ok {
 		fmt.Fprintln(os.Stderr, "Planning platform")
 		fmt.Print(p)

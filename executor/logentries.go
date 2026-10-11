@@ -2,6 +2,7 @@ package executor
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -29,28 +30,30 @@ func (s *logSink) Write(p []byte) (int, error) { return len(p), s.WriteMasked(p,
 func (s *logSink) WriteMasked(p []byte, hits []int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := s.dst.Write(p); err != nil {
-		return err
+	// Stdout includes the plan record and must remain byte-for-byte intact.
+	if s.stream != "stderr" {
+		if _, err := s.dst.Write(p); err != nil {
+			return err
+		}
 	}
 	for _, pos := range hits {
 		s.hits = append(s.hits, len(s.part)+pos)
 	}
 	s.part = append(s.part, p...)
-	s.flush(false)
-	return nil
+	return s.flush(false)
 }
 
 func (s *logSink) close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.flush(true)
+	_ = s.flush(true)
 }
 
-func (s *logSink) flush(final bool) {
+func (s *logSink) flush(final bool) error {
 	for len(s.part) > 0 {
 		n := strings.IndexByte(string(s.part), '\n') + 1
 		if n == 0 && len(s.part) < maxLogText && !final {
-			return
+			return nil
 		}
 		if n == 0 {
 			n = len(s.part)
@@ -72,7 +75,7 @@ func (s *logSink) flush(final bool) {
 			used += size
 		}
 		if used == 0 {
-			return
+			return nil
 		}
 		redacted := 0
 		var rest []int
@@ -83,10 +86,21 @@ func (s *logSink) flush(final bool) {
 				rest = append(rest, pos-used)
 			}
 		}
+		e := s.capture.line(s.stream, text.String(), redacted)
+		if s.stream == "stderr" {
+			readable := []byte(e.Text)
+			if e.Text == text.String() {
+				// Preserve native and unknown lines, including invalid UTF-8.
+				readable = s.part[:used]
+			}
+			if _, err := s.dst.Write(readable); err != nil {
+				return err
+			}
+		}
 		s.hits = rest
 		s.part = s.part[used:]
-		s.capture.line(s.stream, text.String(), redacted)
 	}
+	return nil
 }
 
 type logScopes struct{ active map[string][]string }
@@ -110,6 +124,7 @@ func (s *logScopes) entry(stream, line string, redacted int) runnerclient.LogEnt
 		Operation     string    `json:"operationId"`
 		Parent        string    `json:"parentOperationId"`
 		Target        string    `json:"target"`
+		Severity      string    `json:"severity"`
 		Duration      *int64    `json:"duration_ms"`
 		Payload       struct {
 			Type       string          `json:"type"`
@@ -123,9 +138,10 @@ func (s *logScopes) entry(stream, line string, redacted int) runnerclient.LogEnt
 			ExitCode   *int            `json:"exitCode"`
 			Duration   *int64          `json:"duration_ms"`
 			Diagnostic struct {
-				Message string `json:"message"`
-				Target  string `json:"target"`
-				Action  string `json:"action"`
+				Severity string `json:"severity"`
+				Message  string `json:"message"`
+				Target   string `json:"target"`
+				Action   string `json:"action"`
 			} `json:"diagnostic"`
 		} `json:"payload"`
 	}
@@ -160,6 +176,9 @@ func (s *logScopes) entry(stream, line string, redacted int) runnerclient.LogEnt
 	}
 	if p.Type == "diagnostic" {
 		e.Text = p.Diagnostic.Message
+		if severity := firstString(p.Diagnostic.Severity, envelope.Severity); severity == "warning" || severity == "error" {
+			e.Text = severity + ": " + e.Text
+		}
 		if strings.HasSuffix(line, "\r\n") {
 			e.Text += "\r\n"
 		} else if strings.HasSuffix(line, "\n") {
@@ -174,15 +193,24 @@ func (s *logScopes) entry(stream, line string, redacted int) runnerclient.LogEnt
 	}
 	switch p.Type {
 	case "run-started", "phase-changed":
-		e.Event = &runnerclient.LogEvent{Kind: "task", State: "running", Reason: p.Phase}
+		e.Event = &runnerclient.LogEvent{Kind: "task", State: "running"}
+		if p.Type == "phase-changed" {
+			e.Text = "Phase: " + p.Phase + ".\n"
+		} else if p.Phase != "" {
+			e.Text = "oyzu started (phase: " + p.Phase + ").\n"
+		} else {
+			e.Text = "oyzu started.\n"
+		}
 	case "bundle-finalized":
 		e.Event = &runnerclient.LogEvent{Kind: "finished", Status: p.Status, DurationMS: duration}
+		e.Text = "Bundle finalized: " + p.Status + ".\n"
 	case "action-started":
 		if s.active == nil {
 			s.active = map[string][]string{}
 		}
 		s.active[e.Scope] = append(s.active[e.Scope], e.ParentScope)
 		e.Event = &runnerclient.LogEvent{Kind: "task", State: "running"}
+		e.Text = "Started " + e.Scope + ".\n"
 	case "action-finished":
 		if parents := s.active[e.Scope]; len(parents) > 1 {
 			s.active[e.Scope] = parents[:len(parents)-1]
@@ -191,14 +219,35 @@ func (s *logScopes) entry(stream, line string, redacted int) runnerclient.LogEnt
 		}
 		if p.Status == "blocked" {
 			e.Event = &runnerclient.LogEvent{Kind: "task", State: "blocked", Reason: p.Reason}
+			e.Text = e.Scope + " was blocked"
+			if p.Reason != "" {
+				e.Text += ": " + p.Reason
+			}
+			e.Text += ".\n"
 		} else {
 			e.Event = &runnerclient.LogEvent{Kind: "finished", Status: p.Status, ExitCode: p.ExitCode, DurationMS: duration}
+			e.Text = finishedLogText(e.Scope+" "+p.Status, p.ExitCode, duration)
 		}
 	case "run-finished":
 		clear(s.active)
 		e.Event = &runnerclient.LogEvent{Kind: "finished", Status: p.Status, ExitCode: p.ExitCode, DurationMS: duration}
+		e.Text = finishedLogText("oyzu finished: "+p.Status, p.ExitCode, duration)
 	}
 	return e
+}
+
+func finishedLogText(text string, exitCode *int, duration *int64) string {
+	var details []string
+	if exitCode != nil {
+		details = append(details, fmt.Sprintf("exit %d", *exitCode))
+	}
+	if duration != nil {
+		details = append(details, fmt.Sprintf("%.1f s", float64(*duration)/1000))
+	}
+	if len(details) > 0 {
+		text += " (" + strings.Join(details, ", ") + ")"
+	}
+	return text + ".\n"
 }
 
 func firstString(values ...string) string {

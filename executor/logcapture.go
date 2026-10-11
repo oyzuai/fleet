@@ -27,6 +27,7 @@ const (
 	logChunkEntries = 1000
 	logCapBytes     = 512 << 20
 	logDrainWindow  = 15 * time.Minute
+	logOutcomeWait  = 30 * time.Second
 )
 
 type logPart struct {
@@ -107,10 +108,12 @@ func (c *logCapture) spoolError() {
 	c.failed = true
 }
 
-func (c *logCapture) line(stream, text string, redacted int) {
+func (c *logCapture) line(stream, text string, redacted int) runnerclient.LogEntry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.add(c.scopes.entry(stream, text, redacted))
+	e := c.scopes.entry(stream, text, redacted)
+	c.add(e)
+	return e
 }
 
 func (c *logCapture) system(text string, event *runnerclient.LogEvent) {
@@ -201,7 +204,8 @@ func (c *logCapture) signal() {
 	}
 }
 
-func (c *logCapture) finish(drain time.Duration) {
+// finish seals capture while the uploader continues independently.
+func (c *logCapture) finish() {
 	c.mu.Lock()
 	if c.tail != nil && !c.failed {
 		if c.droppedEntries > 0 {
@@ -226,16 +230,21 @@ func (c *logCapture) finish(drain time.Duration) {
 	c.closed = true
 	c.signal()
 	c.mu.Unlock()
-	if drain <= 0 || drain > logDrainWindow {
-		drain = logDrainWindow
-	}
+}
+
+// wait does not cancel delivery: Run may report the outcome between waits.
+func (c *logCapture) wait(drain time.Duration) bool {
 	t := time.NewTimer(drain)
 	defer t.Stop()
 	select {
 	case <-c.done:
+		return true
 	case <-t.C:
-		c.log.Warn("log drain window expired; finishing job with an incomplete log")
+		return false
 	}
+}
+
+func (c *logCapture) cleanup() {
 	c.cancel()
 	<-c.done
 	<-c.tickDone

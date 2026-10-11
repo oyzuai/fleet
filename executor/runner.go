@@ -76,12 +76,13 @@ type Config struct {
 	// kindrunner.Config.DockerEnv.
 	DockerEnv []string
 	Log       *slog.Logger
-	// LogDrainTimeout bounds log delivery after the command; zero is 15 minutes.
+	// LogDrainTimeout bounds delivery after job finish; zero is 15 minutes.
+	// The pre-outcome wait is the smaller of this value and 30 seconds.
 	LogDrainTimeout time.Duration
 }
 
-// Run runs the job and returns once its outcome is reported, or once runs
-// says the job is no longer this runner's.
+// Run reports the outcome, then drains any pending logs before returning.
+// It also returns when runs says the job is no longer this runner's.
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.GitURL == "" {
 		cfg.GitURL = "https://github.com"
@@ -139,7 +140,15 @@ func Run(ctx context.Context, cfg Config) error {
 		heartbeat(buildCtx, cfg.Client, st.JobToken, every, cancel, log)
 	}()
 
-	outcome := execute(buildCtx, cfg, st.JobToken, startup, job, log)
+	outcome, capture := execute(buildCtx, cfg, st.JobToken, startup, job, log)
+	drain := cfg.LogDrainTimeout
+	if drain <= 0 || drain > logDrainWindow {
+		drain = logDrainWindow
+	}
+	if capture != nil {
+		defer capture.cleanup()
+		capture.wait(min(logOutcomeWait, drain))
+	}
 	cancel(nil)
 	wg.Wait()
 	if errors.Is(context.Cause(buildCtx), errLost) {
@@ -154,6 +163,11 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("report the outcome: %w", err)
 	}
 	log.Info("job finished", "state", outcome.State)
+	// The server's log-only token window starts at job finish. Keep the
+	// original token and spool alive while the uploader drains that window.
+	if capture != nil && !capture.wait(drain) {
+		log.Warn("log drain window expired; log remains incomplete")
+	}
 	return nil
 }
 
@@ -219,50 +233,50 @@ var (
 )
 
 // execute runs the job by its operation, and says how it went.
-func execute(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger) runnerclient.Outcome {
+func execute(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger) (runnerclient.Outcome, *logCapture) {
 	switch job.Operation {
 	case "renovate":
-		return renovate(ctx, cfg, token, startup, job, log)
+		return renovate(ctx, cfg, token, startup, job, log), nil
 	case "lock":
-		return lockFix(ctx, cfg, token, startup, job, log)
+		return lockFix(ctx, cfg, token, startup, job, log), nil
 	}
 	return build(ctx, cfg, token, startup, job, log)
 }
 
 // build checks out the commit and runs the oyzu command.
-func build(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger) (outcome runnerclient.Outcome) {
+func build(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger) (outcome runnerclient.Outcome, capture *logCapture) {
 	_, name, _ := strings.Cut(job.Repository, "/")
 	if !shaPattern.MatchString(job.HeadSHA) || !repoPattern.MatchString(job.Repository) || strings.Trim(name, ".") == "" ||
 		(job.AffectedBase != "" && !shaPattern.MatchString(job.AffectedBase)) {
-		return failedWith("INVALID_JOB", "The job names an invalid repository or commit.")
+		return failedWith("INVALID_JOB", "The job names an invalid repository or commit."), nil
 	}
 	if len(job.Command) < 2 || job.Command[0] != "oyzu" {
-		return failedWith("INVALID_JOB", "The job's command is not an oyzu command.")
+		return failedWith("INVALID_JOB", "The job's command is not an oyzu command."), nil
 	}
 	if err := os.MkdirAll(cfg.WorkDir, 0o700); err != nil {
-		return failed("Could not create the work directory: " + err.Error())
+		return failed("Could not create the work directory: " + err.Error()), nil
 	}
 	src, err := cfg.Client.Source(ctx, token)
 	if err != nil {
-		return failedWith("SOURCE_UNAVAILABLE", "Could not get a token to read the repository: "+err.Error())
+		return failedWith("SOURCE_UNAVAILABLE", "Could not get a token to read the repository: "+err.Error()), nil
 	}
 	secrets := []string{token, startup, src.Token, "x-access-token:" + src.Token}
 	forms := maskForms(secrets...)
-	capture := newLogCapture(ctx, cfg, token, job, log)
+	capture = newLogCapture(ctx, cfg, token, job, log)
 	capture.system("Checking out source.\n", &runnerclient.LogEvent{Kind: "task", State: "running"})
 	started := time.Now()
 	defer func() {
 		duration := time.Since(started).Milliseconds()
 		capture.system("Job command finished.\n", &runnerclient.LogEvent{Kind: "finished", Status: outcome.State, ExitCode: outcome.ExitCode, DurationMS: &duration})
-		capture.finish(cfg.LogDrainTimeout)
+		capture.finish()
 	}()
 	if err := checkout(ctx, cfg, src.Token, job); err != nil {
 		msg := replaceForms(err.Error(), forms)
 		log.Warn("checkout failed", "error", msg)
-		return failedWith("SOURCE_UNAVAILABLE", "Could not check out "+job.HeadSHA+": "+msg)
+		return failedWith("SOURCE_UNAVAILABLE", "Could not check out "+job.HeadSHA+": "+msg), capture
 	}
 	if job.Operation == "run" && !declaresTask(filepath.Join(cfg.WorkDir, "oyzu.toml"), job.Task) {
-		return runnerclient.Outcome{State: "skipped", Summary: fmt.Sprintf("`oyzu.toml` at `%s` declares no task `%s`.", job.HeadSHA, job.Task)}
+		return runnerclient.Outcome{State: "skipped", Summary: fmt.Sprintf("`oyzu.toml` at `%s` declares no task `%s`.", job.HeadSHA, job.Task)}, capture
 	}
 
 	// Build output goes into the masked tail and log spool, never to the runner's own
@@ -292,7 +306,7 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		if err != nil {
 			msg := replaceForms(err.Error(), forms)
 			log.Warn("build secrets not delivered", "error", msg)
-			return failed("Could not get the job's build secrets: " + msg)
+			return failed("Could not get the job's build secrets: " + msg), capture
 		}
 		env = withEnv(env, secretEnv)
 	}
@@ -304,7 +318,7 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 			stderr.Add(idToken)
 		})
 		if err != nil {
-			return failed("Could not start the ID token endpoint: " + err.Error())
+			return failed("Could not start the ID token endpoint: " + err.Error()), capture
 		}
 		defer broker.stop()
 		stdout.Add(broker.secret)
@@ -312,7 +326,7 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		env = append(env, broker.env()...)
 		egress, err := cfg.Client.Egress(ctx, token)
 		if err != nil {
-			return failed("Could not get the job's egress grants: " + err.Error())
+			return failed("Could not get the job's egress grants: " + err.Error()), capture
 		}
 		if len(egress.Grants) > 0 {
 			proxy, err = startEgress(egress, func(ctx context.Context) (runnerclient.Egress, error) {
@@ -322,7 +336,7 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 				stderr.Add(values...)
 			}, log)
 			if err != nil {
-				return failed("Could not start the egress proxy: " + err.Error())
+				return failed("Could not start the egress proxy: " + err.Error()), capture
 			}
 			defer proxy.stop()
 			env = proxy.env(env)
@@ -346,8 +360,10 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	cmd.WaitDelay = 20 * time.Second
 	err = cmd.Run()
 	_, _ = stdout.Flush(), stderr.Flush()
+	outSink.close()
+	errSink.close()
 	if cmd.ProcessState == nil {
-		return failed("Could not run oyzu: " + err.Error())
+		return failed("Could not run oyzu: " + err.Error()), capture
 	}
 	code := cmd.ProcessState.ExitCode()
 	summary := fmt.Sprintf("`%s` on `%s` exited %d.\n\n```text\n%s\n```", strings.Join(job.Command, " "), job.HeadSHA, code, out.String())
@@ -361,9 +377,9 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		rec := bytes.TrimSpace(record.Bytes())
 		if len(rec) > runnerclient.MaxPlanRecord || !json.Valid(rec) {
 			return runnerclient.Outcome{State: "failed", ExitCode: &code,
-				Summary: fmt.Sprintf("`%s` on `%s` printed no readable plan.\n\n```text\n%s\n```", strings.Join(job.Command, " "), job.HeadSHA, out.String())}
+				Summary: fmt.Sprintf("`%s` on `%s` printed no readable plan.\n\n```text\n%s\n```", strings.Join(job.Command, " "), job.HeadSHA, out.String())}, capture
 		}
-		return runnerclient.Outcome{State: "succeeded", ExitCode: &code, Summary: summary, Plan: rec}
+		return runnerclient.Outcome{State: "succeeded", ExitCode: &code, Summary: summary, Plan: rec}, capture
 	case err == nil && job.Operation == "build":
 		// What the build made is published by runs (IMPL-450); a manifest
 		// runs cannot read publishes nothing but fails nothing either.
@@ -372,13 +388,13 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 			log.Warn("build manifest not read", "error", oerr)
 			summary += "\n\nNothing from this build is published: " + replaceForms(oerr.Error(), forms)
 		}
-		return runnerclient.Outcome{State: "succeeded", ExitCode: &code, Summary: summary, Outputs: outputs}
+		return runnerclient.Outcome{State: "succeeded", ExitCode: &code, Summary: summary, Outputs: outputs}, capture
 	case err == nil:
-		return runnerclient.Outcome{State: "succeeded", ExitCode: &code, Summary: summary}
+		return runnerclient.Outcome{State: "succeeded", ExitCode: &code, Summary: summary}, capture
 	case ctx.Err() != nil:
-		return runnerclient.Outcome{State: "cancelled", Summary: summary}
+		return runnerclient.Outcome{State: "cancelled", Summary: summary}, capture
 	}
-	return runnerclient.Outcome{State: "failed", ExitCode: &code, Summary: summary}
+	return runnerclient.Outcome{State: "failed", ExitCode: &code, Summary: summary}, capture
 }
 
 // buildEnv is the runner's environment without anything that would let the

@@ -65,7 +65,7 @@ func TestLogScopesAndUnknownEvents(t *testing.T) {
 		t.Fatal(e)
 	}
 	diagnostic := `{"schemaVersion":"v1alpha1","kind":"build-event","operationId":"compile","extra":42,"payload":{"type":"diagnostic","diagnostic":{"message":"masked ***","severity":"warning"}}}` + "\n"
-	if e := scopes.entry("stderr", diagnostic, 1); e.Text != "masked ***\n" || e.Scope != "compile" || e.Redacted != 1 {
+	if e := scopes.entry("stderr", diagnostic, 1); e.Text != "warning: masked ***\n" || e.Scope != "compile" || e.Redacted != 1 {
 		t.Fatal(e)
 	}
 }
@@ -199,7 +199,7 @@ func TestLogMaskingSpoolAndTail(t *testing.T) {
 	if err != nil || bytes.Contains(b, []byte("original-secret")) || bytes.Contains(b, []byte("new-secret")) {
 		t.Fatal("spool contains unmasked output", err)
 	}
-	c.finish(time.Second)
+	finishCaptureForTest(c, time.Second)
 	e := logEntries(t, r)
 	if len(e) != 2 || e[0].Redacted != 1 || e[1].Redacted != 1 || tail.String() != "literal *** and ***\n***" {
 		t.Fatalf("entries=%+v tail=%q", e, tail.String())
@@ -209,6 +209,11 @@ func TestLogMaskingSpoolAndTail(t *testing.T) {
 	}
 }
 
+func finishCaptureForTest(c *logCapture, drain time.Duration) {
+	c.finish()
+	c.wait(drain)
+	c.cleanup()
+}
 func hexHash(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
 
 func TestLogChunkTriggersAndReplay(t *testing.T) {
@@ -233,7 +238,7 @@ func TestLogChunkTriggersAndReplay(t *testing.T) {
 			case <-time.After(3 * time.Second):
 				t.Error("chunk did not upload while running")
 			}
-			c.finish(5 * time.Second)
+			finishCaptureForTest(c, 5*time.Second)
 			entries := logEntries(t, r)
 			if len(entries) == 0 || r.finish == nil || r.finish.Hash != hexHash(r.raw) {
 				t.Fatal("unfinished log")
@@ -267,7 +272,7 @@ func TestLogCapKeepsHeadAndTail(t *testing.T) {
 		}
 		c.line("stdout", text, 0)
 	}
-	c.finish(time.Second)
+	finishCaptureForTest(c, time.Second)
 	e := logEntries(t, r)
 	if len(r.raw) > 32<<10 || e[0].Text != "head\n" || e[len(e)-1].Text != "tail\n" {
 		t.Fatal("cap did not preserve boundaries")
@@ -290,7 +295,7 @@ func TestLogTextLimitsAndInvalidUTF8(t *testing.T) {
 	in := strings.Repeat("世", 30000) + strings.Repeat("\xff", 30000) + "\r\nlast"
 	_, _ = sink.Write([]byte(in))
 	sink.close()
-	c.finish(time.Second)
+	finishCaptureForTest(c, time.Second)
 	var joined strings.Builder
 	for _, e := range logEntries(t, r) {
 		if !utf8.ValidString(e.Text) || len(e.Text) > maxLogText {
@@ -317,7 +322,7 @@ func TestLogMaskAcrossEntryAndUploadBoundaries(t *testing.T) {
 	_, _ = m.Write([]byte("run\n"))
 	_ = m.Flush()
 	sink.close()
-	c.finish(time.Second)
+	finishCaptureForTest(c, time.Second)
 	var text strings.Builder
 	redacted := 0
 	for _, e := range logEntries(t, r) {
@@ -336,7 +341,7 @@ func TestLogDrainGivesUpAndSpoolFailure(t *testing.T) {
 	c := captureForTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
 	c.line("stdout", "still a successful build\n", 0)
 	start := time.Now()
-	c.finish(40 * time.Millisecond)
+	finishCaptureForTest(c, 40*time.Millisecond)
 	if time.Since(start) > time.Second {
 		t.Fatal("drain did not give up")
 	}
@@ -347,7 +352,7 @@ func TestLogDrainGivesUpAndSpoolFailure(t *testing.T) {
 	c = captureForTest(t, http.HandlerFunc(r.serve))
 	_ = c.file.Close()
 	c.line("stdout", "cannot spool\n", 0)
-	c.finish(time.Second)
+	finishCaptureForTest(c, time.Second)
 	if r.finish == nil || !r.finish.Incomplete {
 		t.Fatal("spool failure not reported")
 	}
