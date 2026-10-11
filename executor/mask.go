@@ -87,6 +87,7 @@ type maskWriter struct {
 	dst   io.Writer
 	forms []string
 	buf   string
+	hits  []int
 }
 
 func newMaskWriter(dst io.Writer, forms []string) *maskWriter {
@@ -96,11 +97,21 @@ func newMaskWriter(dst io.Writer, forms []string) *maskWriter {
 func (m *maskWriter) Write(p []byte) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s := replaceForms(m.buf+string(p), m.forms)
+	s, hits := replaceFormsTracked(m.buf+string(p), m.forms, m.hits)
 	hold := heldSuffix(s, m.forms)
+	cut := len(s) - hold
 	m.buf = s[len(s)-hold:]
+	m.hits = nil
+	var sent []int
+	for _, pos := range hits {
+		if pos < cut {
+			sent = append(sent, pos)
+		} else {
+			m.hits = append(m.hits, pos-cut)
+		}
+	}
 	if out := s[:len(s)-hold]; out != "" {
-		if _, err := io.WriteString(m.dst, out); err != nil {
+		if err := m.write(out, sent); err != nil {
 			return 0, err
 		}
 	}
@@ -140,9 +151,20 @@ func (m *maskWriter) Flush() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s := m.buf
+	hits := m.hits
 	m.buf = ""
+	m.hits = nil
 	if s == "" {
 		return nil
+	}
+	return m.write(s, hits)
+}
+
+// A capture sink gets exact replacement positions; literal "***" output is
+// not counted as a redaction. Other sinks retain the existing byte stream.
+func (m *maskWriter) write(s string, hits []int) error {
+	if dst, ok := m.dst.(interface{ WriteMasked([]byte, []int) error }); ok {
+		return dst.WriteMasked([]byte(s), hits)
 	}
 	_, err := io.WriteString(m.dst, s)
 	return err
@@ -152,7 +174,21 @@ func (m *maskWriter) Flush() error {
 // form at a position. The forms are a job's few credentials, so a scan per
 // form is cheap; a multi-pattern automaton comes with build secrets.
 func replaceForms(s string, forms []string) string {
+	out, _ := replaceFormsTracked(s, forms, nil)
+	return out
+}
+
+func replaceFormsTracked(s string, forms []string, prior []int) (string, []int) {
 	var b strings.Builder
+	var hits []int
+	consumed := 0
+	copyHits := func(n int) {
+		for _, pos := range prior {
+			if pos >= consumed && pos < consumed+n {
+				hits = append(hits, b.Len()+pos-consumed)
+			}
+		}
+	}
 	for {
 		at, size := -1, 0
 		for _, f := range forms {
@@ -161,14 +197,18 @@ func replaceForms(s string, forms []string) string {
 			}
 		}
 		if at < 0 {
+			copyHits(len(s))
 			if b.Len() == 0 {
-				return s
+				return s, hits
 			}
 			b.WriteString(s)
-			return b.String()
+			return b.String(), hits
 		}
+		copyHits(at)
 		b.WriteString(s[:at])
+		hits = append(hits, b.Len())
 		b.WriteString(masked)
+		consumed += at + size
 		s = s[at+size:]
 	}
 }
