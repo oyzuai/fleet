@@ -156,7 +156,13 @@ func (p *Process) start(pr *proc, c runnerclient.Claim) error {
 	if err := os.MkdirAll(pr.dir, 0o700); err != nil {
 		return err
 	}
-	tokenFile := filepath.Join(pr.dir, StartupTokenFile)
+	// The executor runs with cmd.Dir = pr.dir, so the paths it is given must not
+	// depend on the manager's own working directory.
+	jobDir, err := filepath.Abs(pr.dir)
+	if err != nil {
+		return err
+	}
+	tokenFile := filepath.Join(jobDir, StartupTokenFile)
 	if err := writeAtomic(tokenFile, []byte(c.StartupToken)); err != nil {
 		return err
 	}
@@ -168,7 +174,7 @@ func (p *Process) start(pr *proc, c runnerclient.Claim) error {
 		return err
 	}
 	args := append(append([]string{}, p.Args...),
-		"--server", p.Server, "--startup-token-file", tokenFile, "--work-dir", filepath.Join(pr.dir, "work"))
+		"--server", p.Server, "--startup-token-file", tokenFile, "--work-dir", filepath.Join(jobDir, "work"))
 	cmd := exec.Command(p.Runner, args...)
 	cmd.Dir = pr.dir
 	cmd.Env = p.env()

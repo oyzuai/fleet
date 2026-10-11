@@ -1,7 +1,8 @@
 // Command oyzu-pool-manager enrolls this machine as an Oyzu pool manager and runs
-// the jobs runs assigns to its pool, each in a fresh oyzu-executor process (the
-// process driver) or a fresh container from a pinned executor image (the
-// container driver).
+// the jobs runs assigns to its pool, each in a fresh container from a pinned
+// executor image (the container driver, the default), a fresh pod (the
+// kubernetes driver) or a fresh oyzu-executor process (the process driver,
+// for trusted code only: the job runs as the manager's own OS user).
 //
 //	oyzu-pool-manager enroll --server URL --token-file FILE --name NAME
 //	oyzu-pool-manager run [--concurrency 1]
@@ -39,10 +40,18 @@ const usage = `usage:
       "runs admin rekey-token". The token file can be deleted afterwards.
   oyzu-pool-manager run [--state-dir DIR] [--work-dir DIR] [--executor PATH] [--oyzu PATH]
                         [--concurrency 1] [--docker] [--pass-env NAME,...] [--drain-timeout 30m]
-                        [--driver process|container|kubernetes] [--image REF] [--engine URL]
+                        [--driver container|kubernetes|process] [--image REF] [--engine URL]
                         [--cpus N] [--memory-mib N] [--network bridge] [--user 1000:1000]
                         [--namespace NS] [--runtime-class NAME] [--node-selector K=V,...]
                         [--disk-gib N] [--kube-server URL --kube-token-file FILE --kube-ca FILE]
+      The default driver is container. The process driver runs jobs as this
+      user and is for trusted code only. --executor, --oyzu, --renovate,
+      --pass-env, --work-dir and --kind-state-dir are for the process driver,
+      --engine, --network and --user for the container driver, --namespace,
+      --runtime-class, --node-selector, --disk-gib and --kube-* for the
+      kubernetes driver, and --image, --cpus and --memory-mib for container
+      and kubernetes; a flag for another driver is an error. --docker is for
+      process and kubernetes.
       Both container and kubernetes require --image NAME@sha256:DIGEST, with
       a 64-character lowercase hex digest; tag-only references are refused.
       Claim and run jobs for the manager's pool until interrupted. The
@@ -83,6 +92,13 @@ func run(args []string, log *slog.Logger) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
+		var err error
+		if *stateDir, err = absPath(*stateDir); err != nil {
+			return err
+		}
+		if *tokenFile, err = absPath(*tokenFile); err != nil {
+			return err
+		}
 		if *server == "" || *tokenFile == "" {
 			return errors.New("enroll needs --server and --token-file")
 		}
@@ -108,7 +124,7 @@ func run(args []string, log *slog.Logger) error {
 		kindState := fs.String("kind-state-dir", "", "process driver: where deployment kinds keep state between jobs; <state-dir>/kinds by default")
 		passEnv := fs.String("pass-env", "", "comma-separated extra variables executors inherit")
 		drain := fs.Duration("drain-timeout", 30*time.Minute, "how long running jobs may finish after an interrupt")
-		driverName := fs.String("driver", "process", "how jobs run: process, container or kubernetes")
+		driverName := fs.String("driver", "container", "how jobs run: container (default), kubernetes, or process (trusted code only: jobs run as the manager's own OS user and can read its key)")
 		image := fs.String("image", "", "container and kubernetes drivers: executor image pinned by SHA-256 digest")
 		engine := fs.String("engine", os.Getenv("DOCKER_HOST"), "container driver: the engine, unix:///path or tcp://host:port")
 		cpus := fs.Float64("cpus", 0, "container and kubernetes drivers: CPUs per job, 0 for no cap")
@@ -124,6 +140,25 @@ func run(args []string, log *slog.Logger) error {
 		kubeCA := fs.String("kube-ca", "", "kubernetes driver: CA bundle for --kube-server")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
+		}
+		set := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		if err := checkDriverFlags(*driverName, set); err != nil {
+			return err
+		}
+		for _, p := range []*string{stateDir, workDir, kindState, kubeToken, kubeCA} {
+			abs, err := absPath(*p)
+			if err != nil {
+				return err
+			}
+			*p = abs
+		}
+		for _, c := range []*string{executor, oyzu, renovate} {
+			abs, err := absCommand(*c)
+			if err != nil {
+				return err
+			}
+			*c = abs
 		}
 		store := manager.Store{Dir: *stateDir}
 		st, err := store.Load()
@@ -154,8 +189,8 @@ func run(args []string, log *slog.Logger) error {
 				ExtraEnv: extra, Log: log,
 			}
 		case "container":
-			if *docker {
-				return errors.New("--docker is for the process driver; container jobs never get an engine (IMPL-114)")
+			if *image == "" {
+				return errors.New("the container driver needs --image NAME@sha256:DIGEST; to run jobs on this host as the manager's own user instead, pass --driver process (trusted code only)")
 			}
 			eng, err := container.NewDocker(*engine)
 			if err != nil {
@@ -171,6 +206,9 @@ func run(args []string, log *slog.Logger) error {
 			}
 			driver = c
 		case "kubernetes":
+			if *image == "" {
+				return errors.New("the kubernetes driver needs --image NAME@sha256:DIGEST")
+			}
 			var api *kubernetes.Client
 			if *kubeServer != "" {
 				api, err = kubernetes.NewClient(*kubeServer, *kubeCA, *kubeToken, *namespace)
