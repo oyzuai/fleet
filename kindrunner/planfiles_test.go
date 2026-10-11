@@ -30,3 +30,36 @@ func TestPlanFilesRoundTrip(t *testing.T) {
 		t.Fatalf("empty dir: %d %v", n, err)
 	}
 }
+
+func TestTarFlatBoundsSparseFilesBeforeReading(t *testing.T) {
+	dir := t.TempDir()
+	f, err := os.Create(filepath.Join(dir, "sparse"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(1 << 30); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+	if _, _, err := tarFlat(dir, 1024); err == nil {
+		t.Fatal("oversized file accepted")
+	}
+}
+
+func TestTarFlatCountsHeadersPaddingAndTrailer(t *testing.T) {
+	dir := t.TempDir()
+	// A 512-byte payload needs a 512-byte header and a 1024-byte trailer.
+	if err := os.WriteFile(filepath.Join(dir, "data"), make([]byte, 512), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, limit := range []int64{512, 2047} {
+		if _, _, err := tarFlat(dir, limit); err == nil {
+			t.Fatalf("archive exceeded %d", limit)
+		}
+	}
+	archive, _, err := tarFlat(dir, 2048)
+	if err != nil || len(archive) != 2048 {
+		t.Fatalf("bytes=%d err=%v", len(archive), err)
+	}
+}

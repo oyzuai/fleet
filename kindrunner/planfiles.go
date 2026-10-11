@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 
 	"github.com/oyzuai/fleet/kindprotocol"
+	"github.com/oyzuai/fleet/runnerclient"
 )
 
 // Plan files (IMPL-401). A plan or apply runs with a private directory,
@@ -23,7 +24,7 @@ import (
 // files: they go over as one tar of the directory's regular files.
 
 // maxPlanFiles bounds what a plan may leave in the directory.
-const maxPlanFiles = 64 << 20
+const maxPlanFiles = runnerclient.MaxPlanFile
 
 // planDir is the plan files directory of one job.
 type planDir struct{ path string }
@@ -90,41 +91,62 @@ func (r *run) savePlanFiles(ctx context.Context, req *kindprotocol.Request, raw 
 }
 
 // tarFlat packs the regular files directly in dir, refusing more than max
-// bytes of them. Files go in name order, so the same files pack the same.
+// packed bytes, including headers and padding. Files go in name order.
 func tarFlat(dir string, max int64) ([]byte, int, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, 0, err
 	}
 	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
+	tw := tar.NewWriter(&archiveWriter{dst: &buf, max: max})
 	n := 0
-	var total int64
 	for _, e := range entries {
 		if !e.Type().IsRegular() {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		f, err := os.Open(filepath.Join(dir, e.Name()))
 		if err != nil {
 			return nil, 0, err
 		}
-		total += int64(len(b))
-		if total > max {
-			return nil, 0, fmt.Errorf("the files come to more than %d bytes", max)
-		}
-		if err := tw.WriteHeader(&tar.Header{Name: e.Name(), Mode: 0o600, Size: int64(len(b)), Typeflag: tar.TypeReg}); err != nil {
+		info, err := f.Stat()
+		if err != nil {
+			f.Close()
 			return nil, 0, err
 		}
-		if _, err := tw.Write(b); err != nil {
+		if !info.Mode().IsRegular() || info.Size() > max-int64(buf.Len()) {
+			f.Close()
+			return nil, 0, fmt.Errorf("the packed files exceed %d bytes", max)
+		}
+		err = tw.WriteHeader(&tar.Header{Name: e.Name(), Mode: 0o600, Size: info.Size(), Typeflag: tar.TypeReg})
+		if err == nil {
+			_, err = io.Copy(tw, io.LimitReader(f, info.Size()+1))
+		}
+		cerr := f.Close()
+		if err != nil {
 			return nil, 0, err
 		}
-		clear(b)
+		if cerr != nil {
+			return nil, 0, cerr
+		}
 		n++
 	}
 	if err := tw.Close(); err != nil {
 		return nil, 0, err
 	}
 	return buf.Bytes(), n, nil
+}
+
+// archiveWriter includes headers, padding and the trailer in the size limit.
+type archiveWriter struct {
+	dst *bytes.Buffer
+	max int64
+}
+
+func (w *archiveWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > w.max-int64(w.dst.Len()) {
+		return 0, fmt.Errorf("the packed files exceed %d bytes", w.max)
+	}
+	return w.dst.Write(p)
 }
 
 // untarFlat unpacks regular files with plain names into dir.

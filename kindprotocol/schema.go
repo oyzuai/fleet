@@ -127,7 +127,7 @@ func DecodeRequest(raw []byte) (*Request, error) {
 		return nil, err
 	}
 	if r.ApprovedPlan != nil {
-		if err := r.ApprovedPlan.Verify(); err != nil {
+		if err := verifyNestedPlan(raw, "approved_plan", r.ApprovedPlan.Digest); err != nil {
 			return nil, err
 		}
 	}
@@ -142,7 +142,7 @@ func DecodeResult(raw []byte) (*Result, error) {
 		return nil, err
 	}
 	if r.Plan != nil {
-		if err := r.Plan.Verify(); err != nil {
+		if err := verifyNestedPlan(raw, "plan", r.Plan.Digest); err != nil {
 			return nil, err
 		}
 	}
@@ -158,7 +158,7 @@ func DecodePlan(raw []byte) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := p.Verify(); err != nil {
+	if err := verifyPlanJSON(raw, p.Digest); err != nil {
 		return nil, err
 	}
 	return p, nil
