@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -22,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 
 	"github.com/oyzuai/fleet/kindrunner"
 	"github.com/oyzuai/fleet/runnerclient"
@@ -275,8 +278,14 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		log.Warn("checkout failed", "error", msg)
 		return failedWith("SOURCE_UNAVAILABLE", "Could not check out "+job.HeadSHA+": "+msg), capture
 	}
-	if job.Operation == "run" && !declaresTask(filepath.Join(cfg.WorkDir, "oyzu.toml"), job.Task) {
-		return runnerclient.Outcome{State: "skipped", Summary: fmt.Sprintf("`oyzu.toml` at `%s` declares no task `%s`.", job.HeadSHA, job.Task)}, capture
+	if job.Operation == "run" {
+		declared, err := declaresTask(filepath.Join(cfg.WorkDir, "oyzu.toml"), job.Task)
+		if err != nil {
+			return failedWith("RUNNER_ERROR", "Could not read `oyzu.toml` at "+job.HeadSHA+": "+err.Error()), capture
+		}
+		if !declared {
+			return runnerclient.Outcome{State: "skipped", Summary: fmt.Sprintf("`oyzu.toml` at `%s` declares no task `%s`.", job.HeadSHA, job.Task)}, capture
+		}
 	}
 
 	// Build output goes into the masked tail and log spool, never to the runner's own
@@ -488,19 +497,25 @@ func (c *capped) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-// declaresTask reports whether oyzu.toml declares [tasks.<task>].
-func declaresTask(path, task string) bool {
+// declaresTask reports whether oyzu.toml declares tasks.<task>. A missing file
+// declares nothing; a file that cannot be read or parsed is an error, so the
+// job fails instead of being skipped for the wrong reason.
+func declaresTask(path, task string) (bool, error) {
 	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
 	if err != nil {
-		return false
+		return false, err
 	}
-	for _, line := range strings.Split(string(b), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "[tasks."+task+"]" || line == `[tasks."`+task+`"]` {
-			return true
-		}
+	var doc struct {
+		Tasks map[string]any `toml:"tasks"`
 	}
-	return false
+	if err := toml.Unmarshal(b, &doc); err != nil {
+		return false, err
+	}
+	_, ok := doc.Tasks[task]
+	return ok, nil
 }
 
 // tail keeps the last summaryLines lines written to it.

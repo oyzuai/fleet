@@ -14,8 +14,10 @@ Alongside them:
 - [`manager`](manager/) is the claim loop, the manager's identity and key
   rotation, and the `Driver` interface, with the process driver and the
   [`container`](manager/container/), [`kubernetes`](manager/kubernetes/) and
-  [`vm`](manager/vm/) drivers (AWS, Google Cloud and Azure adapters). Drivers
-  are compiled in and chosen by configuration.
+  [`vm`](manager/vm/) drivers. The shipped manager selects `container` (the
+  default), `kubernetes` or `process` with `--driver`. The `vm` package (AWS,
+  Google Cloud and Azure adapters) is library code: the manager binary does
+  not select it, and using it needs integration work.
 - [`executor`](executor/) runs one job: startup, checkout, the `oyzu` command,
   heartbeats, Renovate and lock fixes, and the outcome. Deployment kind jobs
   go to [`kindrunner`](kindrunner/), which runs the kind's operation and
@@ -27,6 +29,16 @@ Alongside them:
   assertions a manager logs in and rotates keys with.
 
 ## Executor images
+
+The default manager driver changed from `process` to `container`. A manager
+that ran with no `--driver` now needs `--image NAME@sha256:DIGEST` (and a
+Docker or Podman engine), or `--driver process` to keep the old behaviour. The
+process driver runs repository build code as the manager's own OS user, which
+can read the manager's private key in its state directory, so use it for
+trusted code only. Flags that belong to one driver (`--oyzu`, `--renovate`,
+`--pass-env`, `--work-dir`, `--executor` and `--kind-state-dir` are
+process-only; `--engine`, `--network` and `--user` are container-only) are
+refused when another driver is chosen, instead of being ignored.
 
 The container and Kubernetes manager drivers require `--image` to be pinned
 by SHA-256 digest: `NAME@sha256:DIGEST`, where `DIGEST` is exactly 64 lowercase

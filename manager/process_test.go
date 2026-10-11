@@ -24,6 +24,21 @@ func TestHelperProcess(t *testing.T) {
 	case "sleep":
 		time.Sleep(time.Minute)
 		os.Exit(0)
+	case "readtoken":
+		// The executor runs inside its job directory, so both paths it is
+		// given must be absolute and the token must be readable.
+		code := 0
+		for i, a := range os.Args {
+			if (a == "--startup-token-file" || a == "--work-dir") && i+1 < len(os.Args) && !filepath.IsAbs(os.Args[i+1]) {
+				code = 4
+			}
+			if a == "--startup-token-file" && i+1 < len(os.Args) {
+				if _, err := os.ReadFile(os.Args[i+1]); err != nil {
+					code = 5
+				}
+			}
+		}
+		os.Exit(code)
 	default:
 		code, _ := strconv.Atoi(mode)
 		os.Exit(code)
@@ -158,4 +173,24 @@ func TestProcessDriverFacts(t *testing.T) {
 	if n, err := strconv.Atoi(f[FactCPU]); err != nil || n < 1 {
 		t.Fatalf("cpu fact = %q", f[FactCPU])
 	}
+}
+
+func TestProcessDriverRelativeWorkDir(t *testing.T) {
+	t.Chdir(t.TempDir())
+	p := helperDriver(t, "readtoken")
+	p.WorkDir, p.LogDir = "jobs", filepath.Join("jobs", "logs")
+	ctx := context.Background()
+	c, err := p.Capacity(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := p.Start(ctx, c.Ready[0], runnerclient.Claim{JobID: 21, Attempt: 1, StartupToken: "oyzu_start_x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exit, err := p.Wait(ctx, h)
+	if err != nil || !exit.Clean() {
+		t.Fatalf("exit = %+v, %v (4: a path was relative, 5: the token could not be read)", exit, err)
+	}
+	_ = p.Teardown(ctx, h)
 }
