@@ -193,7 +193,9 @@ func (p *Process) start(pr *proc, c runnerclient.Claim) error {
 	pr.cmd, pr.log = cmd, logFile
 	// Recorded so a manager restarted after a crash can tell this executor
 	// is still running before it touches the directory.
-	if start, err := processStart(cmd.Process.Pid); err != nil {
+	if start, err := processStart(cmd.Process.Pid); errors.Is(err, errProcessGone) {
+		// Already exited; there is nothing to record.
+	} else if err != nil {
 		p.logger().Warn("could not record the executor's process", "dir", pr.dir, "error", err)
 	} else if err := writeRecord(pr.dir, record{PID: cmd.Process.Pid, Start: start, Job: c.JobID, Attempt: c.Attempt}); err != nil {
 		p.logger().Warn("could not record the executor's process", "dir", pr.dir, "error", err)

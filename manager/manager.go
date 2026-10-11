@@ -365,20 +365,26 @@ func (m *Manager) Run(ctx context.Context) error {
 }
 
 // start starts a claimed job's executor under a deadline: the claim's
-// startup expiry, after which its token is useless, and the drain timeout
-// through ctx.
+// startup expiry, after which its token is useless (at least a minute and at
+// most defaultStartTimeout away), and the drain timeout through ctx.
 func (m *Manager) start(ctx context.Context, slot SlotID, c runnerclient.Claim) (Handle, error) {
-	deadline := m.cfg.Now().Add(defaultStartTimeout)
-	if !c.StartupExpires.IsZero() {
-		deadline = c.StartupExpires
-	}
-	ctx, cancel := context.WithDeadline(ctx, deadline)
+	ctx, cancel := context.WithTimeout(ctx, startTimeout(m.cfg.Now(), c))
 	defer cancel()
 	h, err := m.cfg.Driver.Start(ctx, slot, c)
 	if err != nil && ctx.Err() != nil {
 		err = fmt.Errorf("%w (gave up after %s)", err, context.Cause(ctx))
 	}
 	return h, err
+}
+
+// startTimeout is how long starting c's executor may take. The expiry is on
+// runs' clock, so it only shortens the wait, and never below a minute
+// however far the clocks disagree.
+func startTimeout(now time.Time, c runnerclient.Claim) time.Duration {
+	if c.StartupExpires.IsZero() {
+		return defaultStartTimeout
+	}
+	return min(defaultStartTimeout, max(time.Minute, c.StartupExpires.Sub(now)))
 }
 
 func (m *Manager) markStarting(slot SlotID, on bool) {

@@ -183,11 +183,19 @@ func TestStartingSlotsAreNotReady(t *testing.T) {
 	}
 }
 
-func TestStartGivesUpAtTheStartupExpiry(t *testing.T) {
-	d := &hungDriver{startEnded: make(chan struct{})}
-	m := &Manager{cfg: Config{Driver: d, Now: time.Now}}
-	_, err := m.start(context.Background(), "0", runnerclient.Claim{StartupExpires: time.Now().Add(20 * time.Millisecond)})
-	if err == nil || !strings.Contains(err.Error(), "gave up") {
-		t.Fatalf("start = %v", err)
+func TestStartTimeoutFollowsTheStartupExpiry(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		expires time.Time
+		want    time.Duration
+	}{
+		{time.Time{}, defaultStartTimeout},
+		{now.Add(3 * time.Minute), 3 * time.Minute},
+		{now.Add(time.Hour), defaultStartTimeout},
+		{now.Add(-time.Hour), time.Minute}, // clocks disagree
+	} {
+		if got := startTimeout(now, runnerclient.Claim{StartupExpires: tc.expires}); got != tc.want {
+			t.Errorf("startTimeout(%v) = %s, want %s", tc.expires.Sub(now), got, tc.want)
+		}
 	}
 }
