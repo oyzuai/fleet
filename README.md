@@ -59,3 +59,41 @@ License, Version 2.0 two years after it is made available.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Contributions require a signed
 Contributor License Agreement.
+
+## Job logs
+
+The executor captures build/run stdout and stderr beside the existing 60-line
+masked check-summary tail. Build/run commands receive `--json`; a plan command
+and its stdout plan record keep their existing invocation and handling. Known
+oyzu stderr events become scoped log entries; native output and unknown events
+remain text. Plain lines inherit a single running scope, or `oyzu` when output
+is ambiguous. Checkout/start/exit entries use `runner`.
+
+The same streaming maskers protect both sinks before bytes reach disk or the
+network. Build secrets, source/job/startup credentials, issued ID tokens, the
+broker credential and egress values all share the existing mask forms and
+six-byte floor. Per-entry `redacted` counts actual substitutions. Build text
+still never goes to the executor's own stdout/stderr or administrative slog.
+
+A private directory beside the checkout holds masked NDJSON and, for very large
+logs, a bounded disk FIFO. Uploads open every second, 256 KiB or 1,000 entries;
+a single JSON-escaped entry may exceed 256 KiB. Text splits at 64 KiB without
+tearing UTF-8, invalid bytes become U+FFFD, and line endings remain intact.
+The 512 MiB cap keeps approximately half as the live head and half as the most
+recent tail. After the head fills, the tail waits until command exit so dropping
+the middle cannot invalidate uploaded chunks or cursors. One system entry
+counts dropped entries and spooled bytes. Full entry bodies stay on disk
+instead of accumulating in memory.
+
+`runnerclient.UploadLogs` posts to `/runner/v1/job/logs` with the job bearer.
+The JSON body contains `attempt`, gapless `seq`, `first_sequence`,
+`last_sequence`, `entry_count`, `data` (base64 gzip NDJSON) and `hash`
+(lowercase SHA-256 of the uncompressed bytes, including newlines). A 409's
+`next_seq` rewinds delivery to the retained spool; identical retries are safe.
+`FinishLogs` posts to `/runner/v1/job/logs/finish` with `attempt`, `final_seq`,
+`total_entries`, and the SHA-256 of all uncompressed chunks concatenated in
+order; `incomplete` reports a capture failure. These calls precede job finish.
+Transient failures back off from 100 ms to five seconds. The default drain is
+15 minutes (`Config.LogDrainTimeout` can shorten it); expiration never changes
+the build's outcome. Spool/network failures log only administrative metadata.
+Spool files close before cleanup, including on Windows.

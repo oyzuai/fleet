@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -75,6 +76,8 @@ type Config struct {
 	// kindrunner.Config.DockerEnv.
 	DockerEnv []string
 	Log       *slog.Logger
+	// LogDrainTimeout bounds log delivery after the command; zero is 15 minutes.
+	LogDrainTimeout time.Duration
 }
 
 // Run runs the job and returns once its outcome is reported, or once runs
@@ -227,7 +230,7 @@ func execute(ctx context.Context, cfg Config, token, startup string, job runnerc
 }
 
 // build checks out the commit and runs the oyzu command.
-func build(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger) runnerclient.Outcome {
+func build(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger) (outcome runnerclient.Outcome) {
 	_, name, _ := strings.Cut(job.Repository, "/")
 	if !shaPattern.MatchString(job.HeadSHA) || !repoPattern.MatchString(job.Repository) || strings.Trim(name, ".") == "" ||
 		(job.AffectedBase != "" && !shaPattern.MatchString(job.AffectedBase)) {
@@ -245,6 +248,14 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	}
 	secrets := []string{token, startup, src.Token, "x-access-token:" + src.Token}
 	forms := maskForms(secrets...)
+	capture := newLogCapture(ctx, cfg, token, job, log)
+	capture.system("Checking out source.\n", &runnerclient.LogEvent{Kind: "task", State: "running"})
+	started := time.Now()
+	defer func() {
+		duration := time.Since(started).Milliseconds()
+		capture.system("Job command finished.\n", &runnerclient.LogEvent{Kind: "finished", Status: outcome.State, ExitCode: outcome.ExitCode, DurationMS: &duration})
+		capture.finish(cfg.LogDrainTimeout)
+	}()
 	if err := checkout(ctx, cfg, src.Token, job); err != nil {
 		msg := replaceForms(err.Error(), forms)
 		log.Warn("checkout failed", "error", msg)
@@ -254,16 +265,23 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		return runnerclient.Outcome{State: "skipped", Summary: fmt.Sprintf("`oyzu.toml` at `%s` declares no task `%s`.", job.HeadSHA, job.Task)}
 	}
 
-	// Build output goes only into the masked tail, never to the runner's own
+	// Build output goes into the masked tail and log spool, never to the runner's own
 	// stdout: that is the pool host's log, which is for admins and must not
 	// carry what a build printed. A plan's stdout is the plan record, kept
 	// whole up to its limit and sent to runs, which reads it.
 	var out tail
 	var record bytes.Buffer
-	stdout, stderr := newMaskWriter(&out, forms), newMaskWriter(&out, forms)
+	outSink := &logSink{dst: &out, capture: capture, stream: "stdout"}
+	errSink := &logSink{dst: &out, capture: capture, stream: "stderr"}
+	stdout, stderr := newMaskWriter(outSink, forms), newMaskWriter(errSink, forms)
 	if job.Kind == "plan" {
-		stdout = newMaskWriter(&capped{w: &record, n: runnerclient.MaxPlanRecord + 1}, forms)
+		outSink.dst = &capped{w: &record, n: runnerclient.MaxPlanRecord + 1}
 	}
+	defer func() {
+		_, _ = stdout.Flush(), stderr.Flush()
+		outSink.close()
+		errSink.close()
+	}()
 	env := buildEnv(os.Environ())
 	if job.Kind != "plan" && len(job.Secrets) > 0 {
 		secretEnv, cleanup, err := pullSecrets(ctx, cfg, token, job.Secrets, func(v string) {
@@ -310,7 +328,12 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 			env = proxy.env(env)
 		}
 	}
-	cmd := exec.CommandContext(ctx, cfg.Oyzu, job.Command[1:]...)
+	args := append([]string{}, job.Command[1:]...)
+	if job.Kind != "plan" && (job.Operation == "build" || job.Operation == "run") && !slices.Contains(args, "--json") {
+		args = append([]string{"--json"}, args...)
+	}
+	capture.system("Starting oyzu.\n", &runnerclient.LogEvent{Kind: "task", State: "running"})
+	cmd := exec.CommandContext(ctx, cfg.Oyzu, args...)
 	cmd.Dir = cfg.WorkDir
 	cmd.Env = env
 	cmd.Stdout, cmd.Stderr = stdout, stderr
