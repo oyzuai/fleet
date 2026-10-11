@@ -119,7 +119,7 @@ func Run(ctx context.Context, cfg Config) error {
 	job := st.Job
 	if job.Kind == runnerclient.KindOperationJob {
 		return kindrunner.Run(ctx, kindrunner.Config{
-			Client: cfg.Client, Token: st.JobToken, HeartbeatEvery: time.Duration(st.HeartbeatSeconds) * time.Second,
+			Client: cfg.Client, Token: st.JobToken, LeaseExpires: st.Expires, HeartbeatEvery: time.Duration(st.HeartbeatSeconds) * time.Second,
 			KindsDir: cfg.KindsDir, StateDir: cfg.KindStateDir, SecretsDir: cfg.SecretsDir, Docker: cfg.Docker, DockerNetwork: cfg.DockerNetwork, DockerEnv: cfg.DockerEnv, Log: cfg.Log,
 		}, job)
 	}
@@ -137,7 +137,7 @@ func Run(ctx context.Context, cfg Config) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		heartbeat(buildCtx, cfg.Client, st.JobToken, every, cancel, log)
+		heartbeat(buildCtx, cfg.Client, st.JobToken, every, cancel, log, st.Expires)
 	}()
 
 	outcome, capture := execute(buildCtx, cfg, st.JobToken, startup, job, log)
@@ -173,26 +173,11 @@ func Run(ctx context.Context, cfg Config) error {
 
 var errLost = errors.New("runs took the job back: the lease ran out or a credential was revoked")
 
-func heartbeat(ctx context.Context, c *runnerclient.Client, token string, every time.Duration, cancel context.CancelCauseFunc, log *slog.Logger) {
-	t := time.NewTicker(every)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-		err := c.Heartbeat(ctx, token)
-		switch {
-		case errors.Is(err, runnerclient.ErrUnauthenticated):
-			log.Warn("heartbeat refused; stopping the build", "reason", errLost.Error())
-			cancel(errLost)
-			return
-		case err != nil && ctx.Err() == nil:
-			// A blip: the lease outlasts a few missed heartbeats.
-			log.Warn("heartbeat failed", "error", err)
-		}
-	}
+func heartbeat(ctx context.Context, c *runnerclient.Client, token string, every time.Duration, cancel context.CancelCauseFunc, log *slog.Logger, expires time.Time) {
+	runnerclient.WatchLease(ctx, every, expires,
+		func(ctx context.Context) (time.Time, error) { return c.HeartbeatLease(ctx, token) },
+		func() { log.Warn("lease expired or refused; stopping the build"); cancel(errLost) },
+		func(err error) { log.Warn("heartbeat failed", "error", err) })
 }
 
 // readOnce reads the startup token and deletes the file, so nothing started
@@ -513,12 +498,25 @@ type tail struct {
 func (t *tail) Write(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	s := t.part + string(p)
-	parts := strings.Split(s, "\n")
-	t.part = parts[len(parts)-1]
-	t.lines = append(t.lines, parts[:len(parts)-1]...)
-	if n := len(t.lines); n > summaryLines {
-		t.lines = t.lines[n-summaryLines:]
+	const maxTailLine = 64 << 10
+	rest := p
+	for {
+		line, after, found := bytes.Cut(rest, []byte{'\n'})
+		if len(line) >= maxTailLine {
+			t.part = string(line[len(line)-maxTailLine:])
+		} else {
+			keep := min(len(t.part), maxTailLine-len(line))
+			t.part = t.part[len(t.part)-keep:] + string(line)
+		}
+		if !found {
+			break
+		}
+		t.lines = append(t.lines, t.part)
+		if len(t.lines) > summaryLines {
+			t.lines = t.lines[len(t.lines)-summaryLines:]
+		}
+		t.part = ""
+		rest = after
 	}
 	return len(p), nil
 }

@@ -9,7 +9,6 @@
 package kindrunner
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -24,9 +23,9 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
-	"syscall"
 	"time"
 
+	"github.com/oyzuai/fleet/internal/masking"
 	"github.com/oyzuai/fleet/kindprotocol"
 	"github.com/oyzuai/fleet/runnerclient"
 )
@@ -44,7 +43,11 @@ const (
 	flushEvery = time.Second
 	flushAt    = 100
 	// finishTimeout bounds reporting the result, even on shutdown.
-	finishTimeout = 30 * time.Second
+	finishTimeout       = 30 * time.Second
+	finalFlushTimeout   = 2 * time.Second
+	processDrainTimeout = 2 * time.Second
+	maxEventLine        = 1 << 20
+	maxPendingBytes     = 4 << 20
 	// defaultStopGrace is how long a kind has to exit after SIGTERM.
 	defaultStopGrace = 10 * time.Second
 )
@@ -58,6 +61,7 @@ type Config struct {
 	// Token is the job token.
 	Token          string
 	HeartbeatEvery time.Duration
+	LeaseExpires   time.Time
 	// KindsDir holds the built-in kinds' executables, kind-<name> (kind-<name>.exe on Windows).
 	KindsDir string
 	// StateDir is where kinds keep state between runs on this host, one
@@ -114,16 +118,21 @@ func Run(ctx context.Context, cfg Config, job runnerclient.Job) error {
 	go func() { defer wg.Done(); r.events.run(runCtx) }()
 
 	result, none := r.execute(runCtx)
+	if none != nil {
+		none.Message = r.events.mask.String(none.Message)
+	}
 	stop(nil)
 	wg.Wait()
 	if errors.Is(context.Cause(runCtx), ErrLost) {
 		log.Warn("kind job taken back before it finished")
 		return ErrLost
 	}
+	flushCtx, flushDone := context.WithTimeout(context.WithoutCancel(ctx), finalFlushTimeout)
+	r.events.flush(flushCtx)
+	flushDone()
 	finishCtx, done := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
 	defer done()
-	r.events.flush(finishCtx)
-	if err := cfg.Client.KindFinish(finishCtx, cfg.Token, result, none); err != nil {
+	if err := retry(finishCtx, func(ctx context.Context) error { return cfg.Client.KindFinish(ctx, cfg.Token, result, none) }); err != nil {
 		return fmt.Errorf("report the result: %w", err)
 	}
 	if none != nil {
@@ -148,23 +157,33 @@ type run struct {
 // heartbeat renews the lease, notices a cancel, and stops the run when runs
 // refuses the token.
 func (r *run) heartbeat(ctx context.Context, stop context.CancelCauseFunc) {
-	t := time.NewTicker(r.cfg.HeartbeatEvery)
-	defer t.Stop()
-	for {
+	runnerclient.WatchLease(ctx, r.cfg.HeartbeatEvery, r.cfg.LeaseExpires,
+		func(ctx context.Context) (time.Time, error) {
+			beat, err := r.cfg.Client.KindHeartbeat(ctx, r.cfg.Token)
+			if err == nil && beat.Cancel {
+				r.cancelOnce.Do(func() { close(r.cancel) })
+			}
+			return beat.Expires, err
+		},
+		func() { r.log.Warn("kind lease expired or refused; stopping the kind"); stop(ErrLost) },
+		func(err error) { r.log.Warn("kind job heartbeat failed", "error", err) })
+}
+
+// retry gives each attempt a separate deadline inside the reporting budget.
+// A refused token is not proof a previous finish landed; return it to the caller.
+func retry(ctx context.Context, call func(context.Context) error) error {
+	var err error
+	for delay := 100 * time.Millisecond; ; delay = min(delay*2, 2*time.Second) {
+		attempt, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err = call(attempt)
+		cancel()
+		if err == nil || errors.Is(err, runnerclient.ErrUnauthenticated) {
+			return err
+		}
 		select {
 		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-		beat, err := r.cfg.Client.KindHeartbeat(ctx, r.cfg.Token)
-		switch {
-		case errors.Is(err, runnerclient.ErrUnauthenticated):
-			stop(ErrLost)
-			return
-		case err != nil:
-			r.log.Warn("kind job heartbeat failed", "error", err)
-		case beat.Cancel:
-			r.cancelOnce.Do(func() { close(r.cancel) })
+			return err
+		case <-time.After(delay):
 		}
 	}
 }
@@ -172,6 +191,9 @@ func (r *run) heartbeat(ctx context.Context, stop context.CancelCauseFunc) {
 // execute pulls the secrets, runs the kind and reads its result. It returns
 // the result's JSON, or why there is none.
 func (r *run) execute(ctx context.Context) (json.RawMessage, *runnerclient.KindNoResult) {
+	if !safeName.MatchString(r.op.Kind.Name) {
+		return nil, &runnerclient.KindNoResult{Code: "kind-not-started", Message: "invalid kind name"}
+	}
 	secrets, err := r.secrets(ctx)
 	if err != nil {
 		return nil, &runnerclient.KindNoResult{Code: "secrets-unavailable", Message: err.Error()}
@@ -209,9 +231,17 @@ func (r *run) execute(ctx context.Context) (json.RawMessage, *runnerclient.KindN
 		reason = "cancelled"
 		r.abort(ctx, req, dirs, main)
 	case <-ctx.Done():
-		main.stop(r.cfg.StopGrace)
+		main.stop(0)
 	}
-	<-main.done
+	if !main.wait(3*processDrainTimeout + r.cfg.StopGrace) {
+		return nil, &runnerclient.KindNoResult{Code: "crashed", Message: "kind did not stop before the drain deadline", Started: true}
+	}
+	if r.op.Image != "" {
+		var exit *exec.ExitError
+		if errors.As(main.exitErr, &exit) && exit.ExitCode() >= 125 && exit.ExitCode() <= 127 {
+			return nil, &runnerclient.KindNoResult{Code: "kind-not-started", Message: r.events.mask.String(main.exitErr.Error())}
+		}
+	}
 	r.saveLedger(ctx, ledger)
 	res, problem := main.result(req)
 	if res != nil {
@@ -246,8 +276,11 @@ func (r *run) abort(ctx context.Context, req *kindprotocol.Request, dirs jobDirs
 	r.events.local("info", "Cancelled; running the kind's abort operation.")
 	ab := *req
 	ab.Operation = kindprotocol.OpAbort
-	ab.ApprovedPlan, ab.TrafficPercent, ab.RollbackTo = nil, nil, nil
+	ab.ApprovedPlan, ab.TrafficPercent, ab.RollbackTo, ab.Verification = nil, nil, nil, nil
 	raw, err := json.Marshal(&ab)
+	if err == nil {
+		_, err = kindprotocol.DecodeRequest(raw)
+	}
 	if err == nil {
 		var p *process
 		if p, err = r.start(ctx, raw, dirs, "abort"); err == nil {
@@ -256,9 +289,15 @@ func (r *run) abort(ctx context.Context, req *kindprotocol.Request, dirs jobDirs
 			case <-p.done:
 			case <-t.C:
 				p.stop(r.cfg.StopGrace)
-				<-p.done
+			case <-ctx.Done():
+				main.stop(0)
+				p.stop(0)
 			}
 			t.Stop()
+			if !p.wait(3 * processDrainTimeout) {
+				main.stop(0)
+				return
+			}
 			if res, problem := p.result(&ab); res != nil {
 				var out kindprotocol.Result
 				_ = json.Unmarshal(res, &out)
@@ -273,6 +312,8 @@ func (r *run) abort(ctx context.Context, req *kindprotocol.Request, dirs jobDirs
 	}
 	select {
 	case <-main.done:
+	case <-ctx.Done():
+		main.stop(0)
 	case <-time.After(r.cfg.StopGrace):
 		main.stop(r.cfg.StopGrace)
 	}
@@ -280,6 +321,7 @@ func (r *run) abort(ctx context.Context, req *kindprotocol.Request, dirs jobDirs
 
 // process is one running kind process.
 type process struct {
+	group   *processGroup
 	cmd     *exec.Cmd
 	stdout  *limitedBuffer
 	done    chan struct{}
@@ -287,13 +329,21 @@ type process struct {
 	cleanup func()
 }
 
-// stop sends SIGTERM and, after grace, kills the process.
+// stop signals the whole process group and kills it after the grace period.
 func (p *process) stop(grace time.Duration) {
-	_ = p.cmd.Process.Signal(syscall.SIGTERM)
+	p.group.terminate()
+	p.wait(grace)
+	p.group.kill()
+}
+
+func (p *process) wait(timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-p.done:
-	case <-time.After(grace):
-		_ = p.cmd.Process.Kill()
+		return true
+	case <-timer.C:
+		return false
 	}
 }
 
@@ -332,7 +382,13 @@ type jobDirs struct {
 func (r *run) start(ctx context.Context, request []byte, dirs jobDirs, label string) (*process, error) {
 	secrets, plans, ledger := dirs.secrets, dirs.plans, dirs.ledger
 	name := r.op.Kind.Name
+	if !safeName.MatchString(name) {
+		return nil, fmt.Errorf("invalid kind name %q", name)
+	}
 	stateDir := filepath.Join(r.cfg.StateDir, name)
+	if rel, err := filepath.Rel(r.cfg.StateDir, stateDir); err != nil || rel != name {
+		return nil, errors.New("kind state directory escapes its root")
+	}
 	if r.cfg.StateDir == "" {
 		return nil, errors.New("the runner has no kind state directory")
 	}
@@ -368,11 +424,27 @@ func (r *run) start(ctx context.Context, request []byte, dirs jobDirs, label str
 		if !imagePinned.MatchString(r.op.Image) {
 			return nil, fmt.Errorf("kind image %q is not pinned by digest", r.op.Image)
 		}
+		pullCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		inspect := exec.CommandContext(pullCtx, r.cfg.Docker, "image", "inspect", r.op.Image)
+		inspect.WaitDelay = processDrainTimeout
+		if err := inspect.Run(); err != nil {
+			pull := exec.CommandContext(pullCtx, r.cfg.Docker, "pull", r.op.Image)
+			pull.WaitDelay = processDrainTimeout
+			if err := pull.Run(); err != nil {
+				cancel()
+				return nil, fmt.Errorf("prepare kind image: %w", err)
+			}
+		}
+		cancel()
 		container := fmt.Sprintf("oyzu-kind-%d-%d", r.job.ID, r.job.Attempt)
 		if label != "" {
 			container += "-" + label
 		}
 		args := []string{"run", "--rm", "-i", "--name", container, "--pull", "missing",
+			"--label", "oyzu.kind.job=" + strconv.FormatInt(r.job.ID, 10),
+			"--label", "oyzu.kind.attempt=" + strconv.Itoa(r.job.Attempt),
+			"--label", "oyzu.kind.runner=" + filepath.Dir(r.cfg.SecretsDir),
+			"--label", "oyzu.kind.manager=" + filepath.Dir(filepath.Dir(r.cfg.SecretsDir)),
 			"-e", "OYZU_KIND_STATE_DIR=" + ContainerStateDir, "-v", stateDir + ":" + ContainerStateDir}
 		// The kind runs as the runner's own user, so it can write the
 		// directories the runner made for it (0700, the runner's) and what
@@ -402,7 +474,7 @@ func (r *run) start(ctx context.Context, request []byte, dirs jobDirs, label str
 		}
 		cmd = exec.Command(r.cfg.Docker, append(args, r.op.Image)...)
 		cleanup = func() {
-			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), processDrainTimeout)
 			defer cancel()
 			_ = exec.CommandContext(ctx, r.cfg.Docker, "rm", "-f", container).Run()
 		}
@@ -410,21 +482,28 @@ func (r *run) start(ctx context.Context, request []byte, dirs jobDirs, label str
 	p := &process{cmd: cmd, stdout: &limitedBuffer{max: maxResult}, done: make(chan struct{}), cleanup: cleanup}
 	cmd.Stdin = bytes.NewReader(request)
 	cmd.Stdout = p.stdout
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
+	stderr := &eventWriter{run: r, label: label}
+	cmd.Stderr = stderr
+	cmd.WaitDelay = processDrainTimeout
+	prepareProcess(cmd)
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start kind %s: %w", name, err)
 	}
-	read := make(chan struct{})
+	group, err := attachProcess(cmd)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		cleanup()
+		return nil, err
+	}
+	p.group = group
 	go func() {
-		defer close(read)
-		r.readEvents(stderr, label)
-	}()
-	go func() {
-		<-read
 		p.exitErr = cmd.Wait()
+		stderr.finish()
+		p.group.close()
 		p.cleanup()
 		close(p.done)
 	}()
@@ -438,28 +517,67 @@ var safeName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 // readEvents turns the kind's standard error into events: a line that is a
 // valid event is kept as one, anything else as a log line (IMPL-336).
 func (r *run) readEvents(stderr io.Reader, label string) {
-	sc := bufio.NewScanner(stderr)
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	w := &eventWriter{run: r, label: label}
+	_, _ = io.Copy(w, stderr)
+	w.finish()
+}
+
+// eventWriter drains every byte. Lines over 1 MiB are dropped as a whole,
+// so a truncated secret or JSON document is never emitted as a log line.
+type eventWriter struct {
+	run     *run
+	label   string
+	line    []byte
+	dropped int
+}
+
+func (w *eventWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	for len(p) > 0 {
+		line, rest, found := bytes.Cut(p, []byte{'\n'})
+		if w.dropped > 0 || len(w.line)+len(line) > maxEventLine {
+			w.dropped += len(w.line) + len(line)
+			w.line = nil
+		} else {
+			w.line = append(w.line, line...)
+		}
+		if !found {
+			break
+		}
+		w.finish()
+		p = rest
+	}
+	return n, nil
+}
+
+func (w *eventWriter) finish() {
+	if w.dropped > 0 {
+		w.run.events.local("warn", fmt.Sprintf("dropped %d bytes from an oversized stderr line (limit 1 MiB)", w.dropped))
+	} else {
+		w.run.event(w.line, w.label)
+	}
+	w.line = nil
+	w.dropped = 0
+}
+
+func (r *run) event(raw []byte, label string) {
+	line := bytes.TrimSpace(raw)
+	if len(line) == 0 {
+		return
+	}
 	prefix := ""
 	if label != "" {
 		prefix = label + ": "
 	}
-	for sc.Scan() {
-		line := bytes.TrimSpace(sc.Bytes())
-		if len(line) == 0 {
-			continue
+	if line[0] == '{' {
+		if ev, err := kindprotocol.DecodeEvent(line); err == nil {
+			r.events.add(runnerclient.KindEvent{Time: ev.Time, Type: ev.Event.Type, Level: ev.Event.Level,
+				Message: prefixed(prefix, ev.Event.Message), Percent: ev.Event.Percent, Observed: ev.Event.Observed})
+			return
 		}
-		if line[0] == '{' {
-			if ev, err := kindprotocol.DecodeEvent(line); err == nil {
-				r.events.add(runnerclient.KindEvent{Time: ev.Time, Type: ev.Event.Type, Level: ev.Event.Level,
-					Message: prefixed(prefix, ev.Event.Message), Percent: ev.Event.Percent})
-				continue
-			}
-		}
-		r.events.add(runnerclient.KindEvent{Time: time.Now().UTC(), Type: "log", Level: "info", Message: prefix + string(line)})
 	}
+	r.events.add(runnerclient.KindEvent{Time: time.Now().UTC(), Type: "log", Level: "info", Message: prefix + string(line)})
 }
-
 func prefixed(prefix, msg string) string {
 	if msg == "" {
 		return ""
@@ -508,6 +626,7 @@ func (r *run) secrets(ctx context.Context) (*secretDir, error) {
 	}
 	sd := &secretDir{path: dir}
 	for _, s := range released {
+		r.events.mask.Add(string(s.Value))
 		if !secretName.MatchString(s.Name) {
 			sd.remove()
 			return nil, fmt.Errorf("secret name %q is not a file name", s.Name)
@@ -530,9 +649,13 @@ var secretName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 
 // uploader numbers events and posts them in batches.
 type uploader struct {
-	client *runnerclient.Client
-	token  string
-	log    *slog.Logger
+	mask         *masking.Writer
+	bytes        int
+	dropped      int
+	droppedBytes int
+	client       *runnerclient.Client
+	token        string
+	log          *slog.Logger
 
 	mu      sync.Mutex
 	next    int
@@ -541,12 +664,26 @@ type uploader struct {
 }
 
 func newUploader(c *runnerclient.Client, token string, log *slog.Logger) *uploader {
-	return &uploader{client: c, token: token, log: log, kick: make(chan struct{}, 1)}
+	return &uploader{mask: masking.NewWriter(io.Discard, masking.Forms(token)), client: c, token: token, log: log, kick: make(chan struct{}, 1)}
 }
 
 func (u *uploader) add(e runnerclient.KindEvent) {
+	// Mask the JSON too: observed state can contain credential-bearing messages.
+	raw, _ := json.Marshal(e)
+	masked := u.mask.String(string(raw))
+	if err := json.Unmarshal([]byte(masked), &e); err != nil {
+		return
+	}
 	u.mu.Lock()
 	e.N = u.next
+	raw, _ = json.Marshal(e)
+	if len(raw) > maxPendingBytes-u.bytes {
+		u.dropped++
+		u.droppedBytes += len(raw)
+		u.mu.Unlock()
+		return
+	}
+	u.bytes += len(raw)
 	u.next++
 	u.pending = append(u.pending, e)
 	n := len(u.pending)
@@ -582,7 +719,16 @@ func (u *uploader) run(ctx context.Context) {
 func (u *uploader) flush(ctx context.Context) {
 	for {
 		u.mu.Lock()
-		batch := u.pending[:min(len(u.pending), flushAt*5)]
+		if u.dropped > 0 && u.bytes < maxPendingBytes-512 {
+			marker := runnerclient.KindEvent{N: u.next, Time: time.Now().UTC(), Type: "log", Level: "warn",
+				Message: fmt.Sprintf("runner: dropped %d events/%d bytes while the event queue was full", u.dropped, u.droppedBytes)}
+			u.next++
+			u.pending = append(u.pending, marker)
+			raw, _ := json.Marshal(marker)
+			u.bytes += len(raw)
+			u.dropped, u.droppedBytes = 0, 0
+		}
+		batch := append([]runnerclient.KindEvent(nil), u.pending[:min(len(u.pending), flushAt*5)]...)
 		u.mu.Unlock()
 		if len(batch) == 0 {
 			return
@@ -592,7 +738,13 @@ func (u *uploader) flush(ctx context.Context) {
 			return
 		}
 		u.mu.Lock()
+		clear(u.pending[:len(batch)])
 		u.pending = u.pending[len(batch):]
+		u.bytes = 0
+		for _, e := range u.pending {
+			raw, _ := json.Marshal(e)
+			u.bytes += len(raw)
+		}
 		u.mu.Unlock()
 	}
 }

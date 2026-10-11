@@ -24,6 +24,7 @@ func Command(args []string, log *slog.Logger) error {
 	server := fs.String("server", "", "the runs URL")
 	tokenFile := fs.String("startup-token-file", "", "file holding the job's startup token; deleted once read")
 	tokenEnv := fs.String("startup-token-env", "", "variable holding the job's startup token; unset once read")
+	secretsDir := fs.String("secrets-dir", "", "private job temporary directory; defaults beside the work directory")
 	workDir := fs.String("work-dir", "", "where the commit is checked out")
 	oyzu := fs.String("oyzu", "oyzu", "the oyzu executable")
 	git := fs.String("git", "git", "the git executable")
@@ -42,6 +43,12 @@ func Command(args []string, log *slog.Logger) error {
 	if *server == "" || (*tokenFile == "") == (*tokenEnv == "") || *workDir == "" {
 		return errors.New("oyzu-executor needs --server, --work-dir and one of --startup-token-file or --startup-token-env")
 	}
+	if *secretsDir == "" {
+		*secretsDir = filepath.Join(filepath.Dir(*workDir), "kind-tmp")
+	}
+	if err := os.MkdirAll(*secretsDir, 0o700); err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return Run(ctx, Config{
@@ -49,6 +56,7 @@ func Command(args []string, log *slog.Logger) error {
 		StartupTokenFile: *tokenFile,
 		StartupTokenEnv:  *tokenEnv,
 		WorkDir:          *workDir,
+		SecretsDir:       *secretsDir,
 		GitURL:           *gitURL,
 		Git:              *git,
 		Oyzu:             *oyzu,

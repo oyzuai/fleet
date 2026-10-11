@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/oyzuai/fleet/kindprotocol"
 )
 
 // KindOperationJob is the Job kind of a kind job.
@@ -54,12 +56,13 @@ func (c *Client) KindHeartbeat(ctx context.Context, job string) (KindBeat, error
 
 // KindEvent is one event the kind wrote, numbered in the order it was read.
 type KindEvent struct {
-	N       int       `json:"n"`
-	Time    time.Time `json:"time"`
-	Type    string    `json:"type"`
-	Level   string    `json:"level,omitempty"`
-	Message string    `json:"message,omitempty"`
-	Percent *int      `json:"percent,omitempty"`
+	Observed *kindprotocol.ObservedState `json:"observed,omitempty"`
+	N        int                         `json:"n"`
+	Time     time.Time                   `json:"time"`
+	Type     string                      `json:"type"`
+	Level    string                      `json:"level,omitempty"`
+	Message  string                      `json:"message,omitempty"`
+	Percent  *int                        `json:"percent,omitempty"`
 }
 
 // KindEvents posts a batch of events; resending a batch is harmless.
@@ -103,12 +106,17 @@ func (c *Client) KindFinish(ctx context.Context, job string, result json.RawMess
 // planDigestHeader names the plan a plan file belongs to.
 const planDigestHeader = "Oyzu-Plan-Digest"
 
-// maxPlanFile bounds a fetched plan file.
-const maxPlanFile = 64 << 20
+// MaxPlanFile bounds a packed plan archive on upload and download.
+const MaxPlanFile = 64 << 20
+
+const maxPlanFile = MaxPlanFile
 
 // KindPlanFileSave sends the plan file a plan job's kind saved for the plan
 // with digest, before the job finishes (IMPL-401).
 func (c *Client) KindPlanFileSave(ctx context.Context, job, digest string, file []byte) error {
+	if len(file) > maxPlanFile {
+		return fmt.Errorf("the plan file is larger than %d bytes", maxPlanFile)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"job/kind/plan-file", bytes.NewReader(file))
 	if err != nil {
 		return err
