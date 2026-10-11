@@ -43,11 +43,13 @@ const (
 	flushEvery = time.Second
 	flushAt    = 100
 	// finishTimeout bounds reporting the result, even on shutdown.
-	finishTimeout       = 30 * time.Second
-	finalFlushTimeout   = 2 * time.Second
-	processDrainTimeout = 2 * time.Second
-	maxEventLine        = 1 << 20
-	maxPendingBytes     = 4 << 20
+	finishTimeout           = 30 * time.Second
+	finalFlushTimeout       = 2 * time.Second
+	processDrainTimeout     = 2 * time.Second
+	containerRemovalTimeout = 30 * time.Second
+	maxImagePullTimeout     = 10 * time.Minute
+	maxEventLine            = 1 << 20
+	maxPendingBytes         = 4 << 20
 	// defaultStopGrace is how long a kind has to exit after SIGTERM.
 	defaultStopGrace = 10 * time.Second
 )
@@ -70,6 +72,8 @@ type Config struct {
 	// SecretsDir is where a private directory for the run's secrets is
 	// made; the system temp directory by default. Point it at a tmpfs.
 	SecretsDir string
+	// Owner is the job directory the process manager reaps; empty for other drivers.
+	Owner string
 	// Docker is the docker CLI for image kinds; "docker" by default.
 	Docker string
 	// DockerNetwork is the network image kinds join (docker run --network);
@@ -231,9 +235,9 @@ func (r *run) execute(ctx context.Context) (json.RawMessage, *runnerclient.KindN
 		reason = "cancelled"
 		r.abort(ctx, req, dirs, main)
 	case <-ctx.Done():
-		main.stop(0)
+		main.stop(r.stopGrace(ctx))
 	}
-	if !main.wait(3*processDrainTimeout + r.cfg.StopGrace) {
+	if !main.wait(r.drainTimeout() + r.cfg.StopGrace) {
 		return nil, &runnerclient.KindNoResult{Code: "crashed", Message: "kind did not stop before the drain deadline", Started: true}
 	}
 	if r.op.Image != "" {
@@ -270,7 +274,7 @@ func (r *run) execute(ctx context.Context) (json.RawMessage, *runnerclient.KindN
 func (r *run) abort(ctx context.Context, req *kindprotocol.Request, dirs jobDirs, main *process) {
 	if r.op.AbortTimeoutSeconds <= 0 || req.Operation == kindprotocol.OpAbort {
 		r.events.local("info", "Cancelled; the kind has no abort operation, so it is being stopped.")
-		main.stop(r.cfg.StopGrace)
+		main.stop(r.stopGrace(ctx))
 		return
 	}
 	r.events.local("info", "Cancelled; running the kind's abort operation.")
@@ -290,12 +294,12 @@ func (r *run) abort(ctx context.Context, req *kindprotocol.Request, dirs jobDirs
 			case <-t.C:
 				p.stop(r.cfg.StopGrace)
 			case <-ctx.Done():
-				main.stop(0)
-				p.stop(0)
+				main.stop(r.stopGrace(ctx))
+				p.stop(r.stopGrace(ctx))
 			}
 			t.Stop()
-			if !p.wait(3 * processDrainTimeout) {
-				main.stop(0)
+			if !p.wait(r.drainTimeout()) {
+				main.stop(r.stopGrace(ctx))
 				return
 			}
 			if res, problem := p.result(&ab); res != nil {
@@ -313,10 +317,35 @@ func (r *run) abort(ctx context.Context, req *kindprotocol.Request, dirs jobDirs
 	select {
 	case <-main.done:
 	case <-ctx.Done():
-		main.stop(0)
+		main.stop(r.stopGrace(ctx))
 	case <-time.After(r.cfg.StopGrace):
 		main.stop(r.cfg.StopGrace)
 	}
+}
+
+// stopGrace lets shutdown finish gracefully, but lease loss must stop work at once.
+func (r *run) stopGrace(ctx context.Context) time.Duration {
+	if errors.Is(context.Cause(ctx), ErrLost) {
+		return 0
+	}
+	return r.cfg.StopGrace
+}
+
+func (r *run) imagePullTimeout(label string) time.Duration {
+	seconds := r.op.TimeoutSeconds
+	if label == "abort" {
+		seconds = r.op.AbortTimeoutSeconds
+	}
+	return min(time.Duration(seconds)*time.Second, maxImagePullTimeout)
+}
+
+// drainTimeout includes container removal, which completes before process.done closes.
+func (r *run) drainTimeout() time.Duration {
+	timeout := 3 * processDrainTimeout
+	if r.op.Image != "" {
+		timeout += containerRemovalTimeout
+	}
+	return timeout
 }
 
 // process is one running kind process.
@@ -424,7 +453,16 @@ func (r *run) start(ctx context.Context, request []byte, dirs jobDirs, label str
 		if !imagePinned.MatchString(r.op.Image) {
 			return nil, fmt.Errorf("kind image %q is not pinned by digest", r.op.Image)
 		}
-		pullCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		pullCtx, cancel := context.WithTimeout(ctx, r.imagePullTimeout(label))
+		if label == "" {
+			go func() {
+				select {
+				case <-r.cancel:
+					cancel()
+				case <-pullCtx.Done():
+				}
+			}()
+		}
 		inspect := exec.CommandContext(pullCtx, r.cfg.Docker, "image", "inspect", r.op.Image)
 		inspect.WaitDelay = processDrainTimeout
 		if err := inspect.Run(); err != nil {
@@ -435,7 +473,11 @@ func (r *run) start(ctx context.Context, request []byte, dirs jobDirs, label str
 				return nil, fmt.Errorf("prepare kind image: %w", err)
 			}
 		}
+		pullErr := pullCtx.Err()
 		cancel()
+		if pullErr != nil {
+			return nil, fmt.Errorf("prepare kind image: %w", pullErr)
+		}
 		container := fmt.Sprintf("oyzu-kind-%d-%d", r.job.ID, r.job.Attempt)
 		if label != "" {
 			container += "-" + label
@@ -443,9 +485,12 @@ func (r *run) start(ctx context.Context, request []byte, dirs jobDirs, label str
 		args := []string{"run", "--rm", "-i", "--name", container, "--pull", "missing",
 			"--label", "oyzu.kind.job=" + strconv.FormatInt(r.job.ID, 10),
 			"--label", "oyzu.kind.attempt=" + strconv.Itoa(r.job.Attempt),
-			"--label", "oyzu.kind.runner=" + filepath.Dir(r.cfg.SecretsDir),
-			"--label", "oyzu.kind.manager=" + filepath.Dir(filepath.Dir(r.cfg.SecretsDir)),
 			"-e", "OYZU_KIND_STATE_DIR=" + ContainerStateDir, "-v", stateDir + ":" + ContainerStateDir}
+		if r.cfg.Owner != "" {
+			owner := filepath.Clean(r.cfg.Owner)
+			args = append(args, "--label", "oyzu.kind.runner="+owner,
+				"--label", "oyzu.kind.manager="+filepath.Dir(owner))
+		}
 		// The kind runs as the runner's own user, so it can write the
 		// directories the runner made for it (0700, the runner's) and what
 		// it leaves there stays the runner's to read and remove.
@@ -474,7 +519,7 @@ func (r *run) start(ctx context.Context, request []byte, dirs jobDirs, label str
 		}
 		cmd = exec.Command(r.cfg.Docker, append(args, r.op.Image)...)
 		cleanup = func() {
-			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), processDrainTimeout)
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), containerRemovalTimeout)
 			defer cancel()
 			_ = exec.CommandContext(ctx, r.cfg.Docker, "rm", "-f", container).Run()
 		}
@@ -672,6 +717,10 @@ func (u *uploader) add(e runnerclient.KindEvent) {
 	raw, _ := json.Marshal(e)
 	masked := u.mask.String(string(raw))
 	if err := json.Unmarshal([]byte(masked), &e); err != nil {
+		u.mu.Lock()
+		u.dropped++
+		u.droppedBytes += len(raw)
+		u.mu.Unlock()
 		return
 	}
 	u.mu.Lock()
@@ -721,7 +770,7 @@ func (u *uploader) flush(ctx context.Context) {
 		u.mu.Lock()
 		if u.dropped > 0 && u.bytes < maxPendingBytes-512 {
 			marker := runnerclient.KindEvent{N: u.next, Time: time.Now().UTC(), Type: "log", Level: "warn",
-				Message: fmt.Sprintf("runner: dropped %d events/%d bytes while the event queue was full", u.dropped, u.droppedBytes)}
+				Message: fmt.Sprintf("runner: dropped %d events/%d bytes because masking failed or the event queue was full", u.dropped, u.droppedBytes)}
 			u.next++
 			u.pending = append(u.pending, marker)
 			raw, _ := json.Marshal(marker)

@@ -163,6 +163,9 @@ func (p *Process) start(pr *proc, c runnerclient.Claim) error {
 		return err
 	}
 	tokenFile := filepath.Join(jobDir, StartupTokenFile)
+	if err := os.MkdirAll(filepath.Join(jobDir, "kind-tmp"), 0o700); err != nil {
+		return err
+	}
 	if err := writeAtomic(tokenFile, []byte(c.StartupToken)); err != nil {
 		return err
 	}
@@ -174,7 +177,7 @@ func (p *Process) start(pr *proc, c runnerclient.Claim) error {
 		return err
 	}
 	args := append(append([]string{}, p.Args...),
-		"--server", p.Server, "--startup-token-file", tokenFile, "--work-dir", filepath.Join(jobDir, "work"))
+		"--server", p.Server, "--startup-token-file", tokenFile, "--work-dir", filepath.Join(jobDir, "work"), "--secrets-dir", filepath.Join(jobDir, "kind-tmp"), "--job-dir", jobDir)
 	cmd := exec.Command(p.Runner, args...)
 	cmd.Dir = pr.dir
 	cmd.Env = p.env()

@@ -53,6 +53,8 @@ type Config struct {
 	// directory removed when the job ends; the system temp directory by
 	// default. Point it at a tmpfs so they never reach a disk.
 	SecretsDir string
+	// JobDir is the owner directory the process manager reaps for kind jobs.
+	JobDir string
 	// GitURL is the Git host, https://github.com by default.
 	GitURL string
 	// Git and Oyzu are the executables; "git" and "oyzu" on PATH by default.
@@ -123,7 +125,7 @@ func Run(ctx context.Context, cfg Config) error {
 	if job.Kind == runnerclient.KindOperationJob {
 		return kindrunner.Run(ctx, kindrunner.Config{
 			Client: cfg.Client, Token: st.JobToken, LeaseExpires: st.Expires, HeartbeatEvery: time.Duration(st.HeartbeatSeconds) * time.Second,
-			KindsDir: cfg.KindsDir, StateDir: cfg.KindStateDir, SecretsDir: cfg.SecretsDir, Docker: cfg.Docker, DockerNetwork: cfg.DockerNetwork, DockerEnv: cfg.DockerEnv, Log: cfg.Log,
+			KindsDir: cfg.KindsDir, StateDir: cfg.KindStateDir, SecretsDir: cfg.SecretsDir, Owner: cfg.JobDir, Docker: cfg.Docker, DockerNetwork: cfg.DockerNetwork, DockerEnv: cfg.DockerEnv, Log: cfg.Log,
 		}, job)
 	}
 	log := cfg.Log.With("job", job.ID, "attempt", job.Attempt, "correlation_id", job.CorrelationID)

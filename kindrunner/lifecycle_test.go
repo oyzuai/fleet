@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,135 @@ func useServer(t *testing.T, cfg *Config, handler http.HandlerFunc) {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	cfg.Client = runnerclient.New(srv.URL, srv.Client())
+}
+
+func TestMaskingInvalidJSONReportsDroppedEvent(t *testing.T) {
+	f, cfg, _, _ := setup(t, "ok", kindprotocol.OpObserve, 30, 0, nil)
+	u := newUploader(cfg.Client, cfg.Token, cfg.Log)
+	// A numeric credential can match an unquoted JSON number.
+	u.mask.Add("123456")
+	percent := 123456
+	e := runnerclient.KindEvent{Type: "progress", Percent: &percent}
+	raw, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.add(e)
+	if len(u.pending) != 0 || u.dropped != 1 || u.droppedBytes != len(raw) {
+		t.Fatalf("pending=%d dropped=%d bytes=%d", len(u.pending), u.dropped, u.droppedBytes)
+	}
+	u.flush(context.Background())
+	want := fmt.Sprintf("dropped 1 events/%d bytes", len(raw))
+	if len(f.events) != 1 || !strings.Contains(f.events[0].Message, want) || strings.Contains(f.events[0].Message, "123456") {
+		t.Fatalf("loss marker: %+v", f.events)
+	}
+	if u.dropped != 0 || u.droppedBytes != 0 {
+		t.Fatal("reported loss was not cleared")
+	}
+}
+
+func TestImageWithoutOwnerHasOnlyJobLabels(t *testing.T) {
+	_, cfg, job, _ := setup(t, "docker", kindprotocol.OpObserve, 30, 0, nil)
+	cfg.Docker = installFake(t, t.TempDir(), "docker")
+	args := filepath.Join(t.TempDir(), "args")
+	t.Setenv("OYZU_DOCKER_ARGS", args)
+	job.KindOperation.Image = "registry/kind@sha256:" + strings.Repeat("b", 64)
+	if err := Run(context.Background(), cfg, job); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"--label oyzu.kind.job=7", "--label oyzu.kind.attempt=1"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("missing %s: %s", want, raw)
+		}
+	}
+	if strings.Contains(string(raw), "oyzu.kind.runner=") || strings.Contains(string(raw), "oyzu.kind.manager=") {
+		t.Fatalf("owner labels without owner: %s", raw)
+	}
+}
+
+func TestImagePullUsesOperationBudget(t *testing.T) {
+	for _, tc := range []struct {
+		seconds int
+		want    time.Duration
+	}{{20, 20 * time.Second}, {300, 5 * time.Minute}, {900, 10 * time.Minute}} {
+		r := &run{op: &runnerclient.KindOperation{TimeoutSeconds: tc.seconds, AbortTimeoutSeconds: 45}}
+		if got := r.imagePullTimeout(""); got != tc.want {
+			t.Errorf("%d seconds: got %s, want %s", tc.seconds, got, tc.want)
+		}
+		if got := r.imagePullTimeout("abort"); got != 45*time.Second {
+			t.Errorf("abort got %s", got)
+		}
+	}
+}
+
+func TestImagePullStopsOnCancelShutdownAndLeaseLoss(t *testing.T) {
+	for _, cause := range []error{nil, context.Canceled, ErrLost} {
+		t.Run(fmt.Sprint(cause), func(t *testing.T) {
+			f, cfg, job, _ := setup(t, "docker", kindprotocol.OpObserve, 600, 0, nil)
+			cfg.Docker = installFake(t, t.TempDir(), "docker")
+			job.KindOperation.Image = "registry/kind@sha256:" + strings.Repeat("b", 64)
+			args := filepath.Join(t.TempDir(), "args")
+			t.Setenv("OYZU_DOCKER_ARGS", args)
+			t.Setenv("OYZU_DOCKER_MISSING", "1")
+			t.Setenv("OYZU_DOCKER_DELAY_COMMAND", "pull")
+			t.Setenv("OYZU_DOCKER_DELAY", "1m")
+			ctx, cancel := context.WithCancelCause(context.Background())
+			done := make(chan struct{})
+			var runErr error
+			go func() {
+				runErr = Run(ctx, cfg, job)
+				close(done)
+			}()
+			defer func() {
+				cancel(nil)
+				<-done
+			}()
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				raw, _ := os.ReadFile(args)
+				if strings.Contains(string(raw), "pull ") {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("pull never started")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if cause == nil {
+				f.cancel.Store(true)
+			} else {
+				cancel(cause)
+			}
+			select {
+			case <-done:
+				if cause == ErrLost && !errors.Is(runErr, ErrLost) || cause != ErrLost && runErr != nil {
+					t.Fatalf("Run: %v", runErr)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("pull ignored cancellation")
+			}
+		})
+	}
+}
+
+func TestContainerRemovalCanExceedDrainTimeout(t *testing.T) {
+	_, cfg, job, _ := setup(t, "docker", kindprotocol.OpObserve, 30, 0, nil)
+	cfg.Docker = installFake(t, t.TempDir(), "docker")
+	job.KindOperation.Image = "registry/kind@sha256:" + strings.Repeat("b", 64)
+	completed := filepath.Join(t.TempDir(), "removed")
+	t.Setenv("OYZU_DOCKER_DELAY_COMMAND", "rm")
+	t.Setenv("OYZU_DOCKER_DELAY", "3s")
+	t.Setenv("OYZU_DOCKER_COMPLETED", completed)
+	if err := Run(context.Background(), cfg, job); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(completed); err != nil {
+		t.Fatal("container removal was cut short:", err)
+	}
 }
 
 func TestStalledEventsStillFinishesWithRetry(t *testing.T) {

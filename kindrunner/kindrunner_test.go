@@ -51,6 +51,11 @@ func fakeKind(mode string) {
 		if len(args) > 0 && args[0] == os.Getenv("OYZU_DOCKER_FAIL") {
 			os.Exit(125)
 		}
+		if len(args) > 0 && args[0] == os.Getenv("OYZU_DOCKER_DELAY_COMMAND") {
+			delay, _ := time.ParseDuration(os.Getenv("OYZU_DOCKER_DELAY"))
+			time.Sleep(delay)
+			_ = os.WriteFile(os.Getenv("OYZU_DOCKER_COMPLETED"), nil, 0o600)
+		}
 		return
 	}
 	if mode == "child" {
@@ -363,6 +368,7 @@ func TestImageKindGetsLedgerAndNetwork(t *testing.T) {
 	docker := installFake(t, t.TempDir(), "docker")
 	t.Setenv("OYZU_DOCKER_ARGS", args)
 	cfg.Docker, cfg.DockerNetwork, cfg.DockerEnv = docker, "host", []string{"OYZU_TEST_PROXY", "OYZU_TEST_UNSET", "BAD=NAME"}
+	cfg.Owner = filepath.Join(t.TempDir(), "manager-7", "job-7-1-owner")
 	t.Setenv("OYZU_TEST_PROXY", "http://proxy")
 	if err := Run(context.Background(), cfg, job); err != nil {
 		t.Fatal(err)
@@ -375,7 +381,7 @@ func TestImageKindGetsLedgerAndNetwork(t *testing.T) {
 			break
 		}
 	}
-	for _, want := range []string{"--network host", "--label oyzu.kind.job=7", "--label oyzu.kind.attempt=1", "--label oyzu.kind.runner=" + filepath.Dir(cfg.SecretsDir), "OYZU_KIND_LEDGER_DIR=" + ContainerLedgerDir, ":" + ContainerLedgerDir + " ",
+	for _, want := range []string{"--network host", "--label oyzu.kind.job=7", "--label oyzu.kind.attempt=1", "--label oyzu.kind.runner=" + cfg.Owner, "--label oyzu.kind.manager=" + filepath.Dir(cfg.Owner), "OYZU_KIND_LEDGER_DIR=" + ContainerLedgerDir, ":" + ContainerLedgerDir + " ",
 		" " + job.KindOperation.Image, "-e OYZU_TEST_PROXY "} {
 		if !strings.Contains(run, want) {
 			t.Fatalf("docker %s lacks %q", run, want)
