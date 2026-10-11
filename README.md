@@ -26,6 +26,15 @@ Alongside them:
   side of the runs runner protocol: its calls, and the Ed25519 client
   assertions a manager logs in and rotates keys with.
 
+## Executor images
+
+The container and Kubernetes manager drivers require `--image` to be pinned
+by SHA-256 digest: `NAME@sha256:DIGEST`, where `DIGEST` is exactly 64 lowercase
+hex characters. A tag may accompany the digest (`NAME:TAG@sha256:DIGEST`),
+but bare names and tag-only references (including version tags) are refused
+at startup. This matches kindrunner's digest requirement and keeps executor
+images immutable across jobs. Use the digest published by your image registry.
+
 ## Building
 
 Build and test with [Oyzu](https://github.com/oyzuai/oyzu): `oyzu build`. The

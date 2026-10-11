@@ -118,7 +118,7 @@ func (f *fakeAPI) set(name string, st PodStatus) {
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func newDriver(api *fakeAPI) *Driver {
-	return &Driver{API: api, Image: "ghcr.io/oyzuai/executor@sha256:abc", Command: []string{"oyzu-executor", "--oyzu", "oyzu"},
+	return &Driver{API: api, Image: "ghcr.io/oyzuai/executor@sha256:" + strings.Repeat("a", 64), Command: []string{"oyzu-executor", "--oyzu", "oyzu"},
 		Server: "https://runs.example", Pool: "k8s-prod", Manager: 7, MaxPods: 2, CPU: "2", Memory: "4Gi", Disk: "20Gi",
 		NodeSelector: map[string]string{"workload": "builds"}, PollInterval: time.Millisecond, Log: quiet()}
 }
@@ -360,5 +360,42 @@ func TestTeardownAndReap(t *testing.T) {
 	}
 	if cp, _ := d.Capacity(ctx); len(cp.Ready) != 2 {
 		t.Fatalf("slot not freed: %+v", cp)
+	}
+}
+
+func TestCheckImageDigest(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	for _, tc := range []struct {
+		name  string
+		image string
+		valid bool
+	}{
+		{"empty", "", false},
+		{"bare name", "executor", false},
+		{"latest tag", "executor:latest", false},
+		{"version tag", "executor:1.2.3", false},
+		{"missing digest", "executor@sha256:", false},
+		{"short digest", "executor@sha256:abc", false},
+		{"long digest", "executor@sha256:" + digest + "a", false},
+		{"non hex digest", "executor@sha256:" + strings.Repeat("g", 64), false},
+		{"uppercase digest", "executor@sha256:" + strings.Repeat("A", 64), false},
+		{"wrong algorithm", "executor@sha512:" + digest, false},
+		{"missing name", "@sha256:" + digest, false},
+		{"trailing suffix", "executor@sha256:" + digest + ":tag", false},
+		{"digest", "ghcr.io/oyzuai/executor@sha256:" + digest, true},
+		{"tag and digest", "ghcr.io/oyzuai/executor:1.2.3@sha256:" + digest, true},
+		{"registry port", "localhost:5000/executor@sha256:" + digest, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDriver(newFakeAPI())
+			d.Image = tc.image
+			err := d.Check()
+			if (err == nil) != tc.valid {
+				t.Fatalf("Check() = %v, want valid = %v", err, tc.valid)
+			}
+			if !tc.valid && tc.image != "" && err != nil && !strings.Contains(err.Error(), "not pinned by digest") {
+				t.Fatalf("Check() returned an unrelated error: %v", err)
+			}
+		})
 	}
 }
