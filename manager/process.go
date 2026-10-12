@@ -35,6 +35,13 @@ var passEnv = []string{
 	"LANG", "LC_ALL", "TZ", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "DOCKER_HOST",
 }
 
+// noDockerEnv tells oyzu not to use a Docker engine. A pool without Docker
+// sets it on every runner, so a job placed there that needs Docker (a slice
+// that runs isolated actions) stops with NEEDS_DOCKER_DAEMON and exit 3,
+// which runs requeues on a Docker pool, instead of using a daemon the pool
+// never offered.
+const noDockerEnv = "OYZU_NO_DOCKER"
+
 // defaultStopGrace is how long a runner has to report after it is asked to
 // stop, before it is killed.
 const defaultStopGrace = 30 * time.Second
@@ -76,6 +83,11 @@ type Process struct {
 
 	mu    sync.Mutex
 	inUse map[SlotID]*proc
+	// adopted holds executors a crashed predecessor left running, by job
+	// directory name; each counts as a running slot until it exits.
+	adopted map[string]record
+	// poll is how often an adopted executor is checked; survivorPoll when 0.
+	poll time.Duration
 }
 
 // proc is one running runner.
@@ -114,8 +126,9 @@ func (p *Process) Facts(context.Context) (Facts, error) {
 func (p *Process) Capacity(context.Context) (Capacity, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	c := Capacity{Max: p.slots(), Running: len(p.inUse)}
-	for i := range p.slots() {
+	c := Capacity{Max: p.slots(), Running: len(p.inUse) + len(p.adopted)}
+	free := p.slots() - c.Running
+	for i := 0; i < p.slots() && len(c.Ready) < free; i++ {
 		id := SlotID(strconv.Itoa(i))
 		if _, busy := p.inUse[id]; !busy {
 			c.Ready = append(c.Ready, id)
@@ -156,7 +169,16 @@ func (p *Process) start(pr *proc, c runnerclient.Claim) error {
 	if err := os.MkdirAll(pr.dir, 0o700); err != nil {
 		return err
 	}
-	tokenFile := filepath.Join(pr.dir, StartupTokenFile)
+	// The executor runs with cmd.Dir = pr.dir, so the paths it is given must not
+	// depend on the manager's own working directory.
+	jobDir, err := filepath.Abs(pr.dir)
+	if err != nil {
+		return err
+	}
+	tokenFile := filepath.Join(jobDir, StartupTokenFile)
+	if err := os.MkdirAll(filepath.Join(jobDir, "kind-tmp"), 0o700); err != nil {
+		return err
+	}
 	if err := writeAtomic(tokenFile, []byte(c.StartupToken)); err != nil {
 		return err
 	}
@@ -168,16 +190,26 @@ func (p *Process) start(pr *proc, c runnerclient.Claim) error {
 		return err
 	}
 	args := append(append([]string{}, p.Args...),
-		"--server", p.Server, "--startup-token-file", tokenFile, "--work-dir", filepath.Join(pr.dir, "work"))
+		"--server", p.Server, "--startup-token-file", tokenFile, "--work-dir", filepath.Join(jobDir, "work"), "--secrets-dir", filepath.Join(jobDir, "kind-tmp"), "--job-dir", jobDir)
 	cmd := exec.Command(p.Runner, args...)
 	cmd.Dir = pr.dir
 	cmd.Env = p.env()
 	cmd.Stdout, cmd.Stderr = logFile, logFile
+	ownProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
 		return fmt.Errorf("oyzu-executor: %w", err)
 	}
 	pr.cmd, pr.log = cmd, logFile
+	// Recorded so a manager restarted after a crash can tell this executor
+	// is still running before it touches the directory.
+	if start, err := processStart(cmd.Process.Pid); errors.Is(err, errProcessGone) {
+		// Already exited; there is nothing to record.
+	} else if err != nil {
+		p.logger().Warn("could not record the executor's process", "dir", pr.dir, "error", err)
+	} else if err := writeRecord(pr.dir, record{PID: cmd.Process.Pid, Start: start, Job: c.JobID, Attempt: c.Attempt}); err != nil {
+		p.logger().Warn("could not record the executor's process", "dir", pr.dir, "error", err)
+	}
 	go func() {
 		pr.err = cmd.Wait()
 		close(pr.done)
@@ -245,7 +277,10 @@ func (p *Process) Teardown(_ context.Context, h Handle) error {
 			select {
 			case <-pr.done:
 			case <-t.C:
-				_ = pr.cmd.Process.Kill()
+				// Its whole process group, so nothing it started outlives it.
+				if killGroup(pr.cmd.Process.Pid) != nil {
+					_ = pr.cmd.Process.Kill()
+				}
 				<-pr.done
 			}
 			t.Stop()
@@ -261,16 +296,15 @@ func (p *Process) Teardown(_ context.Context, h Handle) error {
 
 // Reap implements Driver. It removes job directories under this manager's
 // directory that belong to no live job and no runner this driver started,
-// such as those a crashed manager left. A runner orphaned by such a crash
-// is not killed: process IDs are reused, so killing by a recorded ID could
-// hit an unrelated process. Its job tokens stop working when its lease
-// expires.
-func (p *Process) Reap(_ context.Context, live []JobID) error {
+// such as those a crashed manager left, and the kind containers those jobs'
+// executors left. A runner such a crash orphaned, as its directory's
+// executor record proves by PID and process start time, is adopted instead:
+// its directory and kind containers stay and it holds a slot until it exits.
+// It is never killed, since its job may still finish; nothing is killed by
+// a PID that cannot be verified, because PIDs are reused.
+func (p *Process) Reap(ctx context.Context, live []JobID) error {
 	entries, err := os.ReadDir(p.jobsDir())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	keepJob := map[JobID]bool{}
@@ -280,13 +314,59 @@ func (p *Process) Reap(_ context.Context, live []JobID) error {
 	p.mu.Lock()
 	keepDir := map[string]bool{}
 	for _, pr := range p.inUse {
-		keepDir[filepath.Base(pr.dir)] = true
+		select {
+		case <-pr.done:
+		default:
+			keepDir[filepath.Base(pr.dir)] = true
+		}
 	}
 	p.mu.Unlock()
+	// Executors a crashed predecessor left running keep their directories
+	// and, below, their kind containers.
+	for _, e := range entries {
+		if job, ok := jobOfDir(e.Name()); ok && !keepDir[e.Name()] && !keepJob[job] && p.survives(e.Name()) {
+			keepDir[e.Name()] = true
+		}
+	}
 	var errs []error
+	blocked := map[string]bool{}
+	// Scan labels independently of directories: teardown may already have
+	// removed the directory of a crashed executor.
+	if p.Docker {
+		reapCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		format := "{{.ID}}	{{.Label \"oyzu.kind.runner\"}}	{{.Label \"oyzu.kind.job\"}}"
+		list := exec.CommandContext(reapCtx, "docker", "ps", "-a", "--filter", "label=oyzu.kind.runner", "--filter", "label=oyzu.kind.manager="+filepath.Clean(p.jobsDir()), "--format", format)
+		list.WaitDelay = time.Second
+		rows, listErr := list.Output()
+		if listErr != nil {
+			cancel()
+			return fmt.Errorf("list kind containers: %w", listErr)
+		}
+		for _, row := range strings.Split(strings.TrimSpace(string(rows)), "\n") {
+			fields := strings.Split(strings.TrimSuffix(row, "\r"), "\t")
+			if len(fields) != 3 {
+				continue
+			}
+			owner := filepath.Clean(fields[1])
+			if filepath.Dir(owner) != filepath.Clean(p.jobsDir()) {
+				continue
+			}
+			job, ok := jobOfDir(filepath.Base(owner))
+			if !ok || fields[2] != strconv.FormatInt(job, 10) || keepJob[job] || keepDir[filepath.Base(owner)] {
+				continue
+			}
+			remove := exec.CommandContext(reapCtx, "docker", "rm", "-f", fields[0])
+			remove.WaitDelay = time.Second
+			if err := remove.Run(); err != nil {
+				blocked[filepath.Base(owner)] = true
+				errs = append(errs, fmt.Errorf("reap kind container %s: %w", fields[0], err))
+			}
+		}
+		cancel()
+	}
 	for _, e := range entries {
 		job, ok := jobOfDir(e.Name())
-		if !ok || keepDir[e.Name()] || keepJob[job] {
+		if !ok || keepDir[e.Name()] || keepJob[job] || blocked[e.Name()] {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(p.jobsDir(), e.Name())); err != nil {
@@ -296,6 +376,72 @@ func (p *Process) Reap(_ context.Context, live []JobID) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// survives reports whether a job directory's executor outlived the manager
+// that started it, adopting it the first time.
+func (p *Process) survives(name string) bool {
+	p.mu.Lock()
+	_, known := p.adopted[name]
+	p.mu.Unlock()
+	if known {
+		return true
+	}
+	dir := filepath.Join(p.jobsDir(), name)
+	state, r, err := survivor(dir)
+	switch state {
+	case survivorDead:
+		return false
+	case survivorUnknown:
+		p.logger().Warn("could not tell whether a job directory's executor is still running; leaving it", "dir", name, "error", err)
+		return true
+	}
+	p.mu.Lock()
+	if p.adopted == nil {
+		p.adopted = map[string]record{}
+	}
+	p.adopted[name] = r
+	p.mu.Unlock()
+	p.logger().Info("adopted an executor that outlived the previous manager; it holds a slot until it exits",
+		"dir", name, "pid", r.PID, "job", r.Job, "attempt", r.Attempt)
+	go p.watchSurvivor(name, r)
+	return true
+}
+
+// watchSurvivor waits for an adopted executor to exit, then removes its
+// directory and frees its slot.
+func (p *Process) watchSurvivor(name string, r record) {
+	poll := p.poll
+	if poll <= 0 {
+		poll = survivorPoll
+	}
+	for {
+		time.Sleep(poll)
+		start, err := processStart(r.PID)
+		if err == nil && start == r.Start {
+			continue
+		}
+		if err != nil && !errors.Is(err, errProcessGone) {
+			continue
+		}
+		break
+	}
+	err := os.RemoveAll(filepath.Join(p.jobsDir(), name))
+	p.mu.Lock()
+	delete(p.adopted, name)
+	p.mu.Unlock()
+	if err != nil {
+		p.logger().Warn("an adopted executor exited; removing its directory failed, the reaper will retry", "dir", name, "error", err)
+		return
+	}
+	p.logger().Info("an adopted executor exited", "dir", name, "job", r.Job, "attempt", r.Attempt)
+}
+
+func (p *Process) logger() *slog.Logger {
+	if p.Log != nil {
+		return p.Log
+	}
+	return slog.Default()
 }
 
 // jobOfDir parses the job id from a job-<job>-<attempt>-<suffix> name.
@@ -312,6 +458,8 @@ func jobOfDir(name string) (JobID, bool) {
 	return n, err == nil
 }
 
+// env is the runner's environment: passEnv and ExtraEnv from the manager's,
+// plus OYZU_NO_DOCKER=1 when the pool does not offer Docker.
 func (p *Process) env() []string {
 	environ := p.environ
 	if environ == nil {
@@ -324,12 +472,18 @@ func (p *Process) env() []string {
 		if !ok || name == "" {
 			continue
 		}
+		if !p.Docker && strings.EqualFold(name, noDockerEnv) {
+			continue
+		}
 		for _, k := range keep {
 			if strings.EqualFold(name, k) {
 				out = append(out, kv)
 				break
 			}
 		}
+	}
+	if !p.Docker {
+		out = append(out, noDockerEnv+"=1")
 	}
 	return out
 }

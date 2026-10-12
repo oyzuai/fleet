@@ -18,7 +18,7 @@ import (
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func TestProcessPassesOnlyAllowlistedEnvironment(t *testing.T) {
-	p := &Process{ExtraEnv: []string{"BUILD_CACHE"}, environ: func() []string {
+	p := &Process{Docker: true, ExtraEnv: []string{"BUILD_CACHE"}, environ: func() []string {
 		return []string{"Path=C:\\bin", "HOME=/home/m", "OYZU_ENROLLMENT_TOKEN=secret", "AWS_SECRET_ACCESS_KEY=x",
 			"BUILD_CACHE=/c", "GITHUB_TOKEN=ghp_x", "=C:=C:\\"}
 	}}

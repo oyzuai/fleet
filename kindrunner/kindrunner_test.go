@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -35,6 +36,34 @@ func TestMain(m *testing.M) {
 // hang waits to be stopped, secrets reports what OYZU_SECRETS_DIR holds,
 // garbage writes no valid result.
 func fakeKind(mode string) {
+	if mode == "docker" {
+		args := os.Args[1:]
+		if len(args) > 0 && args[0] == "image" && os.Getenv("OYZU_DOCKER_MISSING") != "" {
+			os.Exit(1)
+		}
+		if path := os.Getenv("OYZU_DOCKER_ARGS"); path != "" {
+			f, _ := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+			if f != nil {
+				fmt.Fprintln(f, strings.Join(args, " "))
+				f.Close()
+			}
+		}
+		if len(args) > 0 && args[0] == os.Getenv("OYZU_DOCKER_FAIL") {
+			os.Exit(125)
+		}
+		if len(args) > 0 && args[0] == os.Getenv("OYZU_DOCKER_DELAY_COMMAND") {
+			delay, _ := time.ParseDuration(os.Getenv("OYZU_DOCKER_DELAY"))
+			time.Sleep(delay)
+			_ = os.WriteFile(os.Getenv("OYZU_DOCKER_COMPLETED"), nil, 0o600)
+		}
+		return
+	}
+	if mode == "child" {
+		time.Sleep(2 * time.Second)
+		_ = os.WriteFile(os.Getenv("OYZU_CHILD_MARKER"), []byte("survived"), 0o600)
+		time.Sleep(time.Minute)
+		return
+	}
 	raw, _ := io.ReadAll(os.Stdin)
 	req, err := kindprotocol.DecodeRequest(raw)
 	if err != nil {
@@ -54,6 +83,10 @@ func fakeKind(mode string) {
 	ev(kindprotocol.EventBody{Type: "progress", Percent: &pct, Message: "halfway"}, 0)
 	os.Stderr.WriteString("a plain line\n")
 	if req.Operation == kindprotocol.OpAbort {
+		if mode == "hang-abort" {
+			os.WriteFile(filepath.Join(os.Getenv("OYZU_KIND_STATE_DIR"), "aborted"), nil, 0o600)
+			time.Sleep(time.Minute)
+		}
 		os.WriteFile(filepath.Join(os.Getenv("OYZU_KIND_STATE_DIR"), "aborted"), nil, 0o600)
 		result(kindprotocol.Result{Outcome: kindprotocol.Succeeded})
 		return
@@ -64,7 +97,23 @@ func fakeKind(mode string) {
 		if err != nil || strings.Count(string(body), "-----BEGIN CERTIFICATE-----") != 2 || os.Getenv("HTTPS_PROXY") != "http://corporate.example:3128" {
 			os.Exit(7)
 		}
-	case "hang":
+	case "child-parent":
+		cmd := exec.Command(os.Args[0])
+		cmd.Env = append(os.Environ(), "OYZU_FAKE_KIND=child")
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			os.Exit(4)
+		}
+		_ = os.WriteFile(os.Getenv("OYZU_CHILD_PID"), []byte(fmt.Sprint(cmd.Process.Pid)), 0o600)
+		time.Sleep(time.Minute)
+	case "long-line":
+		os.Stderr.WriteString(strings.Repeat("x", 2<<20) + "\n")
+		ev(kindprotocol.EventBody{Type: "log", Level: "info", Message: "after long line"}, 2)
+	case "observed":
+		ev(kindprotocol.EventBody{Type: "observed", Observed: &kindprotocol.ObservedState{
+			AsOf: time.Now().UTC(), Components: []kindprotocol.ObservedComponent{{Component: "web", Version: "v2", Health: kindprotocol.Healthy}},
+		}}, 2)
+	case "hang", "hang-abort":
 		time.Sleep(time.Minute)
 	case "garbage":
 		os.Stdout.WriteString("not json")
@@ -140,17 +189,7 @@ func (f *fakeRuns) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func setup(t *testing.T, mode string, op kindprotocol.Operation, timeout, abort int, secrets []string) (*fakeRuns, Config, runnerclient.Job, string) {
 	t.Helper()
 	kinds := t.TempDir()
-	if runtime.GOOS == "windows" {
-		binary, err := os.ReadFile(os.Args[0])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(kinds, "kind-fake.exe"), binary, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	} else if err := os.Symlink(os.Args[0], filepath.Join(kinds, "kind-fake")); err != nil {
-		t.Fatal(err)
-	}
+	installFake(t, kinds, "kind-fake")
 	t.Setenv("OYZU_FAKE_KIND", mode)
 	f := &fakeRuns{}
 	srv := httptest.NewServer(f)
@@ -212,7 +251,7 @@ func TestSecretsAreFilesNotRequest(t *testing.T) {
 	}
 	found := false
 	for _, e := range f.events {
-		found = found || e.Message == "key=s3cret"
+		found = found || e.Message == "key=***"
 	}
 	if !found {
 		t.Fatalf("the kind did not read its secret file: %+v", f.events)
@@ -330,26 +369,38 @@ func TestImageKindGetsLedgerAndNetwork(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the docker fake is a shell script")
 	}
-	f, cfg, job, _ := setup(t, "ok", kindprotocol.OpApply, 30, 0, nil)
+	f, cfg, job, _ := setup(t, "docker", kindprotocol.OpApply, 30, 0, nil)
 	job.KindOperation.Ledger = true
 	job.KindOperation.Image = "registry.local/kinds/fake@sha256:" + strings.Repeat("b", 64)
 	args := filepath.Join(t.TempDir(), "args")
-	docker := filepath.Join(t.TempDir(), "docker")
-	if err := os.WriteFile(docker, []byte("#!/bin/sh\necho \"$@\" >> "+args+"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	docker := installFake(t, t.TempDir(), "docker")
+	t.Setenv("OYZU_DOCKER_ARGS", args)
 	cfg.Docker, cfg.DockerNetwork, cfg.DockerEnv = docker, "host", []string{"OYZU_TEST_PROXY", "OYZU_TEST_UNSET", "BAD=NAME"}
+	cfg.Owner = filepath.Join(t.TempDir(), "manager-7", "job-7-1-owner")
 	t.Setenv("OYZU_TEST_PROXY", "http://proxy")
 	if err := Run(context.Background(), cfg, job); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(args)
-	run := strings.SplitN(string(b), "\n", 2)[0]
-	for _, want := range []string{"--network host", fmt.Sprintf("--user %d:%d", os.Getuid(), os.Getgid()), "OYZU_KIND_LEDGER_DIR=" + ContainerLedgerDir, ":" + ContainerLedgerDir + " ",
+	var run string
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, "run ") {
+			run = line
+			break
+		}
+	}
+	for _, want := range []string{"--network host", "--label oyzu.kind.job=7", "--label oyzu.kind.attempt=1", "--label oyzu.kind.runner=" + cfg.Owner, "--label oyzu.kind.manager=" + filepath.Dir(cfg.Owner), "OYZU_KIND_LEDGER_DIR=" + ContainerLedgerDir, ":" + ContainerLedgerDir + " ",
 		" " + job.KindOperation.Image, "-e OYZU_TEST_PROXY "} {
 		if !strings.Contains(run, want) {
 			t.Fatalf("docker %s lacks %q", run, want)
 		}
+	}
+	if uid, gid := os.Getuid(), os.Getgid(); uid >= 0 && gid >= 0 {
+		if !strings.Contains(run, fmt.Sprintf("--user %d:%d", uid, gid)) {
+			t.Fatalf("docker %s lacks runner user", run)
+		}
+	} else if strings.Contains(run, "--user") {
+		t.Fatalf("docker %s passed an unsupported host user", run)
 	}
 	if strings.Contains(run, "OYZU_TEST_UNSET") || strings.Contains(run, "BAD=NAME") {
 		t.Fatalf("docker %s passes a variable the runner does not have, or a bad name", run)
@@ -357,4 +408,37 @@ func TestImageKindGetsLedgerAndNetwork(t *testing.T) {
 	if !strings.Contains(string(f.finish["no_result"]), "no-result") {
 		t.Fatalf("finish %s", f.finish)
 	}
+}
+
+// installFake gives Windows an executable without requiring symlink privileges.
+func installFake(t *testing.T, dir, name string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(dir, name)
+	if runtime.GOOS != "windows" {
+		if err := os.Symlink(os.Args[0], path); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		in, err := os.Open(os.Args[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer in.Close()
+		out, err := os.Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = io.Copy(out, in)
+		cerr := out.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cerr != nil {
+			t.Fatal(cerr)
+		}
+	}
+	return path
 }

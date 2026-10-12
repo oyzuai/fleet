@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,6 +37,21 @@ func TestHelperProcess(t *testing.T) {
 	case "sleep":
 		time.Sleep(time.Minute)
 		os.Exit(0)
+	case "readtoken":
+		// The executor runs inside its job directory, so both paths it is
+		// given must be absolute and the token must be readable.
+		code := 0
+		for i, a := range os.Args {
+			if (a == "--startup-token-file" || a == "--work-dir") && i+1 < len(os.Args) && !filepath.IsAbs(os.Args[i+1]) {
+				code = 4
+			}
+			if a == "--startup-token-file" && i+1 < len(os.Args) {
+				if _, err := os.ReadFile(os.Args[i+1]); err != nil {
+					code = 5
+				}
+			}
+		}
+		os.Exit(code)
 	default:
 		code, _ := strconv.Atoi(mode)
 		os.Exit(code)
@@ -169,5 +185,24 @@ func TestProcessDriverFacts(t *testing.T) {
 	}
 	if n, err := strconv.Atoi(f[FactCPU]); err != nil || n < 1 {
 		t.Fatalf("cpu fact = %q", f[FactCPU])
+	}
+}
+
+func TestProcessDriverTellsOyzuWhenThereIsNoDocker(t *testing.T) {
+	environ := func() []string {
+		return []string{"PATH=/bin", "OYZU_NO_DOCKER=0", "SECRET=x"}
+	}
+	has := func(env []string, kv string) bool { return slices.Contains(env, kv) }
+
+	without := (&Process{environ: environ}).env()
+	if !has(without, "OYZU_NO_DOCKER=1") || has(without, "OYZU_NO_DOCKER=0") || has(without, "SECRET=x") || !has(without, "PATH=/bin") {
+		t.Fatalf("env without Docker = %v", without)
+	}
+	with := (&Process{Docker: true, environ: environ, ExtraEnv: []string{"OYZU_NO_DOCKER"}}).env()
+	if has(with, "OYZU_NO_DOCKER=1") || !has(with, "OYZU_NO_DOCKER=0") {
+		t.Fatalf("env with Docker = %v", with)
+	}
+	if env := (&Process{Docker: true, environ: environ}).env(); slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "OYZU_NO_DOCKER=") }) {
+		t.Fatalf("env with Docker and no pass-through = %v", env)
 	}
 }

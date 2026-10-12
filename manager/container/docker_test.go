@@ -2,10 +2,22 @@ package container
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -61,7 +73,7 @@ func newStub(t *testing.T, routes map[string]func(w http.ResponseWriter, r *http
 		_, _ = w.Write([]byte(`{"message":"no such thing"}`))
 	}))
 	t.Cleanup(srv.Close)
-	d, err := NewDocker("tcp://" + strings.TrimPrefix(srv.URL, "http://"))
+	d, err := NewDocker("tcp://"+strings.TrimPrefix(srv.URL, "http://"), DockerOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,11 +169,162 @@ func TestDockerClient(t *testing.T) {
 	}
 }
 
-func TestNewDockerRefusesNamedPipes(t *testing.T) {
-	if _, err := NewDocker("npipe:////./pipe/docker_engine"); err == nil {
-		t.Fatal("accepted a named pipe")
+func TestNewDockerRefusesPlaintextToAnotherHost(t *testing.T) {
+	_, err := NewDocker("tcp://docker.example:2375", DockerOptions{})
+	if err == nil || !strings.Contains(err.Error(), "--engine-allow-plaintext") {
+		t.Fatalf("plain HTTP to another host = %v", err)
 	}
-	if _, err := NewDocker("unix:///run/podman/podman.sock"); err != nil {
+	for _, host := range []string{"tcp://127.0.0.1:2375", "tcp://localhost:2375", "tcp://[::1]:2375"} {
+		d, err := NewDocker(host, DockerOptions{})
+		if err != nil || !strings.HasPrefix(d.base, "http://") {
+			t.Fatalf("%s: %v", host, err)
+		}
+	}
+	d, err := NewDocker("tcp://docker.example:2375", DockerOptions{AllowPlaintext: true})
+	if err != nil || d.base != "http://docker.example:2375/"+apiVersion {
+		t.Fatalf("opted-in plain HTTP = %+v, %v", d, err)
+	}
+	if _, err := NewDocker("unix:///run/podman/podman.sock", DockerOptions{}); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := NewDocker("ssh://docker.example", DockerOptions{}); err == nil {
+		t.Fatal("accepted an ssh engine")
+	}
+}
+
+func TestContainerLogsDemultiplexes(t *testing.T) {
+	frame := func(stream byte, s string) []byte {
+		n := len(s)
+		return append([]byte{stream, 0, 0, 0, byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)}, s...)
+	}
+	body := append(frame(1, "out line\n"), frame(2, "err line\n")...)
+	d, s := newStub(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /containers/c1/logs": func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(body) },
+	})
+	got, err := d.ContainerLogs(context.Background(), "c1", 40)
+	if err != nil || string(got) != "out line\nerr line\n" {
+		t.Fatalf("ContainerLogs = %q, %v", got, err)
+	}
+	if q := s.seen[0]; !strings.Contains(q, "tail=40") || !strings.Contains(q, "stderr=1") {
+		t.Fatalf("request = %s", q)
+	}
+	if got := demux([]byte("plain text")); string(got) != "plain text" {
+		t.Fatalf("demux of a TTY stream = %q", got)
+	}
+}
+
+func TestPipePath(t *testing.T) {
+	for in, want := range map[string]string{
+		"npipe:////./pipe/docker_engine": `\\.\pipe\docker_engine`,
+		"npipe://./pipe/podman":          `\\.\pipe\podman`,
+	} {
+		u, _ := url.Parse(in)
+		if got := pipePath(u); got != want {
+			t.Errorf("pipePath(%s) = %s, want %s", in, got, want)
+		}
+	}
+}
+
+// writePKI writes a CA, a server certificate for 127.0.0.1 and a client
+// certificate, the way DOCKER_CERT_PATH holds them, and returns the server's
+// TLS config, which requires a client certificate from the CA.
+func writePKI(t *testing.T, dir string) *tls.Config {
+	t.Helper()
+	newKey := func() *ecdsa.PrivateKey {
+		k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return k
+	}
+	now := time.Now()
+	caKey := newKey()
+	caTmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "ca"}, NotBefore: now.Add(-time.Hour),
+		NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, _ := x509.ParseCertificate(caDER)
+	issue := func(serial int64, usage x509.ExtKeyUsage, ips []net.IP) ([]byte, *ecdsa.PrivateKey) {
+		k := newKey()
+		tmpl := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: "leaf"}, NotBefore: now.Add(-time.Hour),
+			NotAfter: now.Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{usage}, IPAddresses: ips, KeyUsage: x509.KeyUsageDigitalSignature}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &k.PublicKey, caKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return der, k
+	}
+	writePEM := func(name, typ string, b []byte) {
+		if err := os.WriteFile(filepath.Join(dir, name), pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: b}), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writePEM("ca.pem", "CERTIFICATE", caDER)
+	clientDER, clientKey := issue(2, x509.ExtKeyUsageClientAuth, nil)
+	writePEM("cert.pem", "CERTIFICATE", clientDER)
+	kb, _ := x509.MarshalECPrivateKey(clientKey)
+	writePEM("key.pem", "EC PRIVATE KEY", kb)
+	serverDER, serverKey := issue(3, x509.ExtKeyUsageServerAuth, []net.IP{net.ParseIP("127.0.0.1")})
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	return &tls.Config{
+		Certificates: []tls.Certificate{{Certificate: [][]byte{serverDER}, PrivateKey: serverKey}},
+		ClientCAs:    pool, ClientAuth: tls.RequireAndVerifyClientCert,
+	}
+}
+
+func TestDockerUsesTLSClientCertificates(t *testing.T) {
+	dir := t.TempDir()
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			http.Error(w, "no client certificate", http.StatusForbidden)
+			return
+		}
+		_, _ = w.Write([]byte(`{"OSType":"linux","Architecture":"x86_64","NCPU":2}`))
+	}))
+	srv.TLS = writePKI(t, dir)
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	host := "tcp://" + strings.TrimPrefix(srv.URL, "https://")
+
+	d, err := NewDocker(host, DockerOptions{CertPath: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := d.Info(context.Background())
+	if err != nil || info.NCPU != 2 {
+		t.Fatalf("Info over TLS = %+v, %v", info, err)
+	}
+	// Without ca.pem the server's certificate is checked against the system
+	// roots, which do not hold the test CA: verification is never skipped.
+	other := t.TempDir()
+	for _, f := range []string{"cert.pem", "key.pem"} {
+		b, _ := os.ReadFile(filepath.Join(dir, f))
+		_ = os.WriteFile(filepath.Join(other, f), b, 0o600)
+	}
+	d, err = NewDocker(host, DockerOptions{CertPath: other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Info(context.Background()); err == nil {
+		t.Fatal("trusted a server certificate from an unknown CA")
+	}
+}
+
+func TestEngineCallsHaveADeadline(t *testing.T) {
+	release := make(chan struct{})
+	d, _ := newStub(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /containers/create": func(http.ResponseWriter, *http.Request) { <-release },
+	})
+	// Registered after the stub, so it runs before the server's Close waits
+	// for the hung handler.
+	t.Cleanup(func() { close(release) })
+	d.callTimeout = 50 * time.Millisecond
+	start := time.Now()
+	_, err := d.CreateContainer(context.Background(), "c", Spec{})
+	if err == nil || time.Since(start) > 5*time.Second {
+		t.Fatalf("a hung create returned %v after %s", err, time.Since(start))
 	}
 }

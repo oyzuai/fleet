@@ -28,6 +28,7 @@ type fakeAPI struct {
 type fakePod struct {
 	pod    Pod
 	status PodStatus
+	logs   string
 }
 
 func newFakeAPI() *fakeAPI {
@@ -87,6 +88,16 @@ func (f *fakeAPI) GetPod(_ context.Context, name string) (PodStatus, error) {
 		return PodStatus{}, ErrNotFound
 	}
 	return p.status, nil
+}
+
+func (f *fakeAPI) PodLog(_ context.Context, name string, _ int) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.pods[name]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return []byte(p.logs), nil
 }
 
 func (f *fakeAPI) DeletePod(_ context.Context, name string, _ time.Duration) error {
@@ -275,6 +286,24 @@ func TestWaitOutcomes(t *testing.T) {
 				t.Fatalf("Wait = %+v, %v", exit, err)
 			}
 		})
+	}
+}
+
+func TestAFailedPodKeepsTheEndOfItsOutput(t *testing.T) {
+	api := newFakeAPI()
+	d := newDriver(api)
+	h, err := d.Start(context.Background(), "0", runnerclient.Claim{JobID: 1, Attempt: 1, StartupToken: "startup-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.mu.Lock()
+	api.pods[h.Ref].logs = "token startup-secret\nrunner: the runs service refused the startup token\n"
+	api.mu.Unlock()
+	api.set(h.Ref, terminated(2, "Error"))
+	exit, err := d.Wait(context.Background(), h)
+	if err != nil || exit.Code != 2 || !strings.Contains(exit.Detail, "refused the startup token") ||
+		strings.Contains(exit.Detail, "startup-secret") {
+		t.Fatalf("Wait = %+v, %v", exit, err)
 	}
 }
 

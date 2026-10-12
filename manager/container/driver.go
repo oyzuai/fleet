@@ -103,6 +103,8 @@ type job struct {
 	name   string
 	volume string
 	id     string
+	// token is the claim's startup token, masked out of the log tail.
+	token string
 }
 
 var _ manager.Driver = (*Driver)(nil)
@@ -242,7 +244,7 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
 	name := fmt.Sprintf("oyzu-%d-job-%d-%d-%s", d.Manager, c.JobID, c.Attempt, hex.EncodeToString(suffix))
-	j := &job{name: name, volume: name + "-work"}
+	j := &job{name: name, volume: name + "-work", token: c.StartupToken}
 	d.mu.Lock()
 	if !d.pulled {
 		d.mu.Unlock()
@@ -339,12 +341,21 @@ func (d *Driver) job(h manager.Handle) (*job, error) {
 
 // Wait implements manager.Driver. A container the kernel killed for
 // memory was lost, not exited, so its job is handed back if the runner had
-// not started.
+// not started. An executor that did not end cleanly has the masked end of
+// its output in the exit's detail, read before Teardown removes it.
 func (d *Driver) Wait(ctx context.Context, h manager.Handle) (manager.Exit, error) {
 	j, err := d.job(h)
 	if err != nil {
 		return manager.Exit{}, err
 	}
+	exit, err := d.wait(ctx, j)
+	if err != nil || exit.Clean() {
+		return exit, err
+	}
+	return exit.WithLogTail(d.logTail(ctx, j)), nil
+}
+
+func (d *Driver) wait(ctx context.Context, j *job) (manager.Exit, error) {
 	code, err := d.Engine.WaitContainer(ctx, j.id)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -362,6 +373,17 @@ func (d *Driver) Wait(ctx context.Context, h manager.Handle) (manager.Exit, erro
 		return manager.Exit{Reason: manager.ExitLost, Code: -1, Detail: st.Error}, nil
 	}
 	return manager.Exit{Reason: manager.ExitExited, Code: code, Detail: "container " + j.name}, nil
+}
+
+// logTail reads the end of a container's output; a failure only means the
+// detail has none.
+func (d *Driver) logTail(ctx context.Context, j *job) string {
+	out, err := d.Engine.ContainerLogs(ctx, j.id, manager.LogTailLines)
+	if err != nil {
+		d.log().Warn("could not read the container's output", "container", j.name, "error", err)
+		return ""
+	}
+	return manager.LogTail(out, j.token)
 }
 
 // Teardown implements manager.Driver: stop, remove the container, then

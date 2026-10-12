@@ -339,7 +339,8 @@ type Output struct {
 	OCIDigest string `json:"oci_digest,omitempty"`
 }
 
-// Finish reports the outcome; the job token stops working.
+// Finish reports the outcome. Only the log routes retain the token's
+// authority during the server's 15-minute drain window.
 func (c *Client) Finish(ctx context.Context, job string, o Outcome) error {
 	return c.do(ctx, "job/finish", job, o, nil)
 }
@@ -393,11 +394,12 @@ func (c *Client) sendStatus(req *http.Request, out any, status func(int)) error 
 		return ErrKeyLimit
 	case resp.StatusCode < 200 || resp.StatusCode > 299:
 		var p struct {
-			Detail string `json:"detail"`
+			Detail  string `json:"detail"`
+			NextSeq int64  `json:"next_seq"`
 		}
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		_ = json.Unmarshal(raw, &p)
-		return &StatusError{Status: resp.StatusCode, Detail: p.Detail, RetryAfter: resp.Header.Get("Retry-After")}
+		return &StatusError{Status: resp.StatusCode, Detail: p.Detail, RetryAfter: resp.Header.Get("Retry-After"), NextSeq: p.NextSeq}
 	case out == nil || resp.StatusCode == http.StatusNoContent:
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
@@ -407,6 +409,7 @@ func (c *Client) sendStatus(req *http.Request, out any, status func(int)) error 
 
 // StatusError is any other non-2xx answer.
 type StatusError struct {
+	NextSeq    int64
 	Status     int
 	Detail     string
 	RetryAfter string

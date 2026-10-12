@@ -3,6 +3,7 @@ module github.com/oyzuai/fleet
 go 1.24.0
 
 require (
+	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	software.sslmate.com/src/go-pkcs12 v0.7.3
 )

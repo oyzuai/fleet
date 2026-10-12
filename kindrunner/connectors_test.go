@@ -81,9 +81,9 @@ func TestConnectorsAreFiles(t *testing.T) {
 	got := connectorLines(f)
 	for _, want := range []string{
 		"file connectors/apply/connector.json=aws-prod aws web-prod  id_token",
-		"file connectors/apply/id_token=apply.jwt",
+		"file connectors/apply/id_token=***",
 		"file connectors/observe/connector.json=argo argo-cd web-prod token ",
-		"file connectors/observe/token=argocd_abc",
+		"file connectors/observe/token=***",
 		"env AWS_ROLE_ARN=arn:aws:iam::123456789012:role/deploy",
 		"env AWS_WEB_IDENTITY_TOKEN_FILE=$DIR/connectors/apply/id_token",
 		"env AWS_ROLE_SESSION_NAME=oyzu-7-1-apply",
@@ -122,8 +122,8 @@ func TestNamedConnectorsAreFiles(t *testing.T) {
 	got := connectorLines(f)
 	for _, want := range []string{
 		"file connectors/named/cloudflare/connector.json=cf-dns credentials web-prod api_token ",
-		"file connectors/named/cloudflare/api_token=cf_abc",
-		"file connectors/named/aws-dns/id_token=dns.jwt",
+		"file connectors/named/cloudflare/api_token=***",
+		"file connectors/named/aws-dns/id_token=***",
 		"env AWS_ROLE_ARN=arn:aws:iam::123456789012:role/deploy",
 	} {
 		if !got[want] {

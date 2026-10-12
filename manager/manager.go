@@ -38,6 +38,12 @@ const (
 	// reportEvery is how often the manager reports its facts and slots
 	// when nothing changed; runs counts a report older than 30s as stale.
 	reportEvery = 10 * time.Second
+	// defaultStartTimeout bounds starting an executor when the claim carries
+	// no startup expiry; a startup token lives about this long.
+	defaultStartTimeout = 5 * time.Minute
+	// defaultTeardownTimeout bounds tearing one executor down, so a stalled
+	// engine or cluster cannot hold up a drain or a stop.
+	defaultTeardownTimeout = 2 * time.Minute
 )
 
 // Config configures a Manager.
@@ -51,6 +57,9 @@ type Config struct {
 	// DrainTimeout is how long running jobs may keep going after the manager
 	// is told to stop, before they are interrupted; 0 interrupts them at once.
 	DrainTimeout time.Duration
+	// TeardownTimeout bounds tearing one executor down; 2 minutes when 0.
+	// A teardown cut short leaves the rest to the reaper.
+	TeardownTimeout time.Duration
 	// RotateAfter overrides the default key lifetime, for tests.
 	RotateAfter time.Duration
 	Log         *slog.Logger
@@ -70,6 +79,9 @@ type Manager struct {
 
 	liveMu sync.Mutex
 	live   map[JobID]int
+	// starting holds slots whose Start is still running, so the claim loop
+	// never offers them again.
+	starting map[SlotID]bool
 }
 
 // Open loads an enrolled manager from cfg.Store.
@@ -79,6 +91,9 @@ func Open(cfg Config) (*Manager, error) {
 	}
 	if cfg.RotateAfter <= 0 {
 		cfg.RotateAfter = RotateAfter
+	}
+	if cfg.TeardownTimeout <= 0 {
+		cfg.TeardownTimeout = defaultTeardownTimeout
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -258,7 +273,9 @@ func (m *Manager) Rotate(ctx context.Context) error {
 // ready or on its way. An executor that ends badly hands its job back, which
 // requeues it without using an attempt when the runner never started. When
 // ctx is done the manager claims no more and lets running jobs finish for
-// up to DrainTimeout before tearing them down.
+// up to DrainTimeout before tearing them down. Executors start off the claim
+// loop, so a stalled engine never keeps the manager from noticing a stop;
+// a start still running when the drain ends is cut short.
 func (m *Manager) Run(ctx context.Context) error {
 	log := m.cfg.Log.With("manager", m.st.ManagerID, "pool", m.st.Pool)
 	d := m.cfg.Driver
@@ -302,6 +319,9 @@ func (m *Manager) Run(ctx context.Context) error {
 			}
 		}
 		capacity, err := d.Capacity(ctx)
+		if err == nil {
+			capacity = m.withoutStarting(capacity)
+		}
 		if err != nil {
 			log.Warn("the driver reported no capacity", "error", err)
 			sleep(ctx, m.cfg.PollInterval)
@@ -329,16 +349,75 @@ func (m *Manager) Run(ctx context.Context) error {
 			sleep(ctx, m.cfg.PollInterval)
 			continue
 		}
-		log.Info("job claimed", "job", c.JobID, "attempt", c.Attempt, "slot", capacity.Ready[0])
+		slot := capacity.Ready[0]
+		log.Info("job claimed", "job", c.JobID, "attempt", c.Attempt, "slot", slot)
 		m.track(c.JobID, 1)
-		h, startErr := d.Start(jobCtx, capacity.Ready[0], *c)
+		m.markStarting(slot, true)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			defer m.track(c.JobID, -1)
+			h, startErr := m.start(jobCtx, slot, *c)
+			m.markStarting(slot, false)
 			m.watch(jobCtx, log, h, *c, startErr)
 		}()
 	}
+}
+
+// start starts a claimed job's executor under a deadline: the claim's
+// startup expiry, after which its token is useless (at least a minute and at
+// most defaultStartTimeout away), and the drain timeout through ctx.
+func (m *Manager) start(ctx context.Context, slot SlotID, c runnerclient.Claim) (Handle, error) {
+	ctx, cancel := context.WithTimeout(ctx, startTimeout(m.cfg.Now(), c))
+	defer cancel()
+	h, err := m.cfg.Driver.Start(ctx, slot, c)
+	if err != nil && ctx.Err() != nil {
+		err = fmt.Errorf("%w (gave up after %s)", err, context.Cause(ctx))
+	}
+	return h, err
+}
+
+// startTimeout is how long starting c's executor may take. The expiry is on
+// runs' clock, so it only shortens the wait, and never below a minute
+// however far the clocks disagree.
+func startTimeout(now time.Time, c runnerclient.Claim) time.Duration {
+	if c.StartupExpires.IsZero() {
+		return defaultStartTimeout
+	}
+	return min(defaultStartTimeout, max(time.Minute, c.StartupExpires.Sub(now)))
+}
+
+func (m *Manager) markStarting(slot SlotID, on bool) {
+	m.liveMu.Lock()
+	defer m.liveMu.Unlock()
+	if m.starting == nil {
+		m.starting = map[SlotID]bool{}
+	}
+	if on {
+		m.starting[slot] = true
+	} else {
+		delete(m.starting, slot)
+	}
+}
+
+// withoutStarting counts slots whose Start is still running as running
+// rather than ready.
+func (m *Manager) withoutStarting(c Capacity) Capacity {
+	m.liveMu.Lock()
+	defer m.liveMu.Unlock()
+	if len(m.starting) == 0 {
+		return c
+	}
+	ready := make([]SlotID, 0, len(c.Ready))
+	for _, s := range c.Ready {
+		if m.starting[s] {
+			c.Running++
+			continue
+		}
+		ready = append(ready, s)
+	}
+	c.Ready = ready
+	return c
 }
 
 // watch waits for a started executor, hands its job back when it ended
@@ -365,7 +444,9 @@ func (m *Manager) watch(ctx context.Context, log *slog.Logger, h Handle, c runne
 	if h.Ref == "" {
 		return
 	}
-	if err := d.Teardown(context.WithoutCancel(ctx), h); err != nil {
+	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.cfg.TeardownTimeout)
+	defer cancel()
+	if err := d.Teardown(tctx, h); err != nil {
 		log.Warn("teardown failed; the reaper will retry", "error", err)
 	}
 }
