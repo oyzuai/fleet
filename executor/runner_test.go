@@ -66,6 +66,9 @@ func fakeGit() {
 }
 
 func fakeOyzu() {
+	if os.Getenv("FAKE_TRUST_REPORT") != "" {
+		reportTrust()
+	}
 	if output, ok := os.LookupEnv("FAKE_OYZU_EVENTS"); ok {
 		fmt.Fprint(os.Stderr, output)
 		fmt.Fprint(os.Stdout, "native stdout\n")
