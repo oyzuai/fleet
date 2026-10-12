@@ -41,6 +41,30 @@ type API interface {
 	PodLog(ctx context.Context, name string, lines int) ([]byte, error)
 }
 
+// EgressAPI is what the driver needs beyond API to control jobs' egress: the
+// gateway's Deployment, Service and token Secret, and the NetworkPolicies
+// that leave job pods only the gateway to talk to. The manager's role needs
+// create, get, update and delete on deployments and networkpolicies, create
+// and get on services, and get on secrets.
+type EgressAPI interface {
+	// GetSecret returns a secret's data, or ErrNotFound.
+	GetSecret(ctx context.Context, name string) (map[string][]byte, error)
+	// ApplyDeployment creates the deployment, or replaces it if it exists.
+	ApplyDeployment(ctx context.Context, d Deployment) error
+	// DeploymentAvailable reports whether the deployment has an available
+	// replica.
+	DeploymentAvailable(ctx context.Context, name string) (bool, error)
+	// ApplyService creates the service if it does not exist and returns its
+	// cluster IP.
+	ApplyService(ctx context.Context, s Service) (string, error)
+	// ApplyNetworkPolicy creates the policy, or replaces it if it exists.
+	ApplyNetworkPolicy(ctx context.Context, p NetworkPolicy) error
+	// DeleteNetworkPolicy deletes a policy; one that is already gone
+	// succeeds.
+	DeleteNetworkPolicy(ctx context.Context, name string) error
+	ListNetworkPolicies(ctx context.Context, selector string) ([]ObjectMeta, error)
+}
+
 // ErrNotFound is returned for an object that does not exist.
 var ErrNotFound = errors.New("kubernetes: not found")
 
@@ -90,8 +114,16 @@ type PodSpec struct {
 	Tolerations                   []Toleration        `json:"tolerations,omitempty"`
 	TerminationGracePeriodSeconds *int64              `json:"terminationGracePeriodSeconds,omitempty"`
 	SecurityContext               *PodSecurityContext `json:"securityContext"`
-	Containers                    []Container         `json:"containers"`
-	Volumes                       []Volume            `json:"volumes,omitempty"`
+	// DNSPolicy None with DNSConfig points a pod at the gateway's DNS
+	// sinkhole instead of the cluster's resolver.
+	DNSPolicy  string      `json:"dnsPolicy,omitempty"`
+	DNSConfig  *DNSConfig  `json:"dnsConfig,omitempty"`
+	Containers []Container `json:"containers"`
+	Volumes    []Volume    `json:"volumes,omitempty"`
+}
+
+type DNSConfig struct {
+	Nameservers []string `json:"nameservers"`
 }
 
 type Toleration struct {
@@ -107,6 +139,12 @@ type PodSecurityContext struct {
 	RunAsGroup     *int64          `json:"runAsGroup"`
 	FSGroup        *int64          `json:"fsGroup"`
 	SeccompProfile *SeccompProfile `json:"seccompProfile"`
+	Sysctls        []Sysctl        `json:"sysctls,omitempty"`
+}
+
+type Sysctl struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 type SeccompProfile struct {
@@ -124,6 +162,13 @@ type Container struct {
 	Resources       ResourceRequirements      `json:"resources"`
 	SecurityContext *ContainerSecurityContext `json:"securityContext"`
 	VolumeMounts    []VolumeMount             `json:"volumeMounts,omitempty"`
+	Ports           []ContainerPort           `json:"ports,omitempty"`
+}
+
+type ContainerPort struct {
+	Name          string `json:"name,omitempty"`
+	ContainerPort int    `json:"containerPort"`
+	Protocol      string `json:"protocol,omitempty"`
 }
 
 type EnvVar struct {
@@ -150,6 +195,7 @@ type ContainerSecurityContext struct {
 	Privileged               *bool         `json:"privileged"`
 	AllowPrivilegeEscalation *bool         `json:"allowPrivilegeEscalation"`
 	Capabilities             *Capabilities `json:"capabilities"`
+	ReadOnlyRootFilesystem   *bool         `json:"readOnlyRootFilesystem,omitempty"`
 }
 
 type Capabilities struct {
@@ -171,7 +217,10 @@ type EmptyDirVolume struct {
 }
 
 type PodStatus struct {
-	Phase             string            `json:"phase"`
+	Phase string `json:"phase"`
+	// PodIP is the address the pod connects from, once the cluster has
+	// given it one.
+	PodIP             string            `json:"podIP,omitempty"`
 	Reason            string            `json:"reason,omitempty"`
 	Message           string            `json:"message,omitempty"`
 	Conditions        []PodCondition    `json:"conditions,omitempty"`
@@ -273,6 +322,11 @@ func (e *apiError) Is(target error) bool {
 }
 
 func (c *Client) do(ctx context.Context, method, path, contentType string, query url.Values, body, out any) error {
+	return c.doIn(ctx, "/api/v1", method, path, contentType, query, body, out)
+}
+
+// doIn is do for an API group, such as /apis/apps/v1.
+func (c *Client) doIn(ctx context.Context, group, method, path, contentType string, query url.Values, body, out any) error {
 	var r io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -281,7 +335,7 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, query
 		}
 		r = bytes.NewReader(b)
 	}
-	u := c.Server + "/api/v1/namespaces/" + url.PathEscape(c.Namespace) + path
+	u := c.Server + group + "/namespaces/" + url.PathEscape(c.Namespace) + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
@@ -418,4 +472,208 @@ func (c *Client) PodLog(ctx context.Context, name string, lines int) ([]byte, er
 // ListPods implements API.
 func (c *Client) ListPods(ctx context.Context, selector string) ([]ObjectMeta, error) {
 	return c.list(ctx, "/pods", selector)
+}
+
+// The objects of the egress gateway and its policies.
+
+type LabelSelector struct {
+	MatchLabels      map[string]string          `json:"matchLabels,omitempty"`
+	MatchExpressions []LabelSelectorRequirement `json:"matchExpressions,omitempty"`
+}
+
+type LabelSelectorRequirement struct {
+	Key      string   `json:"key"`
+	Operator string   `json:"operator"`
+	Values   []string `json:"values,omitempty"`
+}
+
+type NetworkPolicy struct {
+	APIVersion string            `json:"apiVersion"`
+	Kind       string            `json:"kind"`
+	Metadata   ObjectMeta        `json:"metadata"`
+	Spec       NetworkPolicySpec `json:"spec"`
+}
+
+type NetworkPolicySpec struct {
+	PodSelector LabelSelector       `json:"podSelector"`
+	PolicyTypes []string            `json:"policyTypes"`
+	Ingress     []NetworkPolicyRule `json:"ingress,omitempty"`
+	Egress      []NetworkPolicyRule `json:"egress,omitempty"`
+}
+
+// NetworkPolicyRule is one allowed egress (or ingress) rule: to the peers,
+// on the ports. No rules at all means nothing is allowed.
+type NetworkPolicyRule struct {
+	To    []NetworkPolicyPeer `json:"to,omitempty"`
+	Ports []NetworkPolicyPort `json:"ports,omitempty"`
+}
+
+type NetworkPolicyPeer struct {
+	PodSelector *LabelSelector `json:"podSelector,omitempty"`
+}
+
+type NetworkPolicyPort struct {
+	Protocol string `json:"protocol"`
+	Port     int    `json:"port"`
+}
+
+type Deployment struct {
+	APIVersion string         `json:"apiVersion"`
+	Kind       string         `json:"kind"`
+	Metadata   ObjectMeta     `json:"metadata"`
+	Spec       DeploymentSpec `json:"spec"`
+}
+
+type DeploymentSpec struct {
+	Replicas *int32        `json:"replicas"`
+	Selector LabelSelector `json:"selector"`
+	Template PodTemplate   `json:"template"`
+}
+
+type PodTemplate struct {
+	Metadata ObjectMeta `json:"metadata"`
+	Spec     PodSpec    `json:"spec"`
+}
+
+type Service struct {
+	APIVersion string      `json:"apiVersion"`
+	Kind       string      `json:"kind"`
+	Metadata   ObjectMeta  `json:"metadata"`
+	Spec       ServiceSpec `json:"spec"`
+}
+
+type ServiceSpec struct {
+	Type      string            `json:"type"`
+	ClusterIP string            `json:"clusterIP,omitempty"`
+	Selector  map[string]string `json:"selector"`
+	Ports     []ServicePort     `json:"ports"`
+}
+
+type ServicePort struct {
+	Name       string `json:"name"`
+	Protocol   string `json:"protocol"`
+	Port       int    `json:"port"`
+	TargetPort int    `json:"targetPort"`
+}
+
+var _ EgressAPI = (*Client)(nil)
+
+const (
+	appsGroup       = "/apis/apps/v1"
+	networkingGroup = "/apis/networking.k8s.io/v1"
+)
+
+// apply creates an object, or replaces it when it already exists.
+func (c *Client) apply(ctx context.Context, group, collection, name string, obj any) error {
+	err := c.doIn(ctx, group, http.MethodPost, collection, "", nil, obj, nil)
+	var ae *apiError
+	if errors.As(err, &ae) && ae.Status == http.StatusConflict {
+		return c.doIn(ctx, group, http.MethodPut, collection+"/"+url.PathEscape(name), "", nil, obj, nil)
+	}
+	return err
+}
+
+// GetSecret implements EgressAPI.
+func (c *Client) GetSecret(ctx context.Context, name string) (map[string][]byte, error) {
+	var out struct {
+		Data map[string][]byte `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/secrets/"+url.PathEscape(name), "", nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Data, nil
+}
+
+// ApplyDeployment implements EgressAPI.
+func (c *Client) ApplyDeployment(ctx context.Context, d Deployment) error {
+	d.APIVersion, d.Kind = "apps/v1", "Deployment"
+	return c.apply(ctx, appsGroup, "/deployments", d.Metadata.Name, d)
+}
+
+// DeploymentAvailable implements EgressAPI.
+func (c *Client) DeploymentAvailable(ctx context.Context, name string) (bool, error) {
+	var out struct {
+		Status struct {
+			AvailableReplicas int `json:"availableReplicas"`
+		} `json:"status"`
+	}
+	if err := c.doIn(ctx, appsGroup, http.MethodGet, "/deployments/"+url.PathEscape(name), "", nil, nil, &out); err != nil {
+		return false, err
+	}
+	return out.Status.AvailableReplicas > 0, nil
+}
+
+// ApplyService implements EgressAPI. An existing service is left as it is:
+// its cluster IP cannot be changed, and its ports are the driver's own.
+func (c *Client) ApplyService(ctx context.Context, s Service) (string, error) {
+	s.APIVersion, s.Kind = "v1", "Service"
+	var out struct {
+		Spec ServiceSpec `json:"spec"`
+	}
+	err := c.do(ctx, http.MethodPost, "/services", "", nil, s, &out)
+	var ae *apiError
+	if errors.As(err, &ae) && ae.Status == http.StatusConflict {
+		err = c.do(ctx, http.MethodGet, "/services/"+url.PathEscape(s.Metadata.Name), "", nil, nil, &out)
+	}
+	return out.Spec.ClusterIP, err
+}
+
+// ApplyNetworkPolicy implements EgressAPI.
+func (c *Client) ApplyNetworkPolicy(ctx context.Context, p NetworkPolicy) error {
+	p.APIVersion, p.Kind = "networking.k8s.io/v1", "NetworkPolicy"
+	return c.apply(ctx, networkingGroup, "/networkpolicies", p.Metadata.Name, p)
+}
+
+// DeleteNetworkPolicy implements EgressAPI.
+func (c *Client) DeleteNetworkPolicy(ctx context.Context, name string) error {
+	return ignoreNotFound(c.doIn(ctx, networkingGroup, http.MethodDelete, "/networkpolicies/"+url.PathEscape(name), "", nil, nil, nil))
+}
+
+// ListNetworkPolicies implements EgressAPI.
+func (c *Client) ListNetworkPolicies(ctx context.Context, selector string) ([]ObjectMeta, error) {
+	var out struct {
+		Items []struct {
+			Metadata ObjectMeta `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := c.doIn(ctx, networkingGroup, http.MethodGet, "/networkpolicies", "", url.Values{"labelSelector": {selector}}, nil, &out); err != nil {
+		return nil, err
+	}
+	m := make([]ObjectMeta, 0, len(out.Items))
+	for _, i := range out.Items {
+		m = append(m, i.Metadata)
+	}
+	return m, nil
+}
+
+// ServiceProxy returns the base URL and HTTP client for reaching a port of a
+// service through the API server, for a manager that runs outside the
+// cluster. It needs get on services/proxy.
+func (c *Client) ServiceProxy(service, port string) (string, *http.Client) {
+	base := c.Server + "/api/v1/namespaces/" + url.PathEscape(c.Namespace) + "/services/" + url.PathEscape(service+":"+port) + "/proxy"
+	hc := *c.HTTP
+	hc.Transport = &tokenTransport{base: c.HTTP.Transport, tokenFile: c.TokenFile}
+	return base, &hc
+}
+
+// tokenTransport adds the bearer token, re-read for each request.
+type tokenTransport struct {
+	base      http.RoundTripper
+	tokenFile string
+}
+
+func (t *tokenTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	if t.tokenFile != "" {
+		tok, err := os.ReadFile(t.tokenFile)
+		if err != nil {
+			return nil, fmt.Errorf("kubernetes: read the token: %w", err)
+		}
+		r.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(tok)))
+	}
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(r)
 }

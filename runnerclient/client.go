@@ -110,6 +110,22 @@ type Claim struct {
 	Attempt        int       `json:"attempt"`
 	StartupToken   string    `json:"startup_token"`
 	StartupExpires time.Time `json:"startup_expires_at"`
+	// Egress is where the job may connect, enforced by the manager's
+	// gateway. A runs that predates it sends none, which allows only the
+	// runs server.
+	Egress ClaimEgress `json:"egress"`
+}
+
+// ClaimEgress is a job's network allow list.
+type ClaimEgress struct {
+	Allow []EgressAllow `json:"allow"`
+}
+
+// EgressAllow is one destination a job may reach: an exact host or
+// "*.suffix", and a port, where 0 means 443.
+type EgressAllow struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
 }
 
 // Claim takes the next job in the manager's pool, or returns nil when there

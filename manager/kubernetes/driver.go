@@ -98,11 +98,31 @@ type Driver struct {
 	// StopGrace is how long a runner may report after it is asked to stop;
 	// 30s when 0.
 	StopGrace time.Duration
-	Log       *slog.Logger
-	Now       func() time.Time
+	// Egress is how jobs' network is controlled; open when empty. Enforce
+	// and report need NewControl and an API that is an EgressAPI, and run
+	// the gateway from Image, whose Command[0] is the executor.
+	Egress EgressMode
+	// NewControl builds the client for the gateway's control API from its
+	// token; the manager reaches it through its Service in the cluster or
+	// through the API server's proxy outside it.
+	NewControl func(token string) GatewayControl
+	// GatewayWait is how long the gateway may take to answer; 5 minutes
+	// when 0.
+	GatewayWait time.Duration
+	Log         *slog.Logger
+	Now         func() time.Time
 
 	mu    sync.Mutex
 	inUse map[manager.SlotID]*job
+	// The gateway, once set up: its Service address and control client. The
+	// self-test is tested once it has run, egressOK if it passed and
+	// factsDirty until the manager has read the facts after it changed.
+	gwReady, settingUp           bool
+	setupErr                     error
+	lastSetup                    time.Time
+	gwIP                         string
+	control                      GatewayControl
+	tested, egressOK, factsDirty bool
 }
 
 // job is one job's pod and secret.
@@ -112,6 +132,10 @@ type job struct {
 	started time.Time
 	// token is the claim's startup token, masked out of the log tail.
 	token string
+	// policy is the job's NetworkPolicy and registered says the gateway
+	// knows the job, when egress is controlled.
+	policy     string
+	registered bool
 }
 
 var _ manager.Driver = (*Driver)(nil)
@@ -133,6 +157,16 @@ func (d *Driver) Check() error {
 		return errors.New("kubernetes: User must be a non-root uid")
 	case d.Docker && d.RuntimeClass == "":
 		return errors.New("kubernetes: Docker needs a RuntimeClass that runs each pod in its own VM")
+	case !d.Egress.Valid():
+		return fmt.Errorf("kubernetes: egress mode %q is not enforce, report or open", d.Egress)
+	}
+	if d.sandboxed() {
+		if _, err := d.egressAPI(); err != nil {
+			return err
+		}
+		if d.NewControl == nil {
+			return errors.New("kubernetes: egress needs NewControl to reach the gateway")
+		}
 	}
 	return nil
 }
@@ -199,6 +233,7 @@ func (d *Driver) Facts(context.Context) (manager.Facts, error) {
 	if d.Disk != "" {
 		f[manager.FactDisk] = d.Disk
 	}
+	d.egressFacts(f)
 	return f, nil
 }
 
@@ -207,6 +242,19 @@ func (d *Driver) Capacity(context.Context) (manager.Capacity, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	c := manager.Capacity{Max: d.slots(), Running: len(d.inUse)}
+	if d.sandboxed() {
+		// The gateway and, when enforcing, its self-test come first; the
+		// self-test is repeated while it fails.
+		retry := d.gwReady && d.Egress == EgressEnforce && !d.egressOK || !d.gwReady
+		if !d.settingUp && retry && (d.lastSetup.IsZero() || d.now().Sub(d.lastSetup) >= setupRetry) {
+			d.settingUp, d.lastSetup = true, d.now()
+			go d.setup(context.Background())
+		}
+		if !d.gwReady || d.Egress == EgressEnforce && !d.tested {
+			c.Provisioning = c.Max - c.Running
+			return c, d.setupErr
+		}
+	}
 	for i := range d.slots() {
 		id := manager.SlotID(strconv.Itoa(i))
 		if _, busy := d.inUse[id]; !busy {
@@ -236,6 +284,10 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 	name := fmt.Sprintf("oyzu-%d-job-%d-%d-%s", d.Manager, c.JobID, c.Attempt, hex.EncodeToString(suffix))
 	j := &job{name: name, secret: name + "-token", started: d.now(), token: c.StartupToken}
 	d.mu.Lock()
+	if d.sandboxed() && (!d.gwReady || d.Egress == EgressEnforce && !d.tested) {
+		d.mu.Unlock()
+		return manager.Handle{}, errors.New("the egress gateway is not ready")
+	}
 	if _, busy := d.inUse[slot]; busy {
 		d.mu.Unlock()
 		return manager.Handle{}, fmt.Errorf("slot %s is not ready", slot)
@@ -254,13 +306,23 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 	}); err != nil {
 		return h, fmt.Errorf("create the token secret: %w", err)
 	}
-	uid, err := d.API.CreatePod(ctx, d.pod(name, j.secret, labels))
+	pod := d.pod(name, j.secret, labels)
+	if d.sandboxed() {
+		d.sandboxPod(&pod)
+	}
+	uid, err := d.API.CreatePod(ctx, pod)
 	if err != nil {
 		return h, fmt.Errorf("create the pod: %w", err)
 	}
-	if err := d.API.SetSecretOwner(ctx, j.secret, OwnerReference{APIVersion: "v1", Kind: "Pod", Name: name, UID: uid}); err != nil {
+	owner := OwnerReference{APIVersion: "v1", Kind: "Pod", Name: name, UID: uid}
+	if err := d.API.SetSecretOwner(ctx, j.secret, owner); err != nil {
 		// Teardown and Reap delete the secret anyway.
 		d.log().Warn("could not make the pod own its token secret", "pod", name, "error", err)
+	}
+	if d.sandboxed() {
+		if err := d.openSandbox(ctx, j, labels, owner, d.allowFor(c)); err != nil {
+			return h, err
+		}
 	}
 	return h, nil
 }
@@ -465,6 +527,9 @@ func (d *Driver) Teardown(ctx context.Context, h manager.Handle) error {
 	if err := d.API.DeleteSecret(ctx, j.secret); err != nil {
 		errs = append(errs, err)
 	}
+	if err := d.closeSandbox(ctx, j); err != nil {
+		errs = append(errs, err)
+	}
 	// The slot is freed either way; Reap deletes what is left once the job
 	// is no longer live.
 	d.mu.Lock()
@@ -485,14 +550,17 @@ func (d *Driver) Reap(ctx context.Context, live []manager.JobID) error {
 	for _, j := range d.inUse {
 		keep[j.name], keep[j.secret] = true, true
 	}
+	// A running self-test's probe is no orphan.
+	testing := d.settingUp
 	d.mu.Unlock()
+	isLive := func(job string) bool { return keepJob[job] || testing && strings.HasPrefix(job, "probe-") }
 	var errs []error
 	pods, err := d.API.ListPods(ctx, d.selector())
 	if err != nil {
 		return err
 	}
 	for _, p := range pods {
-		if keep[p.Name] || keepJob[p.Labels[LabelJob]] {
+		if keep[p.Name] || isLive(p.Labels[LabelJob]) {
 			continue
 		}
 		if err := d.API.DeletePod(ctx, p.Name, orDefault(d.StopGrace, defaultStopGrace)); err != nil {
@@ -500,13 +568,19 @@ func (d *Driver) Reap(ctx context.Context, live []manager.JobID) error {
 			continue
 		}
 		d.log().Info("reaped a pod", "pod", p.Name, "job", p.Labels[LabelJob])
+		d.forget(ctx, p.Name)
+	}
+	if d.sandboxed() {
+		if err := d.reapPolicies(ctx, keep, isLive); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	secrets, err := d.API.ListSecrets(ctx, d.selector())
 	if err != nil {
 		return errors.Join(append(errs, err)...)
 	}
 	for _, s := range secrets {
-		if keep[s.Name] || keepJob[s.Labels[LabelJob]] {
+		if keep[s.Name] || isLive(s.Labels[LabelJob]) {
 			continue
 		}
 		if err := d.API.DeleteSecret(ctx, s.Name); err != nil {

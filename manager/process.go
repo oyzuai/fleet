@@ -115,6 +115,8 @@ func (p *Process) Facts(context.Context) (Facts, error) {
 		FactCPU:       strconv.Itoa(runtime.NumCPU()),
 		FactIsolation: "process",
 		FactDocker:    strconv.FormatBool(p.Docker),
+		// Jobs share this host's network and user: never untrusted work.
+		FactEgress: EgressOpen,
 	}
 	if p.Renovate {
 		f[FactRenovate] = "true"

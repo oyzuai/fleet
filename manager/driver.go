@@ -45,6 +45,14 @@ type Driver interface {
 	Reap(ctx context.Context, live []JobID) error
 }
 
+// FactsChanger is implemented by a driver whose facts can change while it
+// runs, such as when its egress self-test finishes. The manager reads the
+// facts again as soon as it reports true, and the report that follows tells
+// runs.
+type FactsChanger interface {
+	FactsChanged() bool
+}
+
 // JobID is a job's id at runs.
 type JobID = int64
 
@@ -96,6 +104,22 @@ const (
 	// FactRenovate says Renovate is installed beside oyzu, so the pool can
 	// run renovate jobs.
 	FactRenovate = "oyzu.io/renovate"
+	// FactEgress says how the pool's network egress is controlled by the
+	// manager's gateway: EgressEnforced, EgressReport or EgressOpen.
+	FactEgress = "oyzu.io/egress"
+	// FactUntrusted is UntrustedAccepted when the pool may run work from
+	// untrusted triggers, such as pull requests. A manager reports it only
+	// when its isolation is not process, its egress is enforced and its
+	// startup egress self-test passed; otherwise it reports nothing.
+	FactUntrusted = "oyzu.io/untrusted"
+)
+
+// Values of FactEgress and FactUntrusted.
+const (
+	EgressEnforced    = "enforced"
+	EgressReport      = "report"
+	EgressOpen        = "open"
+	UntrustedAccepted = "accepted"
 )
 
 // ExitReason says how an executor ended.
