@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -114,9 +115,7 @@ func (p *proxy) check(w http.ResponseWriter, r *http.Request, j *jobState, host 
 		return addrs, true
 	}
 	d := Denial{Host: normalizeHost(host), Port: port, Method: method, Reason: reason}
-	if g.cfg.Mode == ModeReport {
-		d.WouldBlock = true
-		g.record(j, d)
+	if g.cfg.Mode == ModeReport && reason != reasonRange {
 		var err error
 		if ip, perr := netip.ParseAddr(d.Host); perr == nil {
 			addrs = []netip.Addr{ip.Unmap()}
@@ -124,7 +123,14 @@ func (p *proxy) check(w http.ResponseWriter, r *http.Request, j *jobState, host 
 			http.Error(w, "The egress gateway could not resolve "+d.Host+".", http.StatusBadGateway)
 			return nil, false
 		}
-		return addrs, true
+		// Report mode lets unlisted hosts through, but never to this host,
+		// the local network or the metadata service.
+		if !slices.ContainsFunc(addrs, restricted) {
+			d.WouldBlock = true
+			g.record(j, d)
+			return addrs, true
+		}
+		d.Reason = reasonRange
 	}
 	g.record(j, d)
 	deny(w, g.Line(d))

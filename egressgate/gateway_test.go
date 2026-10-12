@@ -314,6 +314,20 @@ func TestReportModeAllowsAndRecordsWouldBlock(t *testing.T) {
 	}
 }
 
+func TestReportModeStillRefusesRestrictedRanges(t *testing.T) {
+	r := newRig(t, ModeReport)
+	for _, target := range []string{"sneaky.example.com:443", "internal.corp:443", "127.0.0.1:443", "169.254.169.254:80"} {
+		if code, _, _ := r.connect(t, target); code != 403 {
+			t.Fatalf("report mode let CONNECT %s through: %d", target, code)
+		}
+	}
+	for _, d := range r.denials() {
+		if d.WouldBlock {
+			t.Fatalf("a restricted range was recorded as would-block: %+v", d)
+		}
+	}
+}
+
 func TestUnknownSourcesAreRefused(t *testing.T) {
 	r := newRig(t, ModeReport, Allow{Host: "registry.npmjs.org"})
 	r.g.Unregister("7")
