@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oyzuai/fleet/executionconfig"
 	"github.com/oyzuai/fleet/kindrunner"
 	"github.com/oyzuai/fleet/runnerclient"
 )
@@ -75,6 +77,7 @@ type Config struct {
 	// kindrunner.Config.DockerEnv.
 	DockerEnv []string
 	Log       *slog.Logger
+	trust     *executionconfig.Projection
 }
 
 // Run runs the job and returns once its outcome is reported, or once runs
@@ -116,7 +119,7 @@ func Run(ctx context.Context, cfg Config) error {
 	if job.Kind == runnerclient.KindOperationJob {
 		return kindrunner.Run(ctx, kindrunner.Config{
 			Client: cfg.Client, Token: st.JobToken, HeartbeatEvery: time.Duration(st.HeartbeatSeconds) * time.Second,
-			KindsDir: cfg.KindsDir, StateDir: cfg.KindStateDir, SecretsDir: cfg.SecretsDir, Docker: cfg.Docker, DockerNetwork: cfg.DockerNetwork, DockerEnv: cfg.DockerEnv, Log: cfg.Log,
+			KindsDir: cfg.KindsDir, StateDir: cfg.KindStateDir, WorkDir: cfg.WorkDir, SecretsDir: cfg.SecretsDir, Docker: cfg.Docker, DockerNetwork: cfg.DockerNetwork, DockerEnv: cfg.DockerEnv, Log: cfg.Log,
 		}, job)
 	}
 	log := cfg.Log.With("job", job.ID, "attempt", job.Attempt, "correlation_id", job.CorrelationID)
@@ -143,7 +146,7 @@ func Run(ctx context.Context, cfg Config) error {
 		return errLost
 	}
 	if ctx.Err() != nil && outcome.State != "succeeded" {
-		outcome = runnerclient.Outcome{State: "cancelled", Summary: "The runner was stopped before the job finished."}
+		outcome = runnerclient.Outcome{State: "cancelled", Summary: "The runner was stopped before the job finished.", Execution: outcome.Execution}
 	}
 	finishCtx, done := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
 	defer done()
@@ -216,7 +219,20 @@ var (
 )
 
 // execute runs the job by its operation, and says how it went.
-func execute(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger) runnerclient.Outcome {
+func execute(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger) (out runnerclient.Outcome) {
+	projection, err := executionconfig.Prepare(ctx, trustParent(cfg.WorkDir), job.ExecutionConfig, systemRoots(), nil)
+	if err != nil {
+		out = failedWith(executionconfig.Reason(err), err.Error())
+		out.Execution = executionconfig.Evidence(job.ExecutionConfig)
+		return out
+	}
+	defer projection.Close()
+	cfg.trust = projection
+	defer func() {
+		if projection != nil {
+			out.Execution = projection.Evidence
+		}
+	}()
 	switch job.Operation {
 	case "renovate":
 		return renovate(ctx, cfg, token, startup, job, log)
@@ -278,6 +294,9 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		}
 		env = withEnv(env, secretEnv)
 	}
+	if cfg.trust != nil {
+		env = cfg.trust.Env(env, cfg.trust.Dir)
+	}
 	var proxy *egressProxy
 	// A plan runs without credentials: no ID token, no egress.
 	if job.Kind != "plan" {
@@ -302,11 +321,27 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 			}, func(values ...string) {
 				stdout.Add(values...)
 				stderr.Add(values...)
-			}, log)
+			}, log, egressExecution{config: job.ExecutionConfig, workDir: trustParent(cfg.WorkDir)})
 			if err != nil {
+				var configError *executionconfig.Error
+				if errors.As(err, &configError) {
+					return failedWith(configError.Code, configError.Error())
+				}
 				return failed("Could not start the egress proxy: " + err.Error())
 			}
 			defer proxy.stop()
+			if job.ExecutionConfig != nil {
+				extra := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: proxy.ca.Raw})
+				combined, err := executionconfig.Prepare(ctx, trustParent(cfg.WorkDir), job.ExecutionConfig, systemRoots(), extra)
+				if err != nil {
+					return failedWith(executionconfig.Reason(err), err.Error())
+				}
+				defer combined.Close()
+				env = combined.Env(env, combined.Dir)
+				if cfg.trust != nil {
+					cfg.trust.Evidence = combined.Evidence
+				}
+			}
 			env = proxy.env(env)
 		}
 	}
@@ -371,6 +406,19 @@ func buildEnv(environ []string) []string {
 	return out
 }
 
+func (cfg Config) environ() []string {
+	if cfg.trust == nil {
+		return os.Environ()
+	}
+	return cfg.trust.Env(os.Environ(), cfg.trust.Dir)
+}
+
+// Keep execution inputs out of source capture and lock-fix commits. Git init
+// preserves this private directory when it initializes the checkout.
+func trustParent(workDir string) string {
+	return filepath.Join(workDir, ".git", "oyzu-execution")
+}
+
 // failed is a failure before oyzu exited, which runs counts against the
 // executor unless a more specific code says otherwise.
 func failed(summary string) runnerclient.Outcome {
@@ -389,7 +437,7 @@ func failedWith(code, summary string) runnerclient.Outcome {
 func checkout(ctx context.Context, cfg Config, token string, job runnerclient.Job) error {
 	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	remote := strings.TrimRight(cfg.GitURL, "/") + "/" + job.Repository + ".git"
-	env := append(os.Environ(),
+	env := append(cfg.environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=http."+strings.TrimRight(cfg.GitURL, "/")+"/.extraHeader",

@@ -66,6 +66,9 @@ func fakeGit() {
 }
 
 func fakeOyzu() {
+	if os.Getenv("FAKE_TRUST_REPORT") != "" {
+		reportTrust()
+	}
 	if p, ok := os.LookupEnv("FAKE_OYZU_PLAN"); ok {
 		fmt.Fprintln(os.Stderr, "Planning platform")
 		fmt.Print(p)

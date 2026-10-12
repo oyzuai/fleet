@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,6 +59,11 @@ func fakeKind(mode string) {
 		return
 	}
 	switch mode {
+	case "trust":
+		body, err := os.ReadFile(os.Getenv("SSL_CERT_FILE"))
+		if err != nil || strings.Count(string(body), "-----BEGIN CERTIFICATE-----") != 2 || os.Getenv("HTTPS_PROXY") != "http://corporate.example:3128" {
+			os.Exit(7)
+		}
 	case "hang":
 		time.Sleep(time.Minute)
 	case "garbage":
@@ -134,7 +140,15 @@ func (f *fakeRuns) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func setup(t *testing.T, mode string, op kindprotocol.Operation, timeout, abort int, secrets []string) (*fakeRuns, Config, runnerclient.Job, string) {
 	t.Helper()
 	kinds := t.TempDir()
-	if err := os.Symlink(os.Args[0], filepath.Join(kinds, "kind-fake")); err != nil {
+	if runtime.GOOS == "windows" {
+		binary, err := os.ReadFile(os.Args[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(kinds, "kind-fake.exe"), binary, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	} else if err := os.Symlink(os.Args[0], filepath.Join(kinds, "kind-fake")); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("OYZU_FAKE_KIND", mode)
@@ -313,6 +327,9 @@ func TestUnchangedLedgerIsNotSent(t *testing.T) {
 }
 
 func TestImageKindGetsLedgerAndNetwork(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the docker fake is a shell script")
+	}
 	f, cfg, job, _ := setup(t, "ok", kindprotocol.OpApply, 30, 0, nil)
 	job.KindOperation.Ledger = true
 	job.KindOperation.Image = "registry.local/kinds/fake@sha256:" + strings.Repeat("b", 64)

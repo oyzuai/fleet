@@ -35,7 +35,7 @@ func reportConnectors(ev func(kindprotocol.EventBody, int64)) {
 	})
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "AWS_") {
-			lines = append(lines, "env "+strings.Replace(kv, dir, "$DIR", 1))
+			lines = append(lines, "env "+strings.Replace(filepath.ToSlash(kv), filepath.ToSlash(dir), "$DIR", 1))
 		}
 	}
 	sort.Strings(lines)
