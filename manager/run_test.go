@@ -20,6 +20,7 @@ type fakeRuns struct {
 	mu       sync.Mutex
 	claims   []runnerclient.Claim
 	releases []runnerclient.Release
+	reports  []runnerclient.Report
 }
 
 func (f *fakeRuns) server(t *testing.T) *httptest.Server {
@@ -41,6 +42,11 @@ func (f *fakeRuns) server(t *testing.T) *httptest.Server {
 		case "demand":
 			_, _ = w.Write([]byte(`{"eligible":0,"ready":0}`))
 		case "report":
+			var rep runnerclient.Report
+			_ = json.NewDecoder(r.Body).Decode(&rep)
+			f.mu.Lock()
+			f.reports = append(f.reports, rep)
+			f.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 		case "release":
 			var rel runnerclient.Release
@@ -198,4 +204,53 @@ func TestStartTimeoutFollowsTheStartupExpiry(t *testing.T) {
 			t.Errorf("startTimeout(%v) = %s, want %s", tc.expires.Sub(now), got, tc.want)
 		}
 	}
+}
+
+// changingDriver is a hungDriver whose facts change once, and says so.
+type changingDriver struct {
+	hungDriver
+	changed atomic.Bool
+	told    atomic.Bool
+}
+
+func (d *changingDriver) Facts(context.Context) (Facts, error) {
+	if d.changed.Load() {
+		return Facts{FactEgress: EgressEnforced, FactUntrusted: UntrustedAccepted}, nil
+	}
+	return Facts{FactEgress: EgressOpen}, nil
+}
+
+func (d *changingDriver) FactsChanged() bool { return d.changed.Load() && !d.told.Swap(true) }
+
+func TestFactsAreReadAgainWhenADriverSaysTheyChanged(t *testing.T) {
+	runs := &fakeRuns{}
+	srv := runs.server(t)
+	d := &changingDriver{hungDriver: hungDriver{slots: 1}}
+	m := openTestManager(t, srv, d, Config{DrainTimeout: 50 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+	defer func() { cancel(); <-done }()
+	seen := func(want string) bool {
+		runs.mu.Lock()
+		defer runs.mu.Unlock()
+		for _, r := range runs.reports {
+			if r.Facts[FactEgress] == want {
+				return true
+			}
+		}
+		return false
+	}
+	wait := func(want string) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			if seen(want) {
+				return
+			}
+		}
+		t.Fatalf("no report with egress=%s", want)
+	}
+	wait("open")
+	d.changed.Store(true)
+	wait("enforced")
 }

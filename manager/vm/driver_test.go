@@ -485,3 +485,11 @@ func TestHandlerServesTheAssignment(t *testing.T) {
 		t.Fatalf("exit: %d %s", w.Code, w.Body)
 	}
 }
+
+func TestVMFactsReportOpenEgressAndNeverUntrusted(t *testing.T) {
+	d := &Driver{Cloud: &fakeCloud{}}
+	f, err := d.Facts(context.Background())
+	if err != nil || f[manager.FactIsolation] != "vm" || f[manager.FactEgress] != manager.EgressOpen || f[manager.FactUntrusted] != "" {
+		t.Fatalf("facts = %v, %v", f, err)
+	}
+}

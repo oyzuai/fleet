@@ -18,6 +18,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -27,6 +28,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/oyzuai/fleet/egressgate"
 	"github.com/oyzuai/fleet/manager"
 	"github.com/oyzuai/fleet/manager/container"
 	"github.com/oyzuai/fleet/manager/kubernetes"
@@ -42,7 +44,8 @@ const usage = `usage:
                         [--concurrency 1] [--docker] [--pass-env NAME,...] [--drain-timeout 30m]
                         [--driver container|kubernetes|process] [--image REF] [--engine URL]
                         [--engine-cert-path DIR] [--engine-allow-plaintext]
-                        [--cpus N] [--memory-mib N] [--network bridge] [--user 1000:1000]
+                        [--cpus N] [--memory-mib N] [--network NAME] [--user 1000:1000]
+                        [--egress enforce|report|open]
                         [--namespace NS] [--runtime-class NAME] [--node-selector K=V,...]
                         [--disk-gib N] [--kube-server URL --kube-token-file FILE --kube-ca FILE]
       The default driver is container. The process driver runs jobs as this
@@ -50,9 +53,18 @@ const usage = `usage:
       --pass-env, --work-dir and --kind-state-dir are for the process driver,
       --engine, --engine-*, --network and --user for the container driver, --namespace,
       --runtime-class, --node-selector, --disk-gib and --kube-* for the
-      kubernetes driver, and --image, --cpus and --memory-mib for container
-      and kubernetes; a flag for another driver is an error. --docker is for
-      process and kubernetes.
+      kubernetes driver, and --image, --cpus, --memory-mib and --egress for
+      container and kubernetes; a flag for another driver is an error.
+      --docker is for process and kubernetes.
+      --egress controls what jobs can reach. enforce gives each job a network
+      with no route out and an egress gateway that allows only the hosts runs
+      lists for the job (container) or a NetworkPolicy that leaves the pod only
+      the gateway (kubernetes); a pool that enforces and passes its startup
+      self-test takes work from untrusted triggers such as pull requests.
+      report runs the gateway, logs what enforce would block and allows it.
+      open is no control, and the only mode that allows --network NAME. A
+      manager enrolled by this version enforces by default; one enrolled
+      earlier starts in report mode until it is given --egress enforce.
       Both container and kubernetes require --image NAME@sha256:DIGEST, with
       a 64-character lowercase hex digest; tag-only references are refused.
       Claim and run jobs for the manager's pool until interrupted. The
@@ -109,10 +121,15 @@ func run(args []string, log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
+		_, loadErr := manager.Store{Dir: *stateDir}.Load()
+		existed := loadErr == nil
 		st, err := manager.Enroll(ctx, runnerclient.New(*server, nil), manager.Store{Dir: *stateDir},
 			*server, *audience, strings.TrimSpace(string(b)), *name, time.Now())
 		if err != nil {
 			return err
+		}
+		if err := recordNewEgress(*stateDir, existed); err != nil {
+			return fmt.Errorf("record the egress mode: %w", err)
 		}
 		log.Info("enrolled", "manager", st.ManagerID, "pool", st.Pool, "name", st.Name, "key", st.Current.ID, "state_dir", *stateDir)
 		return nil
@@ -134,7 +151,8 @@ func run(args []string, log *slog.Logger) error {
 		enginePlaintext := fs.Bool("engine-allow-plaintext", false, "container driver: allow a plain-HTTP tcp:// engine on another host (startup tokens cross the network unencrypted)")
 		cpus := fs.Float64("cpus", 0, "container and kubernetes drivers: CPUs per job, 0 for no cap")
 		memory := fs.Int64("memory-mib", 0, "container and kubernetes drivers: memory per job in MiB, 0 for no cap")
-		network := fs.String("network", "bridge", "container driver: the network jobs join")
+		network := fs.String("network", "", "container driver: the network jobs join, bridge by default; only with --egress open, since otherwise each job gets its own network")
+		egress := fs.String("egress", "", "container and kubernetes drivers: enforce, report or open; enforce by default for a manager enrolled by this version, report for an earlier one")
 		user := fs.String("user", "1000:1000", "container driver: the uid:gid jobs run as")
 		namespace := fs.String("namespace", "", "kubernetes driver: where job pods run; the manager pod's own by default")
 		runtimeClass := fs.String("runtime-class", "", "kubernetes driver: the pods' runtime class, such as kata or gvisor")
@@ -197,6 +215,16 @@ func run(args []string, log *slog.Logger) error {
 			if *image == "" {
 				return errors.New("the container driver needs --image NAME@sha256:DIGEST; to run jobs on this host as the manager's own user instead, pass --driver process (trusted code only)")
 			}
+			mode, why, err := resolveEgress(*egress, *stateDir, set["network"])
+			if err != nil {
+				return err
+			}
+			if mode != egressOpen {
+				if err := checkEngineForEgress(*engine); err != nil {
+					return err
+				}
+			}
+			log.Info("egress control", "mode", mode, "why", why)
 			eng, err := container.NewDocker(*engine, container.DockerOptions{
 				CertPath: *engineCerts, TLSVerify: os.Getenv("DOCKER_TLS_VERIFY") != "", AllowPlaintext: *enginePlaintext,
 			})
@@ -206,7 +234,7 @@ func run(args []string, log *slog.Logger) error {
 			c := &container.Driver{
 				Engine: eng, Image: *image, Command: []string{"oyzu-executor", "--oyzu", "oyzu"}, Server: st.Server,
 				Pool: st.Pool, Manager: st.ManagerID, Slots: *concurrency, CPUs: *cpus, MemoryBytes: *memory << 20,
-				Network: *network, User: *user, Log: log,
+				Network: *network, User: *user, Egress: container.EgressMode(mode), Log: log,
 			}
 			if err := c.Check(); err != nil {
 				return err
@@ -225,10 +253,25 @@ func run(args []string, log *slog.Logger) error {
 			if err != nil {
 				return err
 			}
+			mode, why, err := resolveEgress(*egress, *stateDir, false)
+			if err != nil {
+				return err
+			}
+			log.Info("egress control", "mode", mode, "why", why)
 			k := &kubernetes.Driver{
 				API: api, Image: *image, Command: []string{"oyzu-executor", "--oyzu", "oyzu"}, Server: st.Server,
 				Pool: st.Pool, Manager: st.ManagerID, MaxPods: *concurrency, RuntimeClass: *runtimeClass,
-				Docker: *docker, Arch: runtime.GOARCH, Log: log,
+				Docker: *docker, Arch: runtime.GOARCH, Egress: kubernetes.EgressMode(mode), Log: log,
+			}
+			k.NewControl = func(token string) kubernetes.GatewayControl {
+				if *kubeServer == "" {
+					// In the cluster the manager reaches the gateway's Service directly.
+					return egressgate.NewClient("http://"+net.JoinHostPort(k.GatewayName()+"."+api.Namespace+".svc", strconv.Itoa(egressgate.DefaultControlPort)), token)
+				}
+				base, hc := api.ServiceProxy(k.GatewayName(), "control")
+				c := egressgate.NewClient(base, token)
+				c.HTTP = hc
+				return c
 			}
 			if *cpus > 0 {
 				k.CPU = strconv.FormatFloat(*cpus, 'f', -1, 64)

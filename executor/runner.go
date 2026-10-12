@@ -80,7 +80,13 @@ type Config struct {
 	// DockerEnv names runner variables image kinds also get; see
 	// kindrunner.Config.DockerEnv.
 	DockerEnv []string
-	Log       *slog.Logger
+	// EgressGateway is the pool's egress gateway proxy URL on this job's
+	// network (OYZU_EGRESS_GATEWAY). When set, the job waits until the
+	// gateway knows it, the credential proxy always starts and chains
+	// through the gateway, and blocked destinations are logged and listed in
+	// the summary.
+	EgressGateway string
+	Log           *slog.Logger
 	// LogDrainTimeout bounds delivery after job finish; zero is 15 minutes.
 	// The pre-outcome wait is the smaller of this value and 30 seconds.
 	LogDrainTimeout time.Duration
@@ -116,6 +122,11 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	if err != nil {
 		return err
+	}
+	if cfg.EgressGateway != "" {
+		if err := waitGateway(ctx, cfg.EgressGateway); err != nil {
+			return err
+		}
 	}
 	st, err := cfg.Client.Start(ctx, startup)
 	if err != nil {
@@ -324,19 +335,26 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		if err != nil {
 			return failed("Could not get the job's egress grants: " + err.Error()), capture
 		}
-		if len(egress.Grants) > 0 {
+		if len(egress.Grants) > 0 || cfg.EgressGateway != "" {
 			proxy, err = startEgress(egress, func(ctx context.Context) (runnerclient.Egress, error) {
 				return cfg.Client.Egress(ctx, token)
 			}, func(values ...string) {
 				stdout.Add(values...)
 				stderr.Add(values...)
-			}, log)
+			}, log, cfg.EgressGateway)
 			if err != nil {
 				return failed("Could not start the egress proxy: " + err.Error()), capture
 			}
 			defer proxy.stop()
 			env = proxy.env(env)
 		}
+	}
+	var denials *denialWatcher
+	if cfg.EgressGateway != "" {
+		denials = newDenialWatcher(cfg.EgressGateway, func(line string) { capture.system(line, nil) }, log)
+		watchCtx, stopWatching := context.WithCancel(ctx)
+		defer stopWatching()
+		go denials.run(watchCtx)
 	}
 	args := append([]string{}, job.Command[1:]...)
 	if job.Kind != "plan" && (job.Operation == "build" || job.Operation == "run") && !slices.Contains(args, "--json") {
@@ -365,6 +383,16 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	summary := fmt.Sprintf("`%s` on `%s` exited %d.\n\n```text\n%s\n```", strings.Join(job.Command, " "), job.HeadSHA, code, out.String())
 	if proxy != nil {
 		if r := proxy.report(); r != "" {
+			summary += "\n\n" + r
+		}
+	}
+	if denials != nil {
+		// One last read, so a request made just before the build ended is
+		// in the summary.
+		pollCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		denials.poll(pollCtx)
+		done()
+		if r := denials.report(); r != "" {
 			summary += "\n\n" + r
 		}
 	}

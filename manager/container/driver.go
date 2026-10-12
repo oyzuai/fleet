@@ -84,6 +84,13 @@ type Driver struct {
 	// User is the uid:gid jobs run as; 1000:1000 when empty. Root is
 	// refused.
 	User string
+	// Egress is how jobs' network is controlled; open when empty. Enforce
+	// and report need Command[0] to be the executor, which runs the gateway,
+	// and refuse Network.
+	Egress EgressMode
+	// Control builds the client for the gateway's control API; egressgate's
+	// when nil. Tests replace it.
+	Control func(base, token string) GatewayControl
 	// StopGrace is how long a runner may report after it is asked to stop,
 	// before it is killed; 30s when 0.
 	StopGrace time.Duration
@@ -96,6 +103,13 @@ type Driver struct {
 	pulling   bool
 	lastPull  time.Time
 	pullError error
+	// The egress self-test: tested once it has run, egressOK if it passed,
+	// factsDirty until the manager has read the facts after it changed.
+	testing, tested, egressOK, factsDirty bool
+	lastTest                              time.Time
+
+	gwMu sync.Mutex
+	gw   *gateway
 }
 
 // job is one job's container.
@@ -105,6 +119,11 @@ type job struct {
 	id     string
 	// token is the claim's startup token, masked out of the log tail.
 	token string
+	// The job's sandbox, when egress is controlled: its network, the gateway
+	// it was joined to and whether the gateway knows the job.
+	network    string
+	gateway    *gateway
+	registered bool
 }
 
 var _ manager.Driver = (*Driver)(nil)
@@ -120,6 +139,10 @@ func (d *Driver) Check() error {
 		return fmt.Errorf("container: executor image %q is not pinned by digest", d.Image)
 	case d.Network == "host" || strings.HasPrefix(d.Network, "container:"):
 		return fmt.Errorf("container: network %q shares another namespace; jobs need their own", d.Network)
+	case !d.Egress.Valid():
+		return fmt.Errorf("container: egress mode %q is not enforce, report or open", d.Egress)
+	case d.sandboxed() && d.Network != "":
+		return fmt.Errorf("container: network %q needs egress open: with egress %s every job gets its own network behind the gateway", d.Network, d.Egress)
 	}
 	uid, _, _ := strings.Cut(d.user(), ":")
 	if n, err := strconv.Atoi(uid); err != nil || n == 0 {
@@ -165,6 +188,7 @@ func (d *Driver) Facts(ctx context.Context) (manager.Facts, error) {
 		manager.FactIsolation: "container",
 		manager.FactDocker:    "false",
 	}
+	d.egressFacts(f)
 	switch info.Architecture {
 	case "x86_64", "amd64":
 		f[manager.FactArch] = "amd64"
@@ -204,6 +228,19 @@ func (d *Driver) Capacity(context.Context) (manager.Capacity, error) {
 			c.Provisioning = c.Max - c.Running
 		}
 		return c, d.pullError
+	}
+	if d.Egress == EgressEnforce && !d.tested {
+		// Not ready until the self-test says whether the pool enforces.
+		if !d.testing {
+			d.testing, d.lastTest = true, d.now()
+			go d.selfTest(context.Background())
+		}
+		c.Provisioning = c.Max - c.Running
+		return c, nil
+	}
+	if d.Egress == EgressEnforce && !d.egressOK && !d.testing && d.now().Sub(d.lastTest) >= pullRetry {
+		d.testing, d.lastTest = true, d.now()
+		go d.selfTest(context.Background())
 	}
 	for i := range d.slots() {
 		id := manager.SlotID(strconv.Itoa(i))
@@ -269,6 +306,14 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 	if network == "" {
 		network = defaultNetwork
 	}
+	var env, dns []string
+	if d.sandboxed() {
+		var err error
+		if env, dns, err = d.openSandbox(ctx, j, labels, c.JobID, d.allowFor(c)); err != nil {
+			return h, err
+		}
+		network = j.network
+	}
 	pids := d.PidsLimit
 	if pids <= 0 {
 		pids = defaultPidsLimit
@@ -278,6 +323,7 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 	id, err := d.Engine.CreateContainer(ctx, name, Spec{
 		Image: d.Image, Cmd: cmd, User: d.user(), Labels: labels, Volume: j.volume, WorkDir: WorkDir,
 		NanoCPUs: int64(d.CPUs * 1e9), MemoryBytes: d.MemoryBytes, PidsLimit: pids, Network: network,
+		Env: env, DNS: dns,
 	})
 	if err != nil {
 		return h, fmt.Errorf("create the container: %w", err)
@@ -387,7 +433,7 @@ func (d *Driver) logTail(ctx context.Context, j *job) string {
 }
 
 // Teardown implements manager.Driver: stop, remove the container, then
-// its workspace volume.
+// its network and workspace volume.
 func (d *Driver) Teardown(ctx context.Context, h manager.Handle) error {
 	j, err := d.job(h)
 	if err != nil {
@@ -405,6 +451,9 @@ func (d *Driver) Teardown(ctx context.Context, h manager.Handle) error {
 		if err := d.Engine.RemoveContainer(ctx, j.id); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	if err := d.closeSandbox(ctx, j); err != nil {
+		errs = append(errs, err)
 	}
 	if err := d.Engine.RemoveVolume(ctx, j.volume); err != nil {
 		errs = append(errs, err)
@@ -427,17 +476,26 @@ func (d *Driver) Reap(ctx context.Context, live []manager.JobID) error {
 	d.mu.Lock()
 	keep := map[string]bool{}
 	for _, j := range d.inUse {
-		keep[j.name], keep[j.volume] = true, true
+		keep[j.name], keep[j.volume], keep[j.network] = true, true, true
 	}
+	testing := d.testing
 	d.mu.Unlock()
+	// A running self-test's probe is no orphan.
+	isLive := func(job string) bool { return keepJob[job] || testing && strings.HasPrefix(job, "probe-") }
 	mine := map[string]string{LabelManager: d.managerLabel()}
 	var errs []error
 	containers, err := d.Engine.ListContainers(ctx, mine)
 	if err != nil {
 		return err
 	}
+	d.gwMu.Lock()
+	gwID := ""
+	if d.gw != nil {
+		gwID = d.gw.id
+	}
+	d.gwMu.Unlock()
 	for _, c := range containers {
-		if keep[c.Name] || keepJob[c.Labels[LabelJob]] {
+		if keep[c.Name] || isLive(c.Labels[LabelJob]) || c.ID == gwID {
 			continue
 		}
 		if err := d.Engine.RemoveContainer(ctx, c.ID); err != nil {
@@ -445,6 +503,21 @@ func (d *Driver) Reap(ctx context.Context, live []manager.JobID) error {
 			continue
 		}
 		d.log().Info("reaped a container", "container", c.Name, "job", c.Labels[LabelJob])
+	}
+	// Networks go after their containers, so the engine lets them go.
+	networks, err := d.Engine.ListNetworks(ctx, mine)
+	if err != nil {
+		return errors.Join(append(errs, err)...)
+	}
+	for _, n := range networks {
+		if keep[n.Name] || isLive(n.Labels[LabelJob]) {
+			continue
+		}
+		if err := d.removeNetwork(ctx, n.Name); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		d.log().Info("reaped a network", "network", n.Name, "job", n.Labels[LabelJob])
 	}
 	volumes, err := d.Engine.ListVolumes(ctx, mine)
 	if err != nil {

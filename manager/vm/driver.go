@@ -158,6 +158,9 @@ func (d *Driver) Facts(ctx context.Context) (manager.Facts, error) {
 	maps.Copy(out, f)
 	out[manager.FactIsolation] = "vm"
 	out[manager.FactDocker] = "true"
+	// A VM gateway can come later; until then the network is open and the
+	// pool takes no untrusted work.
+	out[manager.FactEgress] = manager.EgressOpen
 	return out, nil
 }
 

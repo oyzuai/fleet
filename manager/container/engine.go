@@ -39,6 +39,21 @@ type Engine interface {
 	// ListContainers returns the containers, in any state, carrying every
 	// label in labels.
 	ListContainers(ctx context.Context, labels map[string]string) ([]Summary, error)
+	// CreateNetwork creates a bridge network and returns it with its subnet.
+	CreateNetwork(ctx context.Context, name string, spec NetworkSpec) (Network, error)
+	// RemoveNetwork removes a network; one that is already gone succeeds.
+	RemoveNetwork(ctx context.Context, name string) error
+	// ListNetworks returns the networks carrying every label in labels.
+	ListNetworks(ctx context.Context, labels map[string]string) ([]Network, error)
+	// ConnectNetwork attaches a container to a network and returns the
+	// address it has there.
+	ConnectNetwork(ctx context.Context, network, container string) (string, error)
+	// DisconnectNetwork detaches a container from a network; one that is not
+	// attached, or is gone, succeeds.
+	DisconnectNetwork(ctx context.Context, network, container string) error
+	// PublishedPort returns the port on the host's loopback address that
+	// the container's port was published as (Spec.Publish).
+	PublishedPort(ctx context.Context, id string, port int) (int, error)
 }
 
 // Info is the engine host's platform.
@@ -66,6 +81,34 @@ type Spec struct {
 	PidsLimit   int64
 	// Network is the network the container joins, never "host".
 	Network string
+	// Env is set in the container besides HOME.
+	Env []string
+	// DNS lists the nameservers the container uses instead of the engine's.
+	DNS []string
+	// Sysctls are namespaced kernel settings.
+	Sysctls map[string]string
+	// Publish lists container ports published on the host's loopback
+	// address only, on a port the engine picks.
+	Publish []int
+	// ReadOnly makes the root filesystem read-only.
+	ReadOnly bool
+}
+
+// NetworkSpec is a network the driver creates.
+type NetworkSpec struct {
+	Labels map[string]string
+	// Internal gives the network no route out: its containers reach each
+	// other and nothing else.
+	Internal bool
+}
+
+// Network is a network in a listing.
+type Network struct {
+	ID     string
+	Name   string
+	Labels map[string]string
+	// Subnet is the network's first address range, in CIDR form.
+	Subnet string
 }
 
 // Volume is a named volume.

@@ -174,6 +174,9 @@ func TestProcessDriverFacts(t *testing.T) {
 	if n, err := strconv.Atoi(f[FactCPU]); err != nil || n < 1 {
 		t.Fatalf("cpu fact = %q", f[FactCPU])
 	}
+	if f[FactEgress] != EgressOpen || f[FactUntrusted] != "" {
+		t.Fatalf("a process pool must be open and never untrusted: %v", f)
+	}
 }
 
 func TestProcessDriverTellsOyzuWhenThereIsNoDocker(t *testing.T) {

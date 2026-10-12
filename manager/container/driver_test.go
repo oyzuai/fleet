@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"maps"
@@ -28,6 +29,16 @@ type fakeEngine struct {
 	volumes    map[string]map[string]string
 	containers map[string]*fakeContainer
 	next       int
+	networks   map[string]*fakeNetwork
+	// probeExit is the exit code the self-test's probe container ends with.
+	probeExit int
+}
+
+type fakeNetwork struct {
+	id        string
+	spec      NetworkSpec
+	subnet    string
+	connected map[string]string
 }
 
 type fakeContainer struct {
@@ -43,7 +54,7 @@ type fakeContainer struct {
 }
 
 func newFakeEngine() *fakeEngine {
-	return &fakeEngine{volumes: map[string]map[string]string{}, containers: map[string]*fakeContainer{}}
+	return &fakeEngine{volumes: map[string]map[string]string{}, containers: map[string]*fakeContainer{}, networks: map[string]*fakeNetwork{}}
 }
 
 func (e *fakeEngine) Info(context.Context) (Info, error) {
@@ -106,7 +117,7 @@ func (e *fakeEngine) CreateContainer(_ context.Context, name string, spec Spec) 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.next++
-	id := "c" + string(rune('0'+e.next))
+	id := fmt.Sprintf("c%d", e.next)
 	e.containers[id] = &fakeContainer{name: name, spec: spec, files: map[string]*tar.Header{},
 		content: map[string]string{}, exit: make(chan int, 1)}
 	return id, nil
@@ -150,6 +161,9 @@ func (e *fakeEngine) StartContainer(_ context.Context, id string) error {
 	}
 	e.mu.Lock()
 	c.started = true
+	if len(c.spec.Cmd) > 2 && c.spec.Cmd[1] == "gateway" && c.spec.Cmd[2] == "probe" {
+		c.exit <- e.probeExit
+	}
 	e.mu.Unlock()
 	return nil
 }
@@ -172,7 +186,9 @@ func (e *fakeEngine) InspectContainer(_ context.Context, id string) (State, erro
 	if err != nil {
 		return State{}, err
 	}
-	return State{OOMKilled: c.oom}, nil
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return State{Running: c.started && !c.stopped, OOMKilled: c.oom}, nil
 }
 
 func (e *fakeEngine) ContainerLogs(_ context.Context, id string, _ int) ([]byte, error) {
@@ -196,6 +212,9 @@ func (e *fakeEngine) RemoveContainer(_ context.Context, id string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	delete(e.containers, id)
+	for _, n := range e.networks {
+		delete(n.connected, id)
+	}
 	return nil
 }
 
@@ -210,6 +229,72 @@ func (e *fakeEngine) ListContainers(_ context.Context, labels map[string]string)
 	}
 	return out, nil
 }
+
+func (e *fakeEngine) CreateNetwork(_ context.Context, name string, spec NetworkSpec) (Network, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, ok := e.networks[name]; ok {
+		return Network{}, errors.New("network exists")
+	}
+	n := &fakeNetwork{id: fmt.Sprintf("n%d", len(e.networks)+1), spec: spec, connected: map[string]string{}}
+	n.subnet = fmt.Sprintf("10.200.%d.0/24", e.nextSubnet())
+	e.networks[name] = n
+	return Network{ID: n.id, Name: name, Labels: spec.Labels, Subnet: n.subnet}, nil
+}
+
+func (e *fakeEngine) nextSubnet() int {
+	e.next++
+	return e.next
+}
+
+func (e *fakeEngine) RemoveNetwork(_ context.Context, name string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	n, ok := e.networks[name]
+	if !ok {
+		return nil
+	}
+	if len(n.connected) > 0 {
+		return errors.New("network has active endpoints")
+	}
+	delete(e.networks, name)
+	return nil
+}
+
+func (e *fakeEngine) ListNetworks(_ context.Context, labels map[string]string) ([]Network, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []Network
+	for name, n := range e.networks {
+		if matches(n.spec.Labels, labels) {
+			out = append(out, Network{ID: n.id, Name: name, Labels: n.spec.Labels, Subnet: n.subnet})
+		}
+	}
+	return out, nil
+}
+
+func (e *fakeEngine) ConnectNetwork(_ context.Context, network, container string) (string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	n, ok := e.networks[network]
+	if !ok {
+		return "", errors.New("no such network")
+	}
+	ip := fmt.Sprintf("%s.%d", strings.TrimSuffix(n.subnet, ".0/24"), 2+len(n.connected))
+	n.connected[container] = ip
+	return ip, nil
+}
+
+func (e *fakeEngine) DisconnectNetwork(_ context.Context, network, container string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if n, ok := e.networks[network]; ok {
+		delete(n.connected, container)
+	}
+	return nil
+}
+
+func (e *fakeEngine) PublishedPort(context.Context, string, int) (int, error) { return 40000, nil }
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
@@ -265,7 +350,7 @@ func TestFactsNeverAdvertiseDocker(t *testing.T) {
 	}
 	want := manager.Facts{
 		manager.FactOS: "linux", manager.FactArch: "amd64", manager.FactIsolation: "container",
-		manager.FactDocker: "false", manager.FactCPU: "2", manager.FactMemory: "4096Mi",
+		manager.FactDocker: "false", manager.FactCPU: "2", manager.FactMemory: "4096Mi", manager.FactEgress: "open",
 	}
 	if !maps.Equal(f, want) {
 		t.Fatalf("Facts = %v, want %v", f, want)

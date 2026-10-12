@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/oyzuai/fleet/egressgate"
 	"github.com/oyzuai/fleet/kindrunner"
 	"github.com/oyzuai/fleet/runnerclient"
 )
@@ -20,6 +21,9 @@ import (
 // built-in kinds (the platform's pool image) can build the same program from
 // this module at the version it pins.
 func Command(args []string, log *slog.Logger) error {
+	if len(args) > 0 && args[0] == "gateway" {
+		return egressgate.Command(args[1:], log)
+	}
 	fs := flag.NewFlagSet("oyzu-executor", flag.ContinueOnError)
 	server := fs.String("server", "", "the runs URL")
 	tokenFile := fs.String("startup-token-file", "", "file holding the job's startup token; deleted once read")
@@ -38,6 +42,7 @@ func Command(args []string, log *slog.Logger) error {
 	docker := fs.String("docker", "docker", "the docker CLI that image kinds run with")
 	dockerNetwork := fs.String("docker-network", "", "the network image kinds join (docker run --network); Docker's default when empty")
 	dockerEnv := fs.String("docker-env", "", "comma-separated names of this process's variables that image kinds also get")
+	gateway := fs.String("egress-gateway", os.Getenv(EnvEgressGateway), "the pool's egress gateway proxy URL on this job's network; the credential proxy chains through it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -69,6 +74,7 @@ func Command(args []string, log *slog.Logger) error {
 		Docker:           *docker,
 		DockerNetwork:    *dockerNetwork,
 		DockerEnv:        splitList(*dockerEnv),
+		EgressGateway:    *gateway,
 		Log:              log,
 	})
 }

@@ -318,6 +318,11 @@ func (m *Manager) Run(ctx context.Context) error {
 				facts = f
 			}
 		}
+		if fc, ok := d.(FactsChanger); ok && fc.FactsChanged() {
+			if f, err := d.Facts(ctx); err == nil {
+				facts = f
+			}
+		}
 		capacity, err := d.Capacity(ctx)
 		if err == nil {
 			capacity = m.withoutStarting(capacity)
