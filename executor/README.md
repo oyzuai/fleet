@@ -89,8 +89,7 @@ required configurations to old executors with `EXECUTION_CONFIG_UNSUPPORTED`
 before releasing launch inputs. Any required bundle, proxy or consumer format
 makes the configuration required.
 
-Current limits: the latest changes have not been compiled or tested in the editing
-sandbox. Existing container/Kubernetes manager drivers launch the executor with
+Current limits: existing container/Kubernetes manager drivers launch the executor with
 writable work volumes and no Docker socket; they cannot run Docker image kinds.
 The nested image launch and read-only build-container mount integration remain
 unimplemented. Platform's prepared Linux proof runs a built-in scanner in its
