@@ -249,3 +249,11 @@ post-finish window and caps the pre-outcome wait too. Transient failures back
 off from 100 ms to five seconds; expiration never changes the build's outcome.
 Spool/network failures log only administrative metadata.
 Spool files close before cleanup, including on Windows.
+
+## Dependency maintenance
+
+The [Dependabot configuration](.github/dependabot.yml) maintains the root Go module and GitHub Actions. Review changes against the supported Go toolchain and the release workflow; contribution and release requirements remain in force.
+
+Routine version checks run on weekdays around 06:30 America/New_York. Minor and patch updates are grouped; major upgrades remain individual proposals. Security updates use a separate group and do not wait for the version-update schedule. Each update block allows three open routine PRs and assigns proposals to `micahlmartin`; GitHub applies a separate limit to security-update PRs. Review, applicable verification and existing merge requirements still apply.
+
+Dependabot alerts and security updates must also be enabled in repository settings; the YAML does not enable those switches. Use the standard GitHub runner for update jobs. The configuration becomes active after it reaches the default branch.
