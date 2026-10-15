@@ -2,6 +2,14 @@
 
 The Oyzu pool manager and executor.
 
+The [distributed-build completion slice](https://github.com/oyzuai/oyzu/issues/479)
+is integrating admitted native plans with the existing executor. That work must
+pass the persisted executable plan to the assigned Oyzu worker before effects,
+and report the existing finalized bundle identity. Until its native service
+proof passes, ordinary command execution does not establish admitted split-build
+completion. Manager placement and Oyzu's native build semantics keep their
+existing owners.
+
 `fleet` runs the machines that execute Oyzu builds. It has two programs:
 
 - [`cmd/manager`](cmd/manager/) is the pool manager. It keeps pools of build
