@@ -3,9 +3,34 @@ package runnerclient
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+func TestHeartbeatStatusCarriesCancellationWithoutLosingLease(t *testing.T) {
+	expires := time.Now().UTC().Truncate(time.Second).Add(time.Minute)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/runner/v1/job/heartbeat" || r.Header.Get("Authorization") != "Bearer current-attempt" {
+			t.Errorf("heartbeat contract: %s", r.URL.Path)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"cancel":true,"expires_at":"` + expires.Format(time.RFC3339) + `"}`))
+	}))
+	defer server.Close()
+	client := New(server.URL, server.Client())
+	got, cancel, err := client.HeartbeatStatus(context.Background(), "current-attempt")
+	if err != nil || !cancel || !got.Equal(expires) {
+		t.Fatalf("heartbeat directive: %v %v %v", got, cancel, err)
+	}
+	got, err = client.HeartbeatLease(context.Background(), "current-attempt")
+	if err != nil || !got.Equal(expires) {
+		t.Fatalf("expiry-only wrapper changed: %v %v", got, err)
+	}
+}
 
 func TestLeaseExpiryBoundsStalledHeartbeat(t *testing.T) {
 	start := time.Now()

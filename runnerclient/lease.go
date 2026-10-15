@@ -53,9 +53,17 @@ func WatchLease(ctx context.Context, every time.Duration, expires time.Time, bea
 
 // HeartbeatLease renews the build lease and returns its confirmed expiry.
 func (c *Client) HeartbeatLease(ctx context.Context, job string) (time.Time, error) {
+	expires, _, err := c.HeartbeatStatus(ctx, job)
+	return expires, err
+}
+
+// HeartbeatStatus renews the ordinary build attempt while carrying its stop
+// request. Cancellation keeps finish authority alive for a stopped outcome.
+func (c *Client) HeartbeatStatus(ctx context.Context, job string) (time.Time, bool, error) {
 	var out struct {
 		Expires time.Time `json:"expires_at"`
+		Cancel  bool      `json:"cancel"`
 	}
 	err := c.do(ctx, "job/heartbeat", job, nil, &out)
-	return out.Expires, err
+	return out.Expires, out.Cancel, err
 }

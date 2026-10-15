@@ -11,9 +11,20 @@ Admitted slices fetch the same blobless history as planning, so native version
 and dependency preparation retain the admitted source context. Ordinary build
 and task jobs keep their existing shallow checkout.
 Ordinary non-slice commands retain their existing execution path. Manager
-placement and Oyzu's native verification keep their existing owners. The native
-service proof remains pending; fake-worker transport tests and the Go suite do
-not establish real split-build completion.
+placement and Oyzu's native verification keep their existing owners. The real
+platform flow passed shared to API/Web on separate Linux workers to a usable
+final bundle, with required reports matching an independent cache-disabled
+whole build. Remaining finite failures still block completion.
+
+Ordinary job heartbeats now carry a cancellation request while retaining the
+attempt's lease and finish authority. The executor interrupts and waits for its
+native process; it acknowledges cancellation only after a normal wait and a
+fresh finalized native build record. Missing/stale records and forced stops
+remain explicit runner failures. A cancellation that wins the success/finish
+race is handled through the same heartbeat and stopped-outcome contract, without
+publishing success outputs. The POSIX subprocess regression covers graceful,
+missing-record and forced termination; the actual service/native-slice
+cancellation proof remains required. Windows graceful interruption is unqualified.
 
 `fleet` runs the machines that execute Oyzu builds. It has two programs:
 

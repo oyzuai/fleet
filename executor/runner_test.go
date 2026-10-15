@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -67,6 +68,24 @@ func fakeGit() {
 }
 
 func fakeOyzu() {
+	if mode := os.Getenv("FAKE_OYZU_CANCEL_MODE"); mode != "" {
+		interrupt := make(chan os.Signal, 1)
+		signal.Notify(interrupt, os.Interrupt)
+		defer signal.Stop(interrupt)
+		_ = os.WriteFile(os.Getenv("FAKE_OYZU_CANCEL_READY"), []byte("running"), 0o600)
+		<-interrupt
+		if mode == "forced" {
+			process, _ := os.FindProcess(os.Getpid())
+			_ = process.Kill()
+			select {}
+		}
+		if mode == "graceful" {
+			_ = os.MkdirAll("dist", 0o700)
+			_ = os.WriteFile(ManifestPath, []byte(`{"schemaVersion":"v1alpha1","kind":"build-manifest","runId":"current-native","status":"interrupted","artifacts":[]}`), 0o600)
+		}
+		_ = os.WriteFile(os.Getenv("FAKE_OYZU_CANCEL_STOPPED"), []byte("stopped"), 0o600)
+		os.Exit(1)
+	}
 	if path := os.Getenv("FAKE_OYZU_INPUT"); path != "" {
 		input, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -174,13 +193,18 @@ func reportEgress() {
 
 // fakeRuns is the runner API as a runner sees it.
 type fakeRuns struct {
-	job        runnerclient.Job
-	heartbeats atomic.Int32
-	refuseBeat bool
-	mu         sync.Mutex
-	finished   *runnerclient.Outcome
-	startups   []string
-	audiences  []string
+	job              runnerclient.Job
+	heartbeats       atomic.Int32
+	refuseBeat       bool
+	cancelReady      string
+	cancelOnFinish   bool
+	cancelRequested  bool
+	stoppedPath      string
+	finishBeforeStop bool
+	mu               sync.Mutex
+	finished         *runnerclient.Outcome
+	startups         []string
+	audiences        []string
 	// secretsStatus, when set, is job/secrets' answer.
 	secretsStatus int
 	secretPulls   int
@@ -217,7 +241,14 @@ func (f *fakeRuns) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(401)
 			return
 		}
-		_, _ = w.Write([]byte(`{}`))
+		f.mu.Lock()
+		requested := f.cancelRequested
+		f.mu.Unlock()
+		if f.cancelReady != "" {
+			_, err := os.Stat(f.cancelReady)
+			requested = requested || err == nil
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"cancel": requested})
 	case "job/source":
 		_, _ = w.Write([]byte(`{"token":"ghs_secret","repository":"oyzuai/platform"}`))
 	case "job/secrets":
@@ -255,6 +286,17 @@ func (f *fakeRuns) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var o runnerclient.Outcome
 		_ = json.NewDecoder(r.Body).Decode(&o)
 		f.mu.Lock()
+		if f.cancelOnFinish && !f.cancelRequested {
+			f.cancelRequested = true
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"detail":"cancellation requested"}`))
+			return
+		}
+		if f.stoppedPath != "" {
+			_, err := os.Stat(f.stoppedPath)
+			f.finishBeforeStop = err != nil
+		}
 		f.finished = &o
 		f.mu.Unlock()
 		w.WriteHeader(204)
@@ -534,6 +576,73 @@ func TestRunStopsWhenRunsTakesTheJobBack(t *testing.T) {
 	}
 	if runs.finished != nil {
 		t.Fatalf("reported %+v for a job that is no longer ours", runs.finished)
+	}
+}
+
+func TestRunAcknowledgesRequestedCancellationOnlyAfterNativeCompletion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the existing graceful SIGINT subprocess contract is qualified on POSIX")
+	}
+	for _, mode := range []string{"graceful", "missing", "forced"} {
+		t.Run(mode, func(t *testing.T) {
+			runs, cfg, _ := setup(t, buildJob("build", "oyzu", "build"))
+			ready := filepath.Join(t.TempDir(), "native-running")
+			stopped := filepath.Join(t.TempDir(), "native-stopped")
+			runs.cancelReady = ready
+			if mode != "forced" {
+				runs.stoppedPath = stopped
+			}
+			t.Setenv("FAKE_OYZU_CANCEL_READY", ready)
+			t.Setenv("FAKE_OYZU_CANCEL_STOPPED", stopped)
+			t.Setenv("FAKE_OYZU_CANCEL_MODE", mode)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := Run(ctx, cfg); err != nil {
+				t.Fatal(err)
+			}
+			if runs.finishBeforeStop || runs.finished == nil {
+				t.Fatalf("finish before native wait/cleanup: %+v", runs.finished)
+			}
+			want := "failed"
+			if mode == "graceful" {
+				want = "cancelled"
+			}
+			if runs.finished.State != want || len(runs.finished.Outputs) != 0 || (want == "failed" && runs.finished.ReasonCode != "RUNNER_ERROR") {
+				t.Fatalf("%s native stop outcome: %+v", mode, runs.finished)
+			}
+		})
+	}
+}
+
+func TestRunAcknowledgesCancellationThatWinsFinishRace(t *testing.T) {
+	runs, cfg, _ := setup(t, buildJob("build", "oyzu", "build"))
+	runs.cancelOnFinish = true
+	t.Setenv("FAKE_OYZU_MANIFEST", `{"schemaVersion":"v1alpha1","kind":"build-manifest","runId":"current-native","status":"succeeded","artifacts":[]}`)
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !runs.cancelRequested || runs.finished == nil || runs.finished.State != "cancelled" || len(runs.finished.Outputs) != 0 {
+		t.Fatalf("finish race did not acknowledge current completed native invocation: %+v", runs.finished)
+	}
+}
+
+func TestFreshNativeCompletionRejectsStaleAndIncompleteRecords(t *testing.T) {
+	completed := []byte(`{"schemaVersion":"v1alpha1","kind":"build-manifest","runId":"new","status":"interrupted"}`)
+	for name, previous := range map[string][]byte{
+		"same bytes":                    completed,
+		"same invocation changed bytes": []byte(`{"schemaVersion":"v1alpha1","kind":"build-manifest","runId":"new","status":"succeeded"}`),
+	} {
+		if freshNativeCompletion(previous, completed) {
+			t.Fatalf("accepted %s as current invocation evidence", name)
+		}
+	}
+	for _, current := range [][]byte{nil, []byte(`{"status":"interrupted"}`), []byte(`{"schemaVersion":"v1alpha1","kind":"build-manifest","runId":"new","status":"running"}`)} {
+		if freshNativeCompletion(nil, current) {
+			t.Fatalf("accepted incomplete native record: %s", current)
+		}
+	}
+	if !freshNativeCompletion(nil, completed) {
+		t.Fatal("fresh completed native record was refused")
 	}
 }
 
