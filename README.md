@@ -7,6 +7,9 @@ binds admitted native plans to the existing executor. A slice requires the
 persisted executable plan, its coupled target group and assigned handoff. The
 executor passes those values through bounded stdin to the configured Oyzu worker
 before native effects; a preview, missing/oversized plan or non-build slice fails.
+Admitted slices fetch the same blobless history as planning, so native version
+and dependency preparation retain the admitted source context. Ordinary build
+and task jobs keep their existing shallow checkout.
 Ordinary non-slice commands retain their existing execution path. Manager
 placement and Oyzu's native verification keep their existing owners. The native
 service proof remains pending; fake-worker transport tests and the Go suite do

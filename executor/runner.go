@@ -462,9 +462,9 @@ func failedWith(code, summary string) runnerclient.Outcome {
 
 // checkout fetches exactly the job's commit. The token goes to git as an
 // HTTP header through the environment, so it is in neither the process
-// arguments nor the repository's config. A build gets the commit alone; a
-// plan gets a blobless clone, history without file contents, so oyzu can find
-// an affected build's merge base.
+// arguments nor the repository's config. Ordinary builds get the commit alone;
+// plans and admitted slices get the same blobless history so native preparation
+// observes the same version context and affected-build merge base.
 func checkout(ctx context.Context, cfg Config, token string, job runnerclient.Job) error {
 	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	remote := strings.TrimRight(cfg.GitURL, "/") + "/" + job.Repository + ".git"
@@ -479,7 +479,7 @@ func checkout(ctx context.Context, cfg Config, token string, job runnerclient.Jo
 		{"fetch", "--quiet", "--depth", "1", "--no-tags", remote, job.HeadSHA},
 		{"checkout", "--quiet", "--detach", "FETCH_HEAD"},
 	}
-	if job.Kind == "plan" {
+	if job.Kind == "plan" || job.Kind == "slice" {
 		fetch := []string{"fetch", "--quiet", "--filter=blob:none", "--no-tags", "origin", job.HeadSHA}
 		if job.AffectedBase != "" && job.AffectedBase != job.HeadSHA {
 			fetch = append(fetch, job.AffectedBase)

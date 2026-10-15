@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -402,6 +403,73 @@ func TestRunPlans(t *testing.T) {
 	}
 	if strings.Contains(string(log), `"--depth"`) {
 		t.Errorf("a plan fetched shallowly: %s", log)
+	}
+}
+
+func TestRunCheckoutHistoryMatchesAdmissionWithoutChangingOrdinaryJobs(t *testing.T) {
+	const base = "89abcdef0123456789abcdef0123456789abcdef"
+	for _, kind := range []string{"plan", "slice", "build", "run"} {
+		t.Run(kind, func(t *testing.T) {
+			job := buildJob("build", "oyzu", "build", "api")
+			job.Kind, job.AffectedBase = kind, base
+			if kind == "plan" {
+				t.Setenv("FAKE_OYZU_PLAN", `{"kind":"build-plan"}`)
+			} else if kind == "slice" {
+				job.AdmittedPlan = json.RawMessage(`{"kind":"build-plan"}`)
+				job.SliceTargets = []string{"api"}
+				job.Handoff = "oci://registry.example/account/project/run"
+			} else if kind == "run" {
+				job.Operation, job.Command = "run", []string{"oyzu", "run", "policy-check"}
+			}
+			runs, cfg, gitLog := setup(t, job)
+			if err := Run(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			if runs.finished == nil || runs.finished.State != "succeeded" {
+				t.Fatalf("job failed: %#v", runs.finished)
+			}
+			log, err := os.ReadFile(gitLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var calls [][]string
+			decoder := json.NewDecoder(bytes.NewReader(log))
+			for {
+				var call struct {
+					Args   []string
+					Header string
+				}
+				if err := decoder.Decode(&call); err == io.EOF {
+					break
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.HasPrefix(call.Header, "Authorization: Basic ") || strings.Contains(strings.Join(call.Args, " "), "ghs_secret") {
+					t.Fatal("checkout authentication was not confined to the Git environment")
+				}
+				calls = append(calls, call.Args)
+			}
+			remote := cfg.GitURL + "/" + job.Repository + ".git"
+			want := [][]string{
+				{"init", "--quiet"},
+				{"fetch", "--quiet", "--depth", "1", "--no-tags", remote, sha},
+				{"checkout", "--quiet", "--detach", "FETCH_HEAD"},
+			}
+			if kind == "plan" || kind == "slice" {
+				want = [][]string{
+					{"init", "--quiet"},
+					{"remote", "add", "origin", remote},
+					{"config", "remote.origin.promisor", "true"},
+					{"config", "remote.origin.partialclonefilter", "blob:none"},
+					{"fetch", "--quiet", "--filter=blob:none", "--no-tags", "origin", sha, base},
+					{"checkout", "--quiet", "--detach", sha},
+					{"diff", "--numstat", base, sha},
+				}
+			}
+			if !reflect.DeepEqual(calls, want) {
+				t.Fatalf("checkout calls = %q, want %q", calls, want)
+			}
+		})
 	}
 }
 
