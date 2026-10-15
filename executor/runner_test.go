@@ -66,6 +66,16 @@ func fakeGit() {
 }
 
 func fakeOyzu() {
+	if path := os.Getenv("FAKE_OYZU_INPUT"); path != "" {
+		input, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			os.Exit(2)
+		}
+		data, err := json.Marshal(map[string]any{"args": os.Args[1:], "input": json.RawMessage(input)})
+		if err != nil || os.WriteFile(path, data, 0o600) != nil {
+			os.Exit(2)
+		}
+	}
 	if output, ok := os.LookupEnv("FAKE_OYZU_EVENTS"); ok {
 		fmt.Fprint(os.Stderr, output)
 		fmt.Fprint(os.Stdout, "native stdout\n")
@@ -307,6 +317,65 @@ func TestRunSucceeds(t *testing.T) {
 	}
 	if !strings.Contains(string(log), `"header":"Authorization: Basic `) || !strings.Contains(string(log), sha) {
 		t.Fatalf("git calls = %s", log)
+	}
+}
+
+func TestRunPassesAdmittedSliceThroughStdin(t *testing.T) {
+	job := buildJob("build", "oyzu", "build", "api", "--slice")
+	job.Kind = "slice"
+	job.SliceTargets = []string{"shared", "api"}
+	job.Handoff = "oci://registry.example/account/project/run-handoff/run"
+	job.AdmittedPlan = json.RawMessage(`{"kind":"build-plan","source":{"treeDigest":"sha256:captured"}}`)
+	runs, cfg, _ := setup(t, job)
+	path := filepath.Join(t.TempDir(), "worker-input.json")
+	t.Setenv("FAKE_OYZU_INPUT", path)
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var captured struct {
+		Args  []string
+		Input struct {
+			Root         string
+			Targets      []string
+			Handoff      string
+			AdmittedPlan json.RawMessage
+		}
+	}
+	if err := json.Unmarshal(data, &captured); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(captured.Args, " ") != "__oyzu-build-worker execute" || captured.Input.Root != cfg.WorkDir ||
+		len(captured.Input.Targets) != 2 || captured.Input.Targets[0] != "shared" || captured.Input.Targets[1] != "api" ||
+		captured.Input.Handoff != job.Handoff || !bytes.Equal(captured.Input.AdmittedPlan, job.AdmittedPlan) {
+		t.Fatalf("native assignment changed: %s", data)
+	}
+	if runs.finished == nil || runs.finished.State != "succeeded" {
+		t.Fatalf("worker did not report completion: %#v", runs.finished)
+	}
+}
+
+func TestRunRefusesSliceMaintenanceBeforeEffects(t *testing.T) {
+	for _, operation := range []string{"lock", "renovate"} {
+		t.Run(operation, func(t *testing.T) {
+			job := buildJob(operation, "oyzu", operation)
+			job.Kind = "slice"
+			runs, cfg, gitLog := setup(t, job)
+			if err := Run(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			if runs.finished == nil || runs.finished.State != "failed" || runs.finished.ReasonCode != "PLAN_MISMATCH" {
+				t.Fatalf("nonbuild slice was dispatched: %#v", runs.finished)
+			}
+			for _, path := range []string{cfg.WorkDir, gitLog} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("invalid slice reached checkout/tool effects: %s (%v)", path, err)
+				}
+			}
+		})
 	}
 }
 

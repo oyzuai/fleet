@@ -3,12 +3,14 @@
 The Oyzu pool manager and executor.
 
 The [distributed-build completion slice](https://github.com/oyzuai/oyzu/issues/479)
-is integrating admitted native plans with the existing executor. That work must
-pass the persisted executable plan to the assigned Oyzu worker before effects,
-and report the existing finalized bundle identity. Until its native service
-proof passes, ordinary command execution does not establish admitted split-build
-completion. Manager placement and Oyzu's native build semantics keep their
-existing owners.
+binds admitted native plans to the existing executor. A slice requires the
+persisted executable plan, its coupled target group and assigned handoff. The
+executor passes those values through bounded stdin to the configured Oyzu worker
+before native effects; a preview, missing/oversized plan or non-build slice fails.
+Ordinary non-slice commands retain their existing execution path. Manager
+placement and Oyzu's native verification keep their existing owners. The native
+service proof remains pending; fake-worker transport tests and the Go suite do
+not establish real split-build completion.
 
 `fleet` runs the machines that execute Oyzu builds. It has two programs:
 

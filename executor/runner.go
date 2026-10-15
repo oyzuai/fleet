@@ -235,6 +235,9 @@ var (
 
 // execute runs the job by its operation, and says how it went.
 func execute(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger) (runnerclient.Outcome, *logCapture) {
+	if job.Kind == "slice" && job.Operation != "build" {
+		return failedWith("PLAN_MISMATCH", "An admitted slice must execute its assigned native build."), nil
+	}
 	switch job.Operation {
 	case "renovate":
 		return renovate(ctx, cfg, token, startup, job, log), nil
@@ -253,6 +256,14 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	}
 	if len(job.Command) < 2 || job.Command[0] != "oyzu" {
 		return failedWith("INVALID_JOB", "The job's command is not an oyzu command."), nil
+	}
+	var input []byte
+	if job.Kind == "slice" {
+		var err error
+		input, err = sliceInput(cfg.WorkDir, job)
+		if err != nil {
+			return failedWith("PLAN_MISMATCH", err.Error()), nil
+		}
 	}
 	if err := os.MkdirAll(cfg.WorkDir, 0o700); err != nil {
 		return failed("Could not create the work directory: " + err.Error()), nil
@@ -357,13 +368,18 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		go denials.run(watchCtx)
 	}
 	args := append([]string{}, job.Command[1:]...)
-	if job.Kind != "plan" && (job.Operation == "build" || job.Operation == "run") && !slices.Contains(args, "--json") {
+	if job.Kind == "slice" {
+		args = []string{"__oyzu-build-worker", "execute"}
+	} else if job.Kind != "plan" && (job.Operation == "build" || job.Operation == "run") && !slices.Contains(args, "--json") {
 		args = append([]string{"--json"}, args...)
 	}
 	capture.system("Starting oyzu.\n", &runnerclient.LogEvent{Kind: "task", State: "running"})
 	cmd := exec.CommandContext(ctx, cfg.Oyzu, args...)
 	cmd.Dir = cfg.WorkDir
 	cmd.Env = env
+	if input != nil {
+		cmd.Stdin = bytes.NewReader(input)
+	}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.Cancel = func() error {
 		if err := cmd.Process.Signal(os.Interrupt); err != nil {
