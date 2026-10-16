@@ -26,7 +26,8 @@ publishing success outputs. The POSIX subprocess regression covers graceful,
 missing-record and forced termination. The matching real Linux service/native
 proof passed cancellation during shared execution, with interrupted native
 evidence, confirmed cleanup and a retained CLI receipt. Cancellation after a
-producer contribution commits remains a separate required case. Windows graceful
+producer contribution commits also passed: the accepted shared record remained
+unchanged while API stopped and the bundle never started. Windows graceful
 interruption is unqualified.
 
 A slice upload failure now makes one private `retry-handoff` call within the
@@ -35,8 +36,14 @@ bytes, without another checkout, native preparation or execution attempt. The
 successful retry reports the original sealed producer manifest digest; the failed
 invocation on disk stays unchanged. Invalid retry records and a second transfer
 failure remain failures. Runs independently verifies the contribution before
-acceptance. Focused worker tests pass; the real interrupted-upload proof remains
-required.
+acceptance. Focused worker tests and the real interrupted-upload proof passed
+with Fleet `3559c70`, platform `c45e1872` and public Oyzu `58dc1e71`: three refused
+upload requests were followed by one retained transfer retry, the original
+producer/attempt remained unchanged, and the independent whole-build outputs
+and required reports matched. A separate real missing-upstream refusal retained
+accepted producers and never replayed upstream work or started the bundle.
+Loss/late completion, invalid contributions/reports, plan mismatch and coupled
+effects remain required finite cases before review readiness.
 
 `fleet` runs the machines that execute Oyzu builds. It has two programs:
 
