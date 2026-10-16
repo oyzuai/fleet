@@ -42,8 +42,19 @@ upload requests were followed by one retained transfer retry, the original
 producer/attempt remained unchanged, and the independent whole-build outputs
 and required reports matched. A separate real missing-upstream refusal retained
 accepted producers and never replayed upstream work or started the bundle.
-Loss/late completion, invalid contributions/reports, plan mismatch and coupled
-effects remain required finite cases before review readiness.
+With public collector `26f9b21d`, safe lease replacement also passed: the second
+API attempt on another manager restored valid original-producer work, completed
+the bundle and matched an independent whole build. Resuming the obsolete executor
+was refused without changing accepted records. The separate real PostgreSQL
+finish case qualifies late-success token refusal.
+
+Public worker `78ae9292` then passed one coupled job with 29 fresh native actions
+and one shared generator; four artifacts and eight native reports matched an
+independent whole build. Actual worker/planner configuration mismatch failed
+before planned actions and queued no whole-build replay. Missing/invalid required
+reports and removed native artifacts each failed through actual worker execution
+without an accepted success contribution. Fleet production stayed `3559c70`;
+conflicting complete contribution validation remains a finite gate before readiness.
 
 `fleet` runs the machines that execute Oyzu builds. It has two programs:
 
