@@ -2,6 +2,66 @@
 
 The Oyzu pool manager and executor.
 
+The [distributed-build completion slice](https://github.com/oyzuai/oyzu/issues/479)
+binds admitted native plans to the existing executor. A slice requires the
+persisted executable plan, its coupled target group and assigned handoff. The
+executor passes those values through bounded stdin to the configured Oyzu worker
+before native effects; a preview, missing/oversized plan or non-build slice fails.
+Admitted slices fetch the same blobless history as planning, so native version
+and dependency preparation retain the admitted source context. Ordinary build
+and task jobs keep their existing shallow checkout.
+Ordinary non-slice commands retain their existing execution path. Manager
+placement and Oyzu's native verification keep their existing owners. The real
+platform flow passed shared to API/Web on separate Linux workers to a usable
+final bundle, with required reports matching an independent cache-disabled
+whole build. The agreed finite functional cases now pass; broader qualification
+and maintainer acceptance remain separate.
+
+Ordinary job heartbeats now carry a cancellation request while retaining the
+attempt's lease and finish authority. The executor interrupts and waits for its
+native process; it acknowledges cancellation only after a normal wait and a
+fresh finalized native build record. Missing/stale records and forced stops
+remain explicit runner failures. A cancellation that wins the success/finish
+race is handled through the same heartbeat and stopped-outcome contract, without
+publishing success outputs. The POSIX subprocess regression covers graceful,
+missing-record and forced termination. The matching real Linux service/native
+proof passed cancellation during shared execution, with interrupted native
+evidence, confirmed cleanup and a retained CLI receipt. Cancellation after a
+producer contribution commits also passed: the accepted shared record remained
+unchanged while API stopped and the bundle never started. Windows graceful
+interruption is unqualified.
+
+A slice upload failure now makes one private `retry-handoff` call within the
+same live assignment and lease. It transfers the engine's retained immutable
+bytes, without another checkout, native preparation or execution attempt. The
+successful retry reports the original sealed producer manifest digest; the failed
+invocation on disk stays unchanged. Invalid retry records and a second transfer
+failure remain failures. Runs independently verifies the contribution before
+acceptance. Focused worker tests and the real interrupted-upload proof passed
+with Fleet `3559c70`, platform `c45e1872` and public Oyzu `58dc1e71`: three refused
+upload requests were followed by one retained transfer retry, the original
+producer/attempt remained unchanged, and the independent whole-build outputs
+and required reports matched. A separate real missing-upstream refusal retained
+accepted producers and never replayed upstream work or started the bundle.
+With public collector `26f9b21d`, safe lease replacement also passed: the second
+API attempt on another manager restored valid original-producer work, completed
+the bundle and matched an independent whole build. Resuming the obsolete executor
+was refused without changing accepted records. The separate real PostgreSQL
+finish case qualifies late-success token refusal.
+
+Public worker `78ae9292` then passed one coupled job with 29 fresh native actions
+and one shared generator; four artifacts and eight native reports matched an
+independent whole build. Actual worker/planner configuration mismatch failed
+before planned actions and queued no whole-build replay. Missing/invalid required
+reports and removed native artifacts each failed through actual worker execution
+without an accepted success contribution. Fleet production stayed `3559c70`;
+conflicting complete contribution validation also passed on platform `3c75516d`.
+Actual native success stayed separate from refused completion: no contribution
+was accepted, the attempt failed with `CONTRIBUTION_UNVERIFIED`, dependents never
+started and no replacement was queued. The same service subsequently accepted
+all four valid contributions with fresh worker result stores, distinct API/Web
+managers, CLI exit zero and another independent artifact/report comparison.
+
 `fleet` runs the machines that execute Oyzu builds. It has two programs:
 
 - [`cmd/manager`](cmd/manager/) is the pool manager. It keeps pools of build

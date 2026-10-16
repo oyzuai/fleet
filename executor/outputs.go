@@ -66,6 +66,12 @@ func readOutputs(dir string) ([]runnerclient.Output, error) {
 	if len(raw) > maxManifest {
 		return nil, fmt.Errorf("%s is larger than %d MiB", ManifestPath, maxManifest>>20)
 	}
+	return manifestOutputs(raw)
+}
+
+// manifestOutputs indexes the exact producer record. A retained handoff retry
+// returns that sealed record instead of rewriting the failed invocation on disk.
+func manifestOutputs(raw []byte) ([]runnerclient.Output, error) {
 	var m buildManifest
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, fmt.Errorf("%s is not JSON: %w", ManifestPath, err)

@@ -213,6 +213,13 @@ type Job struct {
 	AffectedBase  string   `json:"affected_base"`
 	Mandatory     bool     `json:"mandatory"`
 	Command       []string `json:"command"`
+	// AdmittedPlan is the persisted native executable plan for a slice. It is
+	// passed to Oyzu through bounded stdin, never rebuilt from command argv.
+	AdmittedPlan json.RawMessage `json:"admitted_plan,omitempty"`
+	// SliceTargets is the existing coupled group assigned to this job;
+	// Handoff is its persisted upstream/result repository.
+	SliceTargets []string `json:"slice_targets,omitempty"`
+	Handoff      string   `json:"handoff,omitempty"`
 	// Secrets are the build secret variables to pull before running.
 	Secrets []string `json:"secrets"`
 	// KindOperation is set on a kind job (Kind is KindOperation): the runner

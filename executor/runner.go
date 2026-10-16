@@ -15,6 +15,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
@@ -156,7 +158,8 @@ func Run(ctx context.Context, cfg Config) error {
 		heartbeat(buildCtx, cfg.Client, st.JobToken, every, cancel, log, st.Expires)
 	}()
 
-	outcome, capture := execute(buildCtx, cfg, st.JobToken, startup, job, log)
+	completion := nativeCompletion{}
+	outcome, capture := execute(buildCtx, cfg, st.JobToken, startup, job, log, &completion)
 	drain := cfg.LogDrainTimeout
 	if drain <= 0 || drain > logDrainWindow {
 		drain = logDrainWindow
@@ -170,13 +173,30 @@ func Run(ctx context.Context, cfg Config) error {
 	if errors.Is(context.Cause(buildCtx), errLost) {
 		return errLost
 	}
-	if ctx.Err() != nil && outcome.State != "succeeded" {
+	if errors.Is(context.Cause(buildCtx), errCancelRequested) {
+		outcome = cancellationOutcome(outcome, completion.confirmed)
+	}
+	if ctx.Err() != nil && outcome.State != "succeeded" && !errors.Is(context.Cause(buildCtx), errCancelRequested) {
 		outcome = runnerclient.Outcome{State: "cancelled", Summary: "The runner was stopped before the job finished."}
 	}
 	finishCtx, done := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
 	defer done()
 	if err := cfg.Client.Finish(finishCtx, st.JobToken, outcome); err != nil {
-		return fmt.Errorf("report the outcome: %w", err)
+		var conflict *runnerclient.StatusError
+		if outcome.State != "succeeded" || !errors.As(err, &conflict) || conflict.Status != http.StatusConflict {
+			return fmt.Errorf("report the outcome: %w", err)
+		}
+		// Cancellation can win after native success but before Finish commits.
+		// Recheck the existing directive, then acknowledge only locally proven
+		// current-invocation completion; never infer stop from the 409 itself.
+		_, requested, beatErr := cfg.Client.HeartbeatStatus(finishCtx, st.JobToken)
+		if beatErr != nil || !requested {
+			return fmt.Errorf("report the outcome: %w", err)
+		}
+		outcome = cancellationOutcome(outcome, completion.confirmed)
+		if err := cfg.Client.Finish(finishCtx, st.JobToken, outcome); err != nil {
+			return fmt.Errorf("report the stopped outcome: %w", err)
+		}
 	}
 	log.Info("job finished", "state", outcome.State)
 	// The server's log-only token window starts at job finish. Keep the
@@ -188,10 +208,17 @@ func Run(ctx context.Context, cfg Config) error {
 }
 
 var errLost = errors.New("runs took the job back: the lease ran out or a credential was revoked")
+var errCancelRequested = errors.New("runs requested cancellation; awaiting native stop confirmation")
 
 func heartbeat(ctx context.Context, c *runnerclient.Client, token string, every time.Duration, cancel context.CancelCauseFunc, log *slog.Logger, expires time.Time) {
 	runnerclient.WatchLease(ctx, every, expires,
-		func(ctx context.Context) (time.Time, error) { return c.HeartbeatLease(ctx, token) },
+		func(ctx context.Context) (time.Time, error) {
+			expires, requested, err := c.HeartbeatStatus(ctx, token)
+			if err == nil && requested {
+				cancel(errCancelRequested)
+			}
+			return expires, err
+		},
 		func() { log.Warn("lease expired or refused; stopping the build"); cancel(errLost) },
 		func(err error) { log.Warn("heartbeat failed", "error", err) })
 }
@@ -234,18 +261,21 @@ var (
 )
 
 // execute runs the job by its operation, and says how it went.
-func execute(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger) (runnerclient.Outcome, *logCapture) {
+func execute(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger, completion *nativeCompletion) (runnerclient.Outcome, *logCapture) {
+	if job.Kind == "slice" && job.Operation != "build" {
+		return failedWith("PLAN_MISMATCH", "An admitted slice must execute its assigned native build."), nil
+	}
 	switch job.Operation {
 	case "renovate":
 		return renovate(ctx, cfg, token, startup, job, log), nil
 	case "lock":
 		return lockFix(ctx, cfg, token, startup, job, log), nil
 	}
-	return build(ctx, cfg, token, startup, job, log)
+	return build(ctx, cfg, token, startup, job, log, completion)
 }
 
 // build checks out the commit and runs the oyzu command.
-func build(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger) (outcome runnerclient.Outcome, capture *logCapture) {
+func build(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger, completion *nativeCompletion) (outcome runnerclient.Outcome, capture *logCapture) {
 	_, name, _ := strings.Cut(job.Repository, "/")
 	if !shaPattern.MatchString(job.HeadSHA) || !repoPattern.MatchString(job.Repository) || strings.Trim(name, ".") == "" ||
 		(job.AffectedBase != "" && !shaPattern.MatchString(job.AffectedBase)) {
@@ -253,6 +283,14 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	}
 	if len(job.Command) < 2 || job.Command[0] != "oyzu" {
 		return failedWith("INVALID_JOB", "The job's command is not an oyzu command."), nil
+	}
+	var input []byte
+	if job.Kind == "slice" {
+		var err error
+		input, err = sliceInput(cfg.WorkDir, job)
+		if err != nil {
+			return failedWith("PLAN_MISMATCH", err.Error()), nil
+		}
 	}
 	if err := os.MkdirAll(cfg.WorkDir, 0o700); err != nil {
 		return failed("Could not create the work directory: " + err.Error()), nil
@@ -357,22 +395,75 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		go denials.run(watchCtx)
 	}
 	args := append([]string{}, job.Command[1:]...)
-	if job.Kind != "plan" && (job.Operation == "build" || job.Operation == "run") && !slices.Contains(args, "--json") {
+	if job.Kind == "slice" {
+		args = []string{"__oyzu-build-worker", "execute"}
+	} else if job.Kind != "plan" && (job.Operation == "build" || job.Operation == "run") && !slices.Contains(args, "--json") {
 		args = append([]string{"--json"}, args...)
 	}
 	capture.system("Starting oyzu.\n", &runnerclient.LogEvent{Kind: "task", State: "running"})
-	cmd := exec.CommandContext(ctx, cfg.Oyzu, args...)
-	cmd.Dir = cfg.WorkDir
-	cmd.Env = env
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	cmd.Cancel = func() error {
-		if err := cmd.Process.Signal(os.Interrupt); err != nil {
-			return cmd.Process.Kill()
+	var interruptedAt atomic.Int64
+	var forced atomic.Bool
+	runNative := func(arguments []string, request []byte, output io.Writer) (*exec.Cmd, error) {
+		cmd := exec.CommandContext(ctx, cfg.Oyzu, arguments...)
+		cmd.Dir, cmd.Env = cfg.WorkDir, env
+		if request != nil {
+			cmd.Stdin = bytes.NewReader(request)
 		}
-		return nil
+		cmd.Stdout, cmd.Stderr = output, stderr
+		cmd.Cancel = func() error {
+			interruptedAt.Store(time.Now().UnixNano())
+			if err := cmd.Process.Signal(os.Interrupt); err != nil {
+				err := cmd.Process.Kill()
+				forced.Store(err == nil)
+				return err
+			}
+			return nil
+		}
+		cmd.WaitDelay = 20 * time.Second
+		return cmd, cmd.Run()
 	}
-	cmd.WaitDelay = 20 * time.Second
-	err = cmd.Run()
+	previous := nativeCompletionRecord(cfg.WorkDir)
+	cmd, err := runNative(args, input, stdout)
+	var retainedOutputs []runnerclient.Output
+	var retainedCompletion []byte
+	transferFailed, retryRecordInvalid := false, false
+	executionWaited := cmd.ProcessState != nil && cmd.ProcessState.Exited() && !forced.Load()
+	// Transfer recovery stays inside this live assignment and its lease. Never
+	// check out source again, repeat native preparation, or request a new attempt
+	// merely because the completed immutable contribution could not be uploaded.
+	if job.Kind == "slice" && ctx.Err() == nil && cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 5 {
+		capture.system("Retrying retained build contribution upload; native commands will not run again.\n", nil)
+		root, rootErr := filepath.Abs(filepath.Join(cfg.WorkDir, filepath.Dir(ManifestPath)))
+		if rootErr != nil {
+			return failedWith("RUNNER_ERROR", "Retained contribution directory is unavailable: "+rootErr.Error()), capture
+		}
+		request, _ := json.Marshal(struct {
+			Root    string `json:"root"`
+			Handoff string `json:"handoff"`
+		}{root, job.Handoff})
+		var result bytes.Buffer
+		cmd, err = runNative([]string{"__oyzu-build-worker", "retry-handoff"}, request,
+			io.MultiWriter(stdout, &capped{w: &result, n: maxManifest + 1}))
+		transferFailed = err != nil
+		if err == nil {
+			retainedOutputs, err = retainedHandoffOutputs(result.Bytes())
+			retryRecordInvalid = err != nil
+			if err == nil && executionWaited {
+				retainedCompletion = retainedNativeCompletion(nativeCompletionRecord(cfg.WorkDir), result.Bytes())
+			}
+		}
+	}
+	// A signal/WaitDelay-killed CLI is not proof that its native children
+	// cleaned up. Only a normal wait plus its fresh finalized native record
+	// can acknowledge stopping this build invocation.
+	stopWithinGrace := interruptedAt.Load() == 0 || time.Since(time.Unix(0, interruptedAt.Load())) < cmd.WaitDelay
+	if job.Operation == "build" && cmd.ProcessState != nil && cmd.ProcessState.Exited() && !forced.Load() && stopWithinGrace {
+		current := nativeCompletionRecord(cfg.WorkDir)
+		if retainedCompletion != nil {
+			current = retainedCompletion
+		}
+		completion.confirmed = freshNativeCompletion(previous, current)
+	}
 	_, _ = stdout.Flush(), stderr.Flush()
 	outSink.close()
 	errSink.close()
@@ -381,6 +472,9 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	}
 	code := cmd.ProcessState.ExitCode()
 	summary := fmt.Sprintf("`%s` on `%s` exited %d.\n\n```text\n%s\n```", strings.Join(job.Command, " "), job.HeadSHA, code, out.String())
+	if err != nil && code == 0 {
+		summary += "\n\nCompleted contribution validation failed: " + replaceForms(err.Error(), forms)
+	}
 	if proxy != nil {
 		if r := proxy.report(); r != "" {
 			summary += "\n\n" + r
@@ -407,7 +501,10 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	case err == nil && job.Operation == "build":
 		// What the build made is published by runs (IMPL-450); a manifest
 		// runs cannot read publishes nothing but fails nothing either.
-		outputs, oerr := readOutputs(cfg.WorkDir)
+		outputs, oerr := retainedOutputs, error(nil)
+		if outputs == nil {
+			outputs, oerr = readOutputs(cfg.WorkDir)
+		}
 		if oerr != nil {
 			log.Warn("build manifest not read", "error", oerr)
 			summary += "\n\nNothing from this build is published: " + replaceForms(oerr.Error(), forms)
@@ -416,9 +513,57 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	case err == nil:
 		return runnerclient.Outcome{State: "succeeded", ExitCode: &code, Summary: summary}, capture
 	case ctx.Err() != nil:
+		if errors.Is(context.Cause(ctx), errCancelRequested) {
+			return cancellationOutcome(runnerclient.Outcome{State: "failed", ExitCode: &code, Summary: summary}, completion.confirmed), capture
+		}
 		return runnerclient.Outcome{State: "cancelled", Summary: summary}, capture
 	}
+	if retryRecordInvalid {
+		return runnerclient.Outcome{State: "failed", ExitCode: &code, ReasonCode: "RUNNER_ERROR", Summary: summary}, capture
+	}
+	if transferFailed {
+		return runnerclient.Outcome{State: "failed", ExitCode: &code, ReasonCode: "HANDOFF_PUSH_FAILED", Summary: summary}, capture
+	}
 	return runnerclient.Outcome{State: "failed", ExitCode: &code, Summary: summary}, capture
+}
+
+type nativeCompletion struct{ confirmed bool }
+
+func cancellationOutcome(previous runnerclient.Outcome, confirmed bool) runnerclient.Outcome {
+	if !confirmed {
+		return runnerclient.Outcome{State: "failed", ExitCode: previous.ExitCode, ReasonCode: "RUNNER_ERROR",
+			Summary: "Cancellation requested, but native termination was not confirmed by a fresh completed build record.\n\n" + previous.Summary}
+	}
+	return runnerclient.Outcome{State: "cancelled", ExitCode: previous.ExitCode,
+		Summary: "Native build stopped after cancellation was requested.\n\n" + previous.Summary}
+}
+
+func nativeCompletionRecord(directory string) []byte {
+	file, err := os.Open(filepath.Join(directory, filepath.FromSlash(ManifestPath)))
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxManifest+1))
+	if err != nil || len(data) > maxManifest {
+		return nil
+	}
+	return data
+}
+
+func freshNativeCompletion(previous, current []byte) bool {
+	if len(current) == 0 || bytes.Equal(previous, current) {
+		return false
+	}
+	var before, record struct {
+		SchemaVersion string `json:"schemaVersion"`
+		Kind          string `json:"kind"`
+		RunID         string `json:"runId"`
+		Status        string `json:"status"`
+	}
+	_ = json.Unmarshal(previous, &before)
+	return json.Unmarshal(current, &record) == nil && record.SchemaVersion == "v1alpha1" && record.Kind == "build-manifest" &&
+		record.RunID != "" && record.RunID != before.RunID && (record.Status == "succeeded" || record.Status == "interrupted")
 }
 
 // buildEnv is the runner's environment without anything that would let the
@@ -446,9 +591,9 @@ func failedWith(code, summary string) runnerclient.Outcome {
 
 // checkout fetches exactly the job's commit. The token goes to git as an
 // HTTP header through the environment, so it is in neither the process
-// arguments nor the repository's config. A build gets the commit alone; a
-// plan gets a blobless clone, history without file contents, so oyzu can find
-// an affected build's merge base.
+// arguments nor the repository's config. Ordinary builds get the commit alone;
+// plans and admitted slices get the same blobless history so native preparation
+// observes the same version context and affected-build merge base.
 func checkout(ctx context.Context, cfg Config, token string, job runnerclient.Job) error {
 	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	remote := strings.TrimRight(cfg.GitURL, "/") + "/" + job.Repository + ".git"
@@ -463,7 +608,7 @@ func checkout(ctx context.Context, cfg Config, token string, job runnerclient.Jo
 		{"fetch", "--quiet", "--depth", "1", "--no-tags", remote, job.HeadSHA},
 		{"checkout", "--quiet", "--detach", "FETCH_HEAD"},
 	}
-	if job.Kind == "plan" {
+	if job.Kind == "plan" || job.Kind == "slice" {
 		fetch := []string{"fetch", "--quiet", "--filter=blob:none", "--no-tags", "origin", job.HeadSHA}
 		if job.AffectedBase != "" && job.AffectedBase != job.HeadSHA {
 			fetch = append(fetch, job.AffectedBase)
