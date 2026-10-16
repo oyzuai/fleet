@@ -401,33 +401,68 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		args = append([]string{"--json"}, args...)
 	}
 	capture.system("Starting oyzu.\n", &runnerclient.LogEvent{Kind: "task", State: "running"})
-	cmd := exec.CommandContext(ctx, cfg.Oyzu, args...)
-	cmd.Dir = cfg.WorkDir
-	cmd.Env = env
-	if input != nil {
-		cmd.Stdin = bytes.NewReader(input)
-	}
-	cmd.Stdout, cmd.Stderr = stdout, stderr
 	var interruptedAt atomic.Int64
 	var forced atomic.Bool
-	cmd.Cancel = func() error {
-		interruptedAt.Store(time.Now().UnixNano())
-		if err := cmd.Process.Signal(os.Interrupt); err != nil {
-			err := cmd.Process.Kill()
-			forced.Store(err == nil)
-			return err
+	runNative := func(arguments []string, request []byte, output io.Writer) (*exec.Cmd, error) {
+		cmd := exec.CommandContext(ctx, cfg.Oyzu, arguments...)
+		cmd.Dir, cmd.Env = cfg.WorkDir, env
+		if request != nil {
+			cmd.Stdin = bytes.NewReader(request)
 		}
-		return nil
+		cmd.Stdout, cmd.Stderr = output, stderr
+		cmd.Cancel = func() error {
+			interruptedAt.Store(time.Now().UnixNano())
+			if err := cmd.Process.Signal(os.Interrupt); err != nil {
+				err := cmd.Process.Kill()
+				forced.Store(err == nil)
+				return err
+			}
+			return nil
+		}
+		cmd.WaitDelay = 20 * time.Second
+		return cmd, cmd.Run()
 	}
-	cmd.WaitDelay = 20 * time.Second
 	previous := nativeCompletionRecord(cfg.WorkDir)
-	err = cmd.Run()
+	cmd, err := runNative(args, input, stdout)
+	var retainedOutputs []runnerclient.Output
+	var retainedCompletion []byte
+	transferFailed, retryRecordInvalid := false, false
+	executionWaited := cmd.ProcessState != nil && cmd.ProcessState.Exited() && !forced.Load()
+	// Transfer recovery stays inside this live assignment and its lease. Never
+	// check out source again, repeat native preparation, or request a new attempt
+	// merely because the completed immutable contribution could not be uploaded.
+	if job.Kind == "slice" && ctx.Err() == nil && cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 5 {
+		capture.system("Retrying retained build contribution upload; native commands will not run again.\n", nil)
+		root, rootErr := filepath.Abs(filepath.Join(cfg.WorkDir, filepath.Dir(ManifestPath)))
+		if rootErr != nil {
+			return failedWith("RUNNER_ERROR", "Retained contribution directory is unavailable: "+rootErr.Error()), capture
+		}
+		request, _ := json.Marshal(struct {
+			Root    string `json:"root"`
+			Handoff string `json:"handoff"`
+		}{root, job.Handoff})
+		var result bytes.Buffer
+		cmd, err = runNative([]string{"__oyzu-build-worker", "retry-handoff"}, request,
+			io.MultiWriter(stdout, &capped{w: &result, n: maxManifest + 1}))
+		transferFailed = err != nil
+		if err == nil {
+			retainedOutputs, err = retainedHandoffOutputs(result.Bytes())
+			retryRecordInvalid = err != nil
+			if err == nil && executionWaited {
+				retainedCompletion = retainedNativeCompletion(nativeCompletionRecord(cfg.WorkDir), result.Bytes())
+			}
+		}
+	}
 	// A signal/WaitDelay-killed CLI is not proof that its native children
 	// cleaned up. Only a normal wait plus its fresh finalized native record
 	// can acknowledge stopping this build invocation.
 	stopWithinGrace := interruptedAt.Load() == 0 || time.Since(time.Unix(0, interruptedAt.Load())) < cmd.WaitDelay
 	if job.Operation == "build" && cmd.ProcessState != nil && cmd.ProcessState.Exited() && !forced.Load() && stopWithinGrace {
-		completion.confirmed = freshNativeCompletion(previous, nativeCompletionRecord(cfg.WorkDir))
+		current := nativeCompletionRecord(cfg.WorkDir)
+		if retainedCompletion != nil {
+			current = retainedCompletion
+		}
+		completion.confirmed = freshNativeCompletion(previous, current)
 	}
 	_, _ = stdout.Flush(), stderr.Flush()
 	outSink.close()
@@ -437,6 +472,9 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	}
 	code := cmd.ProcessState.ExitCode()
 	summary := fmt.Sprintf("`%s` on `%s` exited %d.\n\n```text\n%s\n```", strings.Join(job.Command, " "), job.HeadSHA, code, out.String())
+	if err != nil && code == 0 {
+		summary += "\n\nCompleted contribution validation failed: " + replaceForms(err.Error(), forms)
+	}
 	if proxy != nil {
 		if r := proxy.report(); r != "" {
 			summary += "\n\n" + r
@@ -463,7 +501,10 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	case err == nil && job.Operation == "build":
 		// What the build made is published by runs (IMPL-450); a manifest
 		// runs cannot read publishes nothing but fails nothing either.
-		outputs, oerr := readOutputs(cfg.WorkDir)
+		outputs, oerr := retainedOutputs, error(nil)
+		if outputs == nil {
+			outputs, oerr = readOutputs(cfg.WorkDir)
+		}
 		if oerr != nil {
 			log.Warn("build manifest not read", "error", oerr)
 			summary += "\n\nNothing from this build is published: " + replaceForms(oerr.Error(), forms)
@@ -476,6 +517,12 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 			return cancellationOutcome(runnerclient.Outcome{State: "failed", ExitCode: &code, Summary: summary}, completion.confirmed), capture
 		}
 		return runnerclient.Outcome{State: "cancelled", Summary: summary}, capture
+	}
+	if retryRecordInvalid {
+		return runnerclient.Outcome{State: "failed", ExitCode: &code, ReasonCode: "RUNNER_ERROR", Summary: summary}, capture
+	}
+	if transferFailed {
+		return runnerclient.Outcome{State: "failed", ExitCode: &code, ReasonCode: "HANDOFF_PUSH_FAILED", Summary: summary}, capture
 	}
 	return runnerclient.Outcome{State: "failed", ExitCode: &code, Summary: summary}, capture
 }

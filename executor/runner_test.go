@@ -68,6 +68,43 @@ func fakeGit() {
 }
 
 func fakeOyzu() {
+	if mode := os.Getenv("FAKE_OYZU_HANDOFF"); mode != "" {
+		input, _ := io.ReadAll(os.Stdin)
+		calls, _ := os.OpenFile(os.Getenv("FAKE_OYZU_HANDOFF_CALLS"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		_ = json.NewEncoder(calls).Encode(map[string]any{"args": os.Args[1:], "input": json.RawMessage(input)})
+		_ = calls.Close()
+		if len(os.Args) != 3 || os.Args[1] != "__oyzu-build-worker" {
+			os.Exit(2)
+		}
+		switch os.Args[2] {
+		case "execute":
+			_ = os.MkdirAll("dist", 0o700)
+			_ = os.WriteFile(ManifestPath, []byte(`{"schemaVersion":"v1alpha1","kind":"build-manifest","runId":"original-producer","status":"failed","artifacts":[]}`), 0o600)
+			if mode == "native-failure" {
+				os.Exit(1)
+			}
+			os.Exit(5)
+		case "retry-handoff":
+			var request struct{ Root string }
+			if json.Unmarshal(input, &request) != nil {
+				os.Exit(2)
+			}
+			if _, err := os.Stat(filepath.Join(request.Root, "manifest.json")); err != nil {
+				os.Exit(2)
+			}
+			if mode == "failed-transfer" {
+				fmt.Fprintln(os.Stderr, "completed immutable contribution upload unavailable")
+				os.Exit(1)
+			}
+			if mode == "invalid-record" {
+				fmt.Println(`{"status":"failed","runId":"original-producer"}`)
+			} else {
+				fmt.Println(`{"schemaVersion":"v1alpha1","kind":"build-manifest","runId":"original-producer","status":"succeeded","artifacts":[]}`)
+			}
+			os.Exit(0)
+		}
+		os.Exit(2)
+	}
 	if mode := os.Getenv("FAKE_OYZU_CANCEL_MODE"); mode != "" {
 		interrupt := make(chan os.Signal, 1)
 		signal.Notify(interrupt, os.Interrupt)

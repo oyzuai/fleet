@@ -23,8 +23,20 @@ fresh finalized native build record. Missing/stale records and forced stops
 remain explicit runner failures. A cancellation that wins the success/finish
 race is handled through the same heartbeat and stopped-outcome contract, without
 publishing success outputs. The POSIX subprocess regression covers graceful,
-missing-record and forced termination; the actual service/native-slice
-cancellation proof remains required. Windows graceful interruption is unqualified.
+missing-record and forced termination. The matching real Linux service/native
+proof passed cancellation during shared execution, with interrupted native
+evidence, confirmed cleanup and a retained CLI receipt. Cancellation after a
+producer contribution commits remains a separate required case. Windows graceful
+interruption is unqualified.
+
+A slice upload failure now makes one private `retry-handoff` call within the
+same live assignment and lease. It transfers the engine's retained immutable
+bytes, without another checkout, native preparation or execution attempt. The
+successful retry reports the original sealed producer manifest digest; the failed
+invocation on disk stays unchanged. Invalid retry records and a second transfer
+failure remain failures. Runs independently verifies the contribution before
+acceptance. Focused worker tests pass; the real interrupted-upload proof remains
+required.
 
 `fleet` runs the machines that execute Oyzu builds. It has two programs:
 
