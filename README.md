@@ -14,7 +14,8 @@ Ordinary non-slice commands retain their existing execution path. Manager
 placement and Oyzu's native verification keep their existing owners. The real
 platform flow passed shared to API/Web on separate Linux workers to a usable
 final bundle, with required reports matching an independent cache-disabled
-whole build. Remaining finite failures still block completion.
+whole build. The agreed finite functional cases now pass; broader qualification
+and maintainer acceptance remain separate.
 
 Ordinary job heartbeats now carry a cancellation request while retaining the
 attempt's lease and finish authority. The executor interrupts and waits for its
@@ -54,7 +55,12 @@ independent whole build. Actual worker/planner configuration mismatch failed
 before planned actions and queued no whole-build replay. Missing/invalid required
 reports and removed native artifacts each failed through actual worker execution
 without an accepted success contribution. Fleet production stayed `3559c70`;
-conflicting complete contribution validation remains a finite gate before readiness.
+conflicting complete contribution validation also passed on platform `3c75516d`.
+Actual native success stayed separate from refused completion: no contribution
+was accepted, the attempt failed with `CONTRIBUTION_UNVERIFIED`, dependents never
+started and no replacement was queued. The same service subsequently accepted
+all four valid contributions with fresh worker result stores, distinct API/Web
+managers, CLI exit zero and another independent artifact/report comparison.
 
 `fleet` runs the machines that execute Oyzu builds. It has two programs:
 
