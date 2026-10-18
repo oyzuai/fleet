@@ -1,0 +1,91 @@
+{
+  "schema_version": "v1alpha1",
+  "type": "deployment-plan",
+  "kind": {
+    "name": "migration",
+    "version": "0.1.0"
+  },
+  "summary": "Run 1 migration on orders-db and record orders-schema at 2026.10.10-3. Findings: 0042: CREATE INDEX on \"orders\" without CONCURRENTLY blocks writes to it while the index builds; 0042: \"orders\" holds at least 1000000 rows, so the index build blocks writes for a long time.",
+  "changes": [
+    {
+      "action": "run",
+      "resource": {
+        "type": "postgres.migration",
+        "name": "orders-schema/0042"
+      },
+      "attributes": [
+        {
+          "path": "/name",
+          "after": "index orders by customer"
+        },
+        {
+          "path": "/phase",
+          "after": "expand"
+        },
+        {
+          "path": "/reversible",
+          "after": true
+        },
+        {
+          "path": "/transaction",
+          "after": true
+        },
+        {
+          "path": "/sql",
+          "after": "CREATE INDEX orders_customer_idx ON orders (customer_id);"
+        },
+        {
+          "path": "/down_sql",
+          "after": "DROP INDEX orders_customer_idx;"
+        },
+        {
+          "path": "/findings",
+          "after": [
+            {
+              "code": "non-concurrent-index",
+              "table": "\"orders\"",
+              "message": "CREATE INDEX on \"orders\" without CONCURRENTLY blocks writes to it while the index builds"
+            },
+            {
+              "code": "table-lock",
+              "table": "\"orders\"",
+              "message": "\"orders\" holds at least 1000000 rows, so the index build blocks writes for a long time"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "action": "update",
+      "resource": {
+        "type": "oyzu.migration-set",
+        "name": "orders-schema"
+      },
+      "attributes": [
+        {
+          "path": "/version",
+          "before": "2026.10.09-1",
+          "after": "2026.10.10-3"
+        },
+        {
+          "path": "/last_migration",
+          "before": "0041",
+          "after": "0042"
+        }
+      ]
+    }
+  ],
+  "risk_flags": [
+    {
+      "flag": "availability",
+      "reason": "0042: CREATE INDEX on \"orders\" without CONCURRENTLY blocks writes to it while the index builds",
+      "resource": "orders-schema/0042"
+    },
+    {
+      "flag": "availability",
+      "reason": "0042: \"orders\" holds at least 1000000 rows, so the index build blocks writes for a long time",
+      "resource": "orders-schema/0042"
+    }
+  ],
+  "digest": "sha256:90068511374626965c407b1dbe444393f5f4a37a9c962ec5ced7a772ea10d823"
+}

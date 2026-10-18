@@ -134,7 +134,7 @@ func TestInvalidCases(t *testing.T) {
 }
 
 func TestPlanSealMatchesPublishedDigest(t *testing.T) {
-	for _, name := range []string{"plan.typed.json", "plan.untyped.json"} {
+	for _, name := range []string{"plan.typed.json", "plan.untyped.json", "plan.availability.json"} {
 		p, err := DecodePlan(examples(t)[name])
 		if err != nil {
 			t.Fatal(err)
