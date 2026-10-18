@@ -233,6 +233,7 @@ const (
 	RiskPermissionChange = "permission-change"
 	RiskDataLoss         = "data-loss"
 	RiskIrreversible     = "irreversible"
+	RiskAvailability     = "availability"
 	RiskUntyped          = "untyped"
 )
 
@@ -485,6 +486,9 @@ type StrategyDef struct {
 	Name string `json:"name"`
 	Mode string `json:"mode"`
 	Tool string `json:"tool,omitempty"`
+	// StagesFirstDeployment is true when the kind can stage a version where
+	// nothing is live yet; absent, a first deployment is a plain apply.
+	StagesFirstDeployment bool `json:"stages_first_deployment,omitempty"`
 }
 
 // Connectors lists the connector types a kind accepts, apply and observe apart.

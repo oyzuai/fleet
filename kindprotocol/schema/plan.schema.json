@@ -24,7 +24,10 @@
         "additionalProperties": false,
         "required": ["flag", "reason"],
         "properties": {
-          "flag": { "enum": ["destroy", "replace", "permission-change", "data-loss", "irreversible", "untyped"] },
+          "flag": {
+            "description": "availability: applying the change locks tables, blocks writes or traffic, or otherwise makes the target unavailable for a while (a non-concurrent index, a table rewrite under an exclusive lock), so policy can hold it for a person or a window.",
+            "enum": ["destroy", "replace", "permission-change", "data-loss", "irreversible", "availability", "untyped"]
+          },
           "reason": { "type": "string", "minLength": 1, "maxLength": 1000 },
           "resource": { "type": "string", "minLength": 1, "maxLength": 1024 }
         }

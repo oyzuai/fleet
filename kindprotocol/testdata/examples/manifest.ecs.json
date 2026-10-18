@@ -48,7 +48,8 @@
     },
     {
       "name": "blue-green",
-      "mode": "native"
+      "mode": "native",
+      "stages_first_deployment": true
     },
     {
       "name": "linear",

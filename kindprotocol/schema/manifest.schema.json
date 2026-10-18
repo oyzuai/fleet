@@ -59,6 +59,10 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 128
+          },
+          "stages_first_deployment": {
+            "description": "Whether the kind can stage a version where nothing is live yet. Absent or false, a target's first deployment under this strategy is a plain apply and the strategy's steps start with the next release. Meaningful only for blue-green, canary, linear and shadow.",
+            "type": "boolean"
           }
         },
         "if": { "properties": { "mode": { "const": "delegated" } } },
