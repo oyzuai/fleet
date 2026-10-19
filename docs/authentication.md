@@ -100,3 +100,37 @@ Use the driver's intended isolated startup channel. Preserve state-directory
 permissions, TLS verification and the existing token masks; masking is not an
 isolation boundary. Upstream signing or publication credentials require their
 separately authorized protected runtime, not an ordinary authenticated build.
+
+## Implementation and verification handoff
+
+The existing protocol/lifetimes above are the baseline. Implementation starts
+with finite client regressions and integration coverage, not replacing enrollment
+with general user login or teaching the manager to mint runner credentials.
+The runner OpenAPI remains authoritative; any optional correlation extension
+updates that existing contract and all producers/consumers together, without a
+successor version. Existing authentication fields do not double as trace context.
+
+| Planned acceptance ID | Required observable result |
+| --- | --- |
+| FLEET-AUTH-01 | A real enrollment/login/claim/start sequence reaches one assigned execution; wrong audience, replayed assertion and consumed/expired startup material grant no access |
+| FLEET-AUTH-02 | Heartbeat extends the same current job bearer while the attempt is live; lost/revoked manager/key/attempt authority prevents fresh ordinary operations and renewal |
+| FLEET-AUTH-03 | Key rotation preserves manager attribution and distinguishes retirement from compromise revocation; lost login/finish responses do not create a new assignment or business effect by assumption |
+| FLEET-AUTH-04 | Finish removes ordinary authority; only the finishing bearer has bounded log drain, and current manager/key revocation still denies that path |
+| FLEET-AUTH-05 | Manager/executor spans and safe outcome metrics preserve job/attempt causation where supported; credentials/build content never enter administrative telemetry, and exporter outage does not block renewal |
+
+Own local assertion/client/manager/executor behavior in this repository. Run
+`oyzu build --full` for changed client code and keep focused checks with
+`assertion`, `runnerclient`, `manager` and `executor`. Real server-side replay,
+revocation and database behavior require a connected protocol integration in the
+server owner; a scripted local response cannot qualify those guarantees. Record
+actual commands, Fleet/server/fixture revisions, driver, clock/lease settings and
+redacted outcomes in the implementation evidence. These are planned criteria,
+not tests executed by this documentation review.
+
+First connected proof uses an enrolled container manager and one pinned,
+nonproduction build fixture, with no VM driver or external cloud prerequisite.
+Observe enrollment through ordinary completion, then revoke live authority in a
+second attempt and exercise post-finish log limits independently. Broader Windows,
+cloud VM, untrusted-host and isolation qualification stay explicit follow-ups;
+process mode retains its trusted-code restriction. Do not forward platform
+exporter credentials or manager/job bearers into the customer's build process.
