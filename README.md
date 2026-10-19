@@ -2,7 +2,8 @@
 
 The Oyzu pool manager and executor.
 
-Manager and executor authentication have separate lifecycles. A manager enrolls
+Manager and executor authentication have separate
+[lifecycles](docs/authentication.md). A manager enrolls
 once and signs login assertions; Oyzu issues the manager, startup and job
 credentials. Build code does not receive manager credentials or the executor's
 job credential. The public
