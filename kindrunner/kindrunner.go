@@ -29,6 +29,7 @@ import (
 	"github.com/oyzuai/fleet/internal/masking"
 	"github.com/oyzuai/fleet/kindprotocol"
 	"github.com/oyzuai/fleet/runnerclient"
+	"github.com/oyzuai/fleet/telemetry"
 )
 
 const (
@@ -455,7 +456,7 @@ func (r *run) start(ctx context.Context, request []byte, dirs jobDirs, label str
 			return nil, fmt.Errorf("built-in kind %q is not installed on this pool: %w", name, err)
 		}
 		cmd = exec.Command(path)
-		cmd.Env = append(os.Environ(), "OYZU_KIND_STATE_DIR="+stateDir)
+		cmd.Env = append(telemetry.Scrub(os.Environ()), "OYZU_KIND_STATE_DIR="+stateDir)
 		if secrets != nil {
 			cmd.Env = append(append(secrets.scrub(cmd.Env), "OYZU_SECRETS_DIR="+secrets.path), secrets.vars(secrets.path)...)
 		}

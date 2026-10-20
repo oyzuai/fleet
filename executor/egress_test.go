@@ -109,7 +109,7 @@ func grant(host, auth string, expires time.Time) runnerclient.Egress {
 func startTestEgress(t *testing.T, u *upstreams, first runnerclient.Egress, refresh func(context.Context) (runnerclient.Egress, error)) (*egressProxy, *maskLog) {
 	t.Helper()
 	masks := &maskLog{}
-	p, err := startEgress(first, refresh, masks.add, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	p, err := startEgress(first, refresh, masks.add, slog.New(slog.NewTextHandler(io.Discard, nil)), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,12 +269,12 @@ func TestEgressRefusesUnusableGrants(t *testing.T) {
 		{Host: "github.com", Authorization: ""},
 		{Host: "github.com", Authorization: "Bearer x\r\nX-Evil: 1"},
 	} {
-		if p, err := startEgress(runnerclient.Egress{Grants: []runnerclient.EgressGrant{g}}, nil, func(...string) {}, log); err == nil {
+		if p, err := startEgress(runnerclient.Egress{Grants: []runnerclient.EgressGrant{g}}, nil, func(...string) {}, log, ""); err == nil {
 			p.stop()
 			t.Fatalf("accepted %+v", g)
 		}
 	}
-	if _, err := startEgress(runnerclient.Egress{}, nil, func(...string) {}, log); err == nil {
+	if _, err := startEgress(runnerclient.Egress{}, nil, func(...string) {}, log, ""); err == nil {
 		t.Fatal("started with no grants")
 	}
 }

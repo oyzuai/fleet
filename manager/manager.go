@@ -16,6 +16,7 @@ import (
 
 	"github.com/oyzuai/fleet/assertion"
 	"github.com/oyzuai/fleet/runnerclient"
+	"github.com/oyzuai/fleet/telemetry"
 )
 
 const (
@@ -132,7 +133,15 @@ func (m *Manager) State() State {
 // Enroll generates a key, spends an enrollment or rekey token with it and
 // saves the manager's state. Rekeying an enrolled manager replaces its keys
 // here once runs has accepted the new one.
-func Enroll(ctx context.Context, c *runnerclient.Client, s Store, server, audience, token, name string, now time.Time) (*State, error) {
+func Enroll(ctx context.Context, c *runnerclient.Client, s Store, server, audience, token, name string, now time.Time) (st *State, err error) {
+	ctx, span := telemetry.Start(ctx, "fleet.manager.enroll", telemetry.Internal)
+	defer func() {
+		if st != nil {
+			span.Int("oyzu.fleet.manager", st.ManagerID)
+			span.Int("oyzu.fleet.key", st.Current.ID)
+		}
+		endSpan(span, ctx, err)
+	}()
 	prev, err := s.Load()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -156,7 +165,7 @@ func Enroll(ctx context.Context, c *runnerclient.Client, s Store, server, audien
 		return nil, fmt.Errorf("this directory holds manager %d, but the rekey token is for manager %d", prev.ManagerID, e.ManagerID)
 	}
 	key.ID = e.KeyID
-	st := &State{Server: server, Audience: audience, ManagerID: e.ManagerID, Pool: e.Pool, Name: e.Name, Current: key}
+	st = &State{Server: server, Audience: audience, ManagerID: e.ManagerID, Pool: e.Pool, Name: e.Name, Current: key}
 	if err := s.Save(st); err != nil {
 		return nil, err
 	}
@@ -175,13 +184,30 @@ func jti() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-func (m *Manager) login(ctx context.Context, k Key, priv ed25519.PrivateKey) (runnerclient.AccessToken, error) {
+func (m *Manager) login(ctx context.Context, k Key, priv ed25519.PrivateKey) (tok runnerclient.AccessToken, err error) {
+	ctx, span := telemetry.Start(ctx, "fleet.manager.login", telemetry.Internal)
+	span.Int("oyzu.fleet.manager", m.st.ManagerID)
+	span.Int("oyzu.fleet.key", k.ID)
+	defer func() { endSpan(span, ctx, err) }()
 	c := assertion.New(m.st.ManagerID, m.st.Audience, jti(), m.cfg.Now(), assertionTTL)
 	a, err := assertion.Sign(priv, k.ID, assertion.TypeLogin, c)
 	if err != nil {
 		return runnerclient.AccessToken{}, err
 	}
 	return m.cfg.Client.Login(ctx, a)
+}
+
+// endSpan ends span with the outcome err implies. It records a bounded
+// reason, never the error text, which can echo a server's detail.
+func endSpan(span *telemetry.Span, ctx context.Context, err error) {
+	o, reason := telemetry.Classify(ctx, err, 0, errors.Is(err, runnerclient.ErrUnauthenticated))
+	if err != nil && !errors.Is(err, runnerclient.ErrUnauthenticated) {
+		var se *runnerclient.StatusError
+		if errors.As(err, &se) {
+			o, reason = telemetry.Classify(ctx, err, se.Status, false)
+		}
+	}
+	span.End(o, reason)
 }
 
 // accessToken returns a live access token, logging in when needed.
@@ -210,7 +236,7 @@ func (m *Manager) forget() {
 // the current key out of service until the new key has logged in, and
 // tokens the old key issued stay valid, so job pickup never stops. Errors
 // are returned for logging; the caller keeps claiming either way.
-func (m *Manager) Rotate(ctx context.Context) error {
+func (m *Manager) Rotate(ctx context.Context) (err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.cfg.Now()
@@ -222,6 +248,9 @@ func (m *Manager) Rotate(ctx context.Context) error {
 	}
 	m.lastRetry = now
 	s := m.cfg.Store
+	ctx, span := telemetry.Start(ctx, "fleet.manager.rotate", telemetry.Internal)
+	span.Int("oyzu.fleet.manager", m.st.ManagerID)
+	defer func() { endSpan(span, ctx, err) }()
 
 	if m.st.Next == nil {
 		k, priv, err := s.NewKey(now)
@@ -318,6 +347,11 @@ func (m *Manager) Run(ctx context.Context) error {
 				facts = f
 			}
 		}
+		if fc, ok := d.(FactsChanger); ok && fc.FactsChanged() {
+			if f, err := d.Facts(ctx); err == nil {
+				facts = f
+			}
+		}
 		capacity, err := d.Capacity(ctx)
 		if err == nil {
 			capacity = m.withoutStarting(capacity)
@@ -357,9 +391,21 @@ func (m *Manager) Run(ctx context.Context) error {
 		go func() {
 			defer wg.Done()
 			defer m.track(c.JobID, -1)
-			h, startErr := m.start(jobCtx, slot, *c)
+			// One span covers the executor's life; the executor's own spans
+			// are its children when the driver can hand it the parent.
+			jctx, span := telemetry.Start(jobCtx, "fleet.manager.job", telemetry.Internal)
+			span.Int("oyzu.fleet.job", c.JobID)
+			span.Int("oyzu.fleet.attempt", int64(c.Attempt))
+			span.Int("oyzu.fleet.manager", m.st.ManagerID)
+			span.Str("oyzu.fleet.pool", m.st.Pool)
+			h, startErr := m.start(jctx, slot, *c)
 			m.markStarting(slot, false)
-			m.watch(jobCtx, log, h, *c, startErr)
+			clean := m.watch(jctx, log, h, *c, startErr)
+			if clean {
+				span.End(telemetry.Success, "")
+			} else {
+				span.End(telemetry.Fault, "executor_failed")
+			}
 		}()
 	}
 }
@@ -422,7 +468,7 @@ func (m *Manager) withoutStarting(c Capacity) Capacity {
 
 // watch waits for a started executor, hands its job back when it ended
 // badly, and tears it down.
-func (m *Manager) watch(ctx context.Context, log *slog.Logger, h Handle, c runnerclient.Claim, startErr error) {
+func (m *Manager) watch(ctx context.Context, log *slog.Logger, h Handle, c runnerclient.Claim, startErr error) (clean bool) {
 	d := m.cfg.Driver
 	log = log.With("job", c.JobID, "attempt", c.Attempt, "slot", h.Slot)
 	var exit Exit
@@ -434,7 +480,8 @@ func (m *Manager) watch(ctx context.Context, log *slog.Logger, h Handle, c runne
 			exit = Exit{Reason: ExitLost, Code: -1, Detail: "stopped waiting for the executor: " + err.Error()}
 		}
 	}
-	if exit.Clean() {
+	clean = exit.Clean()
+	if clean {
 		log.Info("job runner exited")
 	} else {
 		log.Warn("job runner ended badly", "exit", exit.String())
@@ -442,13 +489,14 @@ func (m *Manager) watch(ctx context.Context, log *slog.Logger, h Handle, c runne
 		m.release(ctx, log, c, exit)
 	}
 	if h.Ref == "" {
-		return
+		return clean
 	}
 	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.cfg.TeardownTimeout)
 	defer cancel()
 	if err := d.Teardown(tctx, h); err != nil {
 		log.Warn("teardown failed; the reaper will retry", "error", err)
 	}
+	return clean
 }
 
 // release hands a job back to runs. Runs requeues it without using an
@@ -572,12 +620,21 @@ func (m *Manager) reap(ctx context.Context, log *slog.Logger) {
 // Claim asks runs for one job with the manager's credentials, logging in
 // when needed. Run calls it in its loop; callers that drive a manager by
 // hand, such as end-to-end tests, call it directly.
-func (m *Manager) Claim(ctx context.Context) (*runnerclient.Claim, error) {
+func (m *Manager) Claim(ctx context.Context) (c *runnerclient.Claim, err error) {
+	ctx, span := telemetry.Start(ctx, "fleet.manager.claim", telemetry.Internal)
+	span.Int("oyzu.fleet.manager", m.st.ManagerID)
+	defer func() {
+		if c != nil {
+			span.Int("oyzu.fleet.job", c.JobID)
+			span.Int("oyzu.fleet.attempt", int64(c.Attempt))
+		}
+		endSpan(span, ctx, err)
+	}()
 	tok, err := m.accessToken(ctx)
 	if err != nil {
 		return nil, err
 	}
-	c, err := m.cfg.Client.Claim(ctx, tok)
+	c, err = m.cfg.Client.Claim(ctx, tok)
 	if errors.Is(err, runnerclient.ErrUnauthenticated) {
 		m.forget()
 	}

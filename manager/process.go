@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/oyzuai/fleet/runnerclient"
+	"github.com/oyzuai/fleet/telemetry"
 )
 
 // StartupTokenFile is the file in a job's directory that holds its startup
@@ -72,8 +73,14 @@ type Process struct {
 	// Renovate reports that Renovate is installed and Args name it to the
 	// runner, so the pool takes renovate jobs.
 	Renovate bool
-	// ExtraEnv names more variables to pass through, beside passEnv.
+	// ExtraEnv names more variables to pass through, beside passEnv. A
+	// telemetry variable is never passed this way: the executor gets its
+	// telemetry settings from Telemetry alone.
 	ExtraEnv []string
+	// Telemetry, when enabled, is handed to each executor as its own
+	// telemetry settings, with the manager's job span as the trace parent. The
+	// executor reads and removes them at startup, so the build never sees them.
+	Telemetry telemetry.Config
 	// StopGrace is how long a runner may report after an interrupt before
 	// it is killed; defaultStopGrace when 0.
 	StopGrace time.Duration
@@ -115,6 +122,8 @@ func (p *Process) Facts(context.Context) (Facts, error) {
 		FactCPU:       strconv.Itoa(runtime.NumCPU()),
 		FactIsolation: "process",
 		FactDocker:    strconv.FormatBool(p.Docker),
+		// Jobs share this host's network and user: never untrusted work.
+		FactEgress: EgressOpen,
 	}
 	if p.Renovate {
 		f[FactRenovate] = "true"
@@ -141,7 +150,7 @@ func (p *Process) Capacity(context.Context) (Capacity, error) {
 func (p *Process) Provision(context.Context, int) error { return nil }
 
 // Start implements Driver.
-func (p *Process) Start(_ context.Context, slot SlotID, c runnerclient.Claim) (Handle, error) {
+func (p *Process) Start(ctx context.Context, slot SlotID, c runnerclient.Claim) (Handle, error) {
 	p.mu.Lock()
 	if p.inUse == nil {
 		p.inUse = map[SlotID]*proc{}
@@ -158,14 +167,14 @@ func (p *Process) Start(_ context.Context, slot SlotID, c runnerclient.Claim) (H
 	p.mu.Unlock()
 
 	h := Handle{Slot: slot, Job: c.JobID, Attempt: c.Attempt, Ref: pr.dir}
-	if err := p.start(pr, c); err != nil {
+	if err := p.start(ctx, pr, c); err != nil {
 		close(pr.done)
 		return h, err
 	}
 	return h, nil
 }
 
-func (p *Process) start(pr *proc, c runnerclient.Claim) error {
+func (p *Process) start(ctx context.Context, pr *proc, c runnerclient.Claim) error {
 	if err := os.MkdirAll(pr.dir, 0o700); err != nil {
 		return err
 	}
@@ -193,7 +202,7 @@ func (p *Process) start(pr *proc, c runnerclient.Claim) error {
 		"--server", p.Server, "--startup-token-file", tokenFile, "--work-dir", filepath.Join(jobDir, "work"), "--secrets-dir", filepath.Join(jobDir, "kind-tmp"), "--job-dir", jobDir)
 	cmd := exec.Command(p.Runner, args...)
 	cmd.Dir = pr.dir
-	cmd.Env = p.env()
+	cmd.Env = append(p.env(), p.Telemetry.Env(telemetry.Traceparent(ctx))...)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	ownProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
@@ -473,6 +482,9 @@ func (p *Process) env() []string {
 			continue
 		}
 		if !p.Docker && strings.EqualFold(name, noDockerEnv) {
+			continue
+		}
+		if telemetry.IsTelemetryVar(kv) {
 			continue
 		}
 		for _, k := range keep {

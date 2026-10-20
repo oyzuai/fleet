@@ -328,3 +328,69 @@ func TestEngineCallsHaveADeadline(t *testing.T) {
 		t.Fatalf("a hung create returned %v after %s", err, time.Since(start))
 	}
 }
+
+func TestCreateBodyForASandboxedJobAndTheGateway(t *testing.T) {
+	b := createBody(Spec{
+		Image: "img", Cmd: []string{"oyzu-executor", "gateway"}, User: "1000:1000", Network: "oyzu-7-job-1",
+		Env: []string{"HTTPS_PROXY=http://10.0.0.2:3128"}, DNS: []string{"10.0.0.2"}, ReadOnly: true,
+		Sysctls: map[string]string{"net.ipv4.ip_unprivileged_port_start": "53"}, Publish: []int{9091},
+	})
+	hc := b.HostConfig
+	if len(hc.Mounts) != 0 || !hc.ReadonlyRootfs || !slices.Equal(hc.Dns, []string{"10.0.0.2"}) ||
+		hc.Sysctls["net.ipv4.ip_unprivileged_port_start"] != "53" {
+		t.Fatalf("host config = %+v", hc)
+	}
+	if pb := hc.PortBindings["9091/tcp"]; len(pb) != 1 || pb[0].HostIp != "127.0.0.1" || pb[0].HostPort != "" {
+		t.Fatalf("the control port must be published on loopback only: %+v", hc.PortBindings)
+	}
+	if _, ok := b.ExposedPorts["9091/tcp"]; !ok || !slices.Contains(b.Env, "HTTPS_PROXY=http://10.0.0.2:3128") || hc.Privileged {
+		t.Fatalf("config = %+v", b)
+	}
+}
+
+func TestDockerNetworks(t *testing.T) {
+	ctx := context.Background()
+	d, s := newStub(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /networks/create": reply(201, `{"Id":"n1"}`),
+		"GET /networks/n1": reply(200, `{"Id":"n1","Name":"oyzu-7-job-1","Labels":{"a":"b"},`+
+			`"IPAM":{"Config":[{"Subnet":"fd00::/64"},{"Subnet":"172.30.0.0/16"}]}}`),
+		"GET /networks":                   reply(200, `[{"Id":"n1","Name":"oyzu-7-job-1","Labels":{"a":"b"},"IPAM":{"Config":[{"Subnet":"172.30.0.0/16"}]}}]`),
+		"POST /networks/n1/connect":       reply(200, ``),
+		"POST /networks/n1/disconnect":    reply(200, ``),
+		"GET /containers/gw/json":         reply(200, `{"NetworkSettings":{"Networks":{"n1":{"IPAddress":"172.30.0.2"}},"Ports":{"9091/tcp":[{"HostIp":"127.0.0.1","HostPort":"49153"}]}}}`),
+		"DELETE /networks/n1":             reply(204, ``),
+		"POST /networks/gone/disconnect":  reply(404, `{"message":"no such container"}`),
+		"POST /networks/other/disconnect": reply(403, `{"message":"container gw is not connected to network other"}`),
+	})
+	n, err := d.CreateNetwork(ctx, "oyzu-7-job-1", NetworkSpec{Internal: true, Labels: map[string]string{"a": "b"}})
+	if err != nil || n.ID != "n1" || n.Subnet != "172.30.0.0/16" {
+		t.Fatalf("CreateNetwork = %+v, %v", n, err)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(s.body["POST /networks/create"], &sent); err != nil || sent["Internal"] != true || sent["Driver"] != "bridge" {
+		t.Fatalf("create body = %s", s.body["POST /networks/create"])
+	}
+	if ip, err := d.ConnectNetwork(ctx, "n1", "gw"); err != nil || ip != "172.30.0.2" {
+		t.Fatalf("ConnectNetwork = %q, %v", ip, err)
+	}
+	if port, err := d.PublishedPort(ctx, "gw", 9091); err != nil || port != 49153 {
+		t.Fatalf("PublishedPort = %d, %v", port, err)
+	}
+	if _, err := d.PublishedPort(ctx, "gw", 1); err == nil {
+		t.Fatal("PublishedPort invented a port")
+	}
+	if ns, err := d.ListNetworks(ctx, map[string]string{"a": "b"}); err != nil || len(ns) != 1 || ns[0].Subnet != "172.30.0.0/16" {
+		t.Fatalf("ListNetworks = %+v, %v", ns, err)
+	}
+	for _, name := range []string{"n1", "gone", "other"} {
+		if err := d.DisconnectNetwork(ctx, name, "gw"); err != nil {
+			t.Errorf("DisconnectNetwork(%s) = %v", name, err)
+		}
+	}
+	if err := d.RemoveNetwork(ctx, "n1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.RemoveNetwork(ctx, "missing"); err != nil {
+		t.Fatalf("RemoveNetwork on a missing network = %v", err)
+	}
+}

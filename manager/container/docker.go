@@ -352,6 +352,14 @@ type hostConfig struct {
 	MemorySwap     int64 `json:",omitempty"`
 	PidsLimit      int64 `json:",omitempty"`
 	ReadonlyRootfs bool
+	Dns            []string                 `json:",omitempty"`
+	Sysctls        map[string]string        `json:",omitempty"`
+	PortBindings   map[string][]portBinding `json:",omitempty"`
+}
+
+type portBinding struct {
+	HostIp   string
+	HostPort string
 }
 
 type mount struct {
@@ -368,6 +376,7 @@ type containerConfig struct {
 	WorkingDir      string
 	Labels          map[string]string
 	Env             []string
+	ExposedPorts    map[string]struct{} `json:",omitempty"`
 	NetworkDisabled bool
 	HostConfig      hostConfig
 }
@@ -378,20 +387,34 @@ func createBody(spec Spec) containerConfig {
 	hc := hostConfig{
 		CapDrop:     []string{"ALL"},
 		SecurityOpt: []string{"no-new-privileges:true"},
-		Mounts:      []mount{{Type: "volume", Source: spec.Volume, Target: spec.WorkDir}},
 		NetworkMode: spec.Network,
+		Dns:         spec.DNS,
+		Sysctls:     spec.Sysctls,
 		NanoCpus:    spec.NanoCPUs,
 		Memory:      spec.MemoryBytes,
 		PidsLimit:   spec.PidsLimit,
 	}
+	if spec.Volume != "" {
+		hc.Mounts = []mount{{Type: "volume", Source: spec.Volume, Target: spec.WorkDir}}
+	}
+	hc.ReadonlyRootfs = spec.ReadOnly
 	if spec.MemoryBytes > 0 {
 		// No swap beyond the memory cap.
 		hc.MemorySwap = spec.MemoryBytes
 	}
+	var exposed map[string]struct{}
+	for _, p := range spec.Publish {
+		if exposed == nil {
+			exposed, hc.PortBindings = map[string]struct{}{}, map[string][]portBinding{}
+		}
+		key := strconv.Itoa(p) + "/tcp"
+		exposed[key] = struct{}{}
+		hc.PortBindings[key] = []portBinding{{HostIp: "127.0.0.1"}}
+	}
 	return containerConfig{
 		Image: spec.Image, Cmd: spec.Cmd, User: spec.User, WorkingDir: spec.WorkDir,
-		Labels: spec.Labels, Env: []string{"HOME=" + spec.WorkDir}, NetworkDisabled: spec.Network == "none",
-		HostConfig: hc,
+		Labels: spec.Labels, Env: append([]string{"HOME=" + spec.WorkDir}, spec.Env...), ExposedPorts: exposed,
+		NetworkDisabled: spec.Network == "none", HostConfig: hc,
 	}
 }
 
@@ -527,4 +550,114 @@ func (d *Docker) ListContainers(ctx context.Context, labels map[string]string) (
 		s = append(s, Summary{ID: c.Id, Name: name, Labels: c.Labels, State: c.State})
 	}
 	return s, nil
+}
+
+// CreateNetwork implements Engine. A bridge network gets its subnet from the
+// engine; the response to create does not carry it, so the network is read
+// back.
+func (d *Docker) CreateNetwork(ctx context.Context, name string, spec NetworkSpec) (Network, error) {
+	var created struct{ Id string }
+	err := d.do(ctx, http.MethodPost, "/networks/create", nil, map[string]any{
+		"Name": name, "Driver": "bridge", "Internal": spec.Internal, "Labels": spec.Labels, "CheckDuplicate": true,
+	}, &created)
+	if err != nil {
+		return Network{}, err
+	}
+	var out networkJSON
+	if err := d.do(ctx, http.MethodGet, "/networks/"+url.PathEscape(created.Id), nil, nil, &out); err != nil {
+		_ = d.RemoveNetwork(ctx, created.Id)
+		return Network{}, err
+	}
+	return out.network(), nil
+}
+
+type networkJSON struct {
+	Id     string
+	Name   string
+	Labels map[string]string
+	IPAM   struct{ Config []struct{ Subnet string } }
+}
+
+func (n networkJSON) network() Network {
+	out := Network{ID: n.Id, Name: n.Name, Labels: n.Labels}
+	for _, c := range n.IPAM.Config {
+		// The first IPv4 range is the one jobs connect from.
+		if c.Subnet != "" && !strings.Contains(c.Subnet, ":") {
+			out.Subnet = c.Subnet
+			break
+		}
+	}
+	return out
+}
+
+// RemoveNetwork implements Engine.
+func (d *Docker) RemoveNetwork(ctx context.Context, name string) error {
+	err := d.do(ctx, http.MethodDelete, "/networks/"+url.PathEscape(name), nil, nil, nil)
+	if isStatus(err, http.StatusNotFound) {
+		return nil
+	}
+	return err
+}
+
+// ListNetworks implements Engine.
+func (d *Docker) ListNetworks(ctx context.Context, labels map[string]string) ([]Network, error) {
+	var out []networkJSON
+	if err := d.do(ctx, http.MethodGet, "/networks", labelFilter(labels), nil, &out); err != nil {
+		return nil, err
+	}
+	nets := make([]Network, 0, len(out))
+	for _, n := range out {
+		nets = append(nets, n.network())
+	}
+	return nets, nil
+}
+
+// ConnectNetwork implements Engine.
+func (d *Docker) ConnectNetwork(ctx context.Context, network, container string) (string, error) {
+	if err := d.do(ctx, http.MethodPost, "/networks/"+url.PathEscape(network)+"/connect", nil,
+		map[string]any{"Container": container}, nil); err != nil {
+		return "", err
+	}
+	var out struct {
+		NetworkSettings struct {
+			Networks map[string]struct{ IPAddress string }
+		}
+	}
+	if err := d.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(container)+"/json", nil, nil, &out); err != nil {
+		return "", err
+	}
+	ip := out.NetworkSettings.Networks[network].IPAddress
+	if ip == "" {
+		return "", fmt.Errorf("the engine gave the container no address on network %s", network)
+	}
+	return ip, nil
+}
+
+// DisconnectNetwork implements Engine.
+func (d *Docker) DisconnectNetwork(ctx context.Context, network, container string) error {
+	err := d.do(ctx, http.MethodPost, "/networks/"+url.PathEscape(network)+"/disconnect", nil,
+		map[string]any{"Container": container, "Force": true}, nil)
+	var ae *apiError
+	if errors.As(err, &ae) && (ae.Status == http.StatusNotFound || strings.Contains(ae.Message, "is not connected")) {
+		return nil
+	}
+	return err
+}
+
+// PublishedPort implements Engine.
+func (d *Docker) PublishedPort(ctx context.Context, id string, port int) (int, error) {
+	var out struct {
+		NetworkSettings struct {
+			Ports map[string][]struct{ HostPort string }
+		}
+	}
+	if err := d.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(id)+"/json", nil, nil, &out); err != nil {
+		return 0, err
+	}
+	for _, b := range out.NetworkSettings.Ports[strconv.Itoa(port)+"/tcp"] {
+		if n, err := strconv.Atoi(b.HostPort); err == nil && n > 0 {
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("the engine published no host port for %d", port)
 }

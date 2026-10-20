@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/oyzuai/fleet/assertion"
+	"github.com/oyzuai/fleet/telemetry"
 )
 
 var (
@@ -38,7 +39,9 @@ const clientAssertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bea
 // Client calls one runs server.
 type Client struct {
 	base string
-	http *http.Client
+	// prefix is the runner API's path, which a route name is relative to.
+	prefix string
+	http   *http.Client
 }
 
 // New returns a Client for the runs server at base, such as
@@ -47,7 +50,11 @@ func New(base string, hc *http.Client) *Client {
 	if hc == nil {
 		hc = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Client{base: strings.TrimRight(base, "/") + "/runner/v1/", http: hc}
+	c := &Client{base: strings.TrimRight(base, "/") + "/runner/v1/", http: hc}
+	if u, err := url.Parse(c.base); err == nil {
+		c.prefix = u.Path
+	}
+	return c
 }
 
 // Enrolled is the manager an enrollment created or rekeyed.
@@ -110,6 +117,22 @@ type Claim struct {
 	Attempt        int       `json:"attempt"`
 	StartupToken   string    `json:"startup_token"`
 	StartupExpires time.Time `json:"startup_expires_at"`
+	// Egress is where the job may connect, enforced by the manager's
+	// gateway. A runs that predates it sends none, which allows only the
+	// runs server.
+	Egress ClaimEgress `json:"egress"`
+}
+
+// ClaimEgress is a job's network allow list.
+type ClaimEgress struct {
+	Allow []EgressAllow `json:"allow"`
+}
+
+// EgressAllow is one destination a job may reach: an exact host or
+// "*.suffix", and a port, where 0 means 443.
+type EgressAllow struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
 }
 
 // Claim takes the next job in the manager's pool, or returns nil when there
@@ -199,6 +222,13 @@ type Job struct {
 	AffectedBase  string   `json:"affected_base"`
 	Mandatory     bool     `json:"mandatory"`
 	Command       []string `json:"command"`
+	// AdmittedPlan is the persisted native executable plan for a slice. It is
+	// passed to Oyzu through bounded stdin, never rebuilt from command argv.
+	AdmittedPlan json.RawMessage `json:"admitted_plan,omitempty"`
+	// SliceTargets is the existing coupled group assigned to this job;
+	// Handoff is its persisted upstream/result repository.
+	SliceTargets []string `json:"slice_targets,omitempty"`
+	Handoff      string   `json:"handoff,omitempty"`
 	// Secrets are the build secret variables to pull before running.
 	Secrets []string `json:"secrets"`
 	// KindOperation is set on a kind job (Kind is KindOperation): the runner
@@ -377,13 +407,34 @@ func (c *Client) doStatus(ctx context.Context, path, bearer string, in, out any,
 func (c *Client) send(req *http.Request, out any) error { return c.sendStatus(req, out, nil) }
 
 // sendStatus sends req and decodes a 2xx body into out.
-func (c *Client) sendStatus(req *http.Request, out any, status func(int)) error {
+func (c *Client) sendStatus(req *http.Request, out any, status func(int)) (err error) {
 	req.Header.Set("Accept", "application/json")
+	// Telemetry is optional and never changes the call: it records the route
+	// (a fixed name, never the URL or a header), the outcome and the time, and
+	// offers runs a trace parent to link to. Nothing it holds is a credential.
+	route := telemetry.Route(strings.TrimPrefix(req.URL.Path, c.prefix))
+	ctx, span := telemetry.Start(req.Context(), "fleet.client."+strings.NewReplacer("/", "_", "-", "_").Replace(route), telemetry.Client)
+	start, code := time.Now(), 0
+	defer func() {
+		o, reason := telemetry.Classify(req.Context(), err, code, errors.Is(err, ErrUnauthenticated))
+		telemetry.Request(route, o, reason, time.Since(start))
+		span.Str("oyzu.fleet.route", route)
+		if code != 0 {
+			span.Int("http.response.status_code", int64(code))
+		}
+		span.End(o, reason)
+		logDrain(route, o, reason)
+	}()
+	if span != nil {
+		req = req.WithContext(ctx)
+		telemetry.Inject(ctx, req.Header)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	code = resp.StatusCode
 	if status != nil {
 		status(resp.StatusCode)
 	}

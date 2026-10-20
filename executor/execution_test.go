@@ -173,7 +173,7 @@ func TestCredentialProxyUsesCorporateTrustAndProxy(t *testing.T) {
 	t.Setenv("SSL_CERT_FILE", roots)
 	first := grant("internal.example", "Bearer job-only", time.Now().Add(time.Hour))
 	p, err := startEgress(first, func(context.Context) (runnerclient.Egress, error) { return first, nil }, func(...string) {},
-		slog.New(slog.NewTextHandler(io.Discard, nil)), egressExecution{config: config, workDir: t.TempDir()})
+		slog.New(slog.NewTextHandler(io.Discard, nil)), "", egressExecution{config: config, workDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

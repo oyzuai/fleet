@@ -1,0 +1,3 @@
+repo: oyzuai/oyzu
+commit: 1c62d28a2e8fe5aba0f40925a6355200bf60f30d
+path: docs/contracts/kinds-v1alpha1

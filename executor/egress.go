@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oyzuai/fleet/egressgate"
 	"github.com/oyzuai/fleet/executionconfig"
 	"github.com/oyzuai/fleet/runnerclient"
 )
@@ -41,10 +42,20 @@ import (
 // the hosts runs granted. The credential never reaches the build's
 // environment, files or arguments. Other hosts pass through untouched, and
 // plain HTTP never gets a credential.
+//
+// Where the pool's manager runs an egress gateway (OYZU_EGRESS_GATEWAY), the
+// proxy always starts, grants or not, and chains everything it forwards
+// through the gateway instead of dialling out itself. The gateway, outside
+// the job, holds the job to its allow list; this proxy only keeps the
+// credentials and the original hostnames working.
 const (
 	// EnvEgressCAFile names the job CA's certificate, for tools that take
 	// one extra CA.
 	EnvEgressCAFile = "OYZU_EGRESS_CA_FILE"
+	// EnvEgressGateway is the pool gateway's proxy URL on the job's network,
+	// such as http://172.20.0.2:3128. A manager that enforces egress sets it,
+	// with HTTPS_PROXY and HTTP_PROXY, in the executor's environment.
+	EnvEgressGateway = "OYZU_EGRESS_GATEWAY"
 	// egressCAValidity bounds the CA and every certificate it signs. The CA
 	// key lives only in the runner's memory and dies with the job.
 	egressCAValidity = 7 * 24 * time.Hour
@@ -74,6 +85,8 @@ type egressProxy struct {
 	// HTTP requests. Tests replace both.
 	dial     func(ctx context.Context, network, addr string) (net.Conn, error)
 	upstream http.RoundTripper
+	// gateway is the egress gateway everything is chained through, if any.
+	gateway *url.URL
 
 	secret string
 	url    string
@@ -106,8 +119,16 @@ type egressExecution struct {
 }
 
 // startEgress starts the proxy for first's grants on an ephemeral loopback
-// port. refresh mints them again as they near expiry.
-func startEgress(first runnerclient.Egress, refresh func(context.Context) (runnerclient.Egress, error), issued func(...string), log *slog.Logger, execution ...egressExecution) (*egressProxy, error) {
+// port. refresh mints them again as they near expiry. With a gateway URL it
+// chains through the gateway, and needs no grants.
+func startEgress(first runnerclient.Egress, refresh func(context.Context) (runnerclient.Egress, error), issued func(...string), log *slog.Logger, gateway string, execution ...egressExecution) (*egressProxy, error) {
+	var gw *url.URL
+	if gateway != "" {
+		var err error
+		if gw, err = url.Parse(gateway); err != nil || gw.Scheme != "http" || gw.Host == "" {
+			return nil, fmt.Errorf("%s %q is not an http:// proxy URL", EnvEgressGateway, gateway)
+		}
+	}
 	hosts := map[string]bool{}
 	for _, g := range first.Grants {
 		h := strings.ToLower(g.Host)
@@ -116,7 +137,7 @@ func startEgress(first runnerclient.Egress, refresh func(context.Context) (runne
 		}
 		hosts[h] = true
 	}
-	if len(hosts) == 0 {
+	if len(hosts) == 0 && gw == nil {
 		return nil, errors.New("runs sent no egress grants")
 	}
 	var raw [24]byte
@@ -124,7 +145,7 @@ func startEgress(first runnerclient.Egress, refresh func(context.Context) (runne
 		return nil, err
 	}
 	p := &egressProxy{
-		refresh: refresh, issued: issued, log: log, secret: hex.EncodeToString(raw[:]), hosts: hosts,
+		refresh: refresh, issued: issued, log: log, secret: hex.EncodeToString(raw[:]), hosts: hosts, gateway: gw,
 		certs: map[string]*tls.Certificate{}, seen: map[string]string{}, tunnels: map[net.Conn]bool{},
 	}
 	p.dial = (&net.Dialer{Timeout: egressDialTimeout}).DialContext
@@ -150,14 +171,27 @@ func startEgress(first runnerclient.Egress, refresh func(context.Context) (runne
 		p.upstream = transport
 		p.dial = executionconfig.TunnelDialer(transport)
 	}
+	if gw != nil {
+		if len(execution) > 0 && execution[0].config != nil && execution[0].config.Proxy != nil {
+			return nil, &executionconfig.Error{Code: executionconfig.ProxyUnsupported, Message: "a corporate proxy cannot be combined with the egress gateway"}
+		}
+		p.dial = func(ctx context.Context, _, addr string) (net.Conn, error) { return dialVia(ctx, gw, addr) }
+		if t, ok := p.upstream.(*http.Transport); ok {
+			t.Proxy = http.ProxyURL(gw)
+		}
+	}
 	issued(p.secret)
 	p.setGrants(first)
-	if err := p.makeCA(); err != nil {
-		return nil, fmt.Errorf("make the job CA: %w", err)
-	}
-	if err := p.writeCA(); err != nil {
-		p.removeFiles()
-		return nil, fmt.Errorf("write the job CA: %w", err)
+	// With nothing to intercept there is nothing for a CA to sign, so none
+	// is made and the build is not asked to trust one.
+	if len(hosts) > 0 {
+		if err := p.makeCA(); err != nil {
+			return nil, fmt.Errorf("make the job CA: %w", err)
+		}
+		if err := p.writeCA(); err != nil {
+			p.removeFiles()
+			return nil, fmt.Errorf("write the job CA: %w", err)
+		}
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -248,7 +282,10 @@ func (p *egressProxy) env(environ []string) []string {
 			break
 		}
 	}
-	set := map[string]string{"NO_PROXY": noProxy, "no_proxy": noProxy, EnvEgressCAFile: p.caFile, "NODE_EXTRA_CA_CERTS": p.caFile}
+	set := map[string]string{"NO_PROXY": noProxy, "no_proxy": noProxy}
+	if p.caFile != "" {
+		set[EnvEgressCAFile], set["NODE_EXTRA_CA_CERTS"] = p.caFile, p.caFile
+	}
 	for _, k := range proxyVars {
 		set[k] = p.url
 	}
@@ -388,6 +425,43 @@ func (p *egressProxy) connect(w http.ResponseWriter, r *http.Request) {
 	p.tunnel(r.Context(), w, net.JoinHostPort(host, port))
 }
 
+// gatewayDenied is the egress gateway refusing a destination.
+type gatewayDenied struct{ line string }
+
+func (e *gatewayDenied) Error() string { return e.line }
+
+// dialVia opens a tunnel to addr through the egress gateway.
+func dialVia(ctx context.Context, gw *url.URL, addr string) (net.Conn, error) {
+	c, err := (&net.Dialer{Timeout: egressDialTimeout}).DialContext(ctx, "tcp", gw.Host)
+	if err != nil {
+		return nil, fmt.Errorf("reach the egress gateway: %w", err)
+	}
+	_ = c.SetDeadline(time.Now().Add(egressDialTimeout))
+	if _, err := fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", addr, addr); err != nil {
+		c.Close()
+		return nil, err
+	}
+	br := bufio.NewReader(c)
+	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		c.Close()
+		return nil, fmt.Errorf("the egress gateway: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		c.Close()
+		if resp.StatusCode == http.StatusForbidden && resp.Header.Get(egressgate.DeniedHeader) == "denied" {
+			return nil, &gatewayDenied{line: strings.TrimSpace(string(body))}
+		}
+		return nil, fmt.Errorf("the egress gateway answered %s", resp.Status)
+	}
+	_ = c.SetDeadline(time.Time{})
+	if br.Buffered() > 0 {
+		return &bufferedConn{Conn: c, r: br}, nil
+	}
+	return c, nil
+}
+
 // hijack takes the client connection over after answering the CONNECT.
 func hijack(w http.ResponseWriter) (net.Conn, error) {
 	hj, ok := w.(http.Hijacker)
@@ -411,6 +485,12 @@ func hijack(w http.ResponseWriter) (net.Conn, error) {
 func (p *egressProxy) tunnel(ctx context.Context, w http.ResponseWriter, addr string) {
 	up, err := p.dial(ctx, "tcp", addr)
 	if err != nil {
+		var gd *gatewayDenied
+		if errors.As(err, &gd) {
+			w.Header().Set(egressgate.DeniedHeader, "denied")
+			http.Error(w, gd.line, http.StatusForbidden)
+			return
+		}
 		http.Error(w, "Could not reach "+addr+".", http.StatusBadGateway)
 		return
 	}
@@ -509,6 +589,11 @@ func (p *egressProxy) plain() http.Handler {
 
 func (p *egressProxy) upstreamError(w http.ResponseWriter, r *http.Request, err error) {
 	p.log.Debug("egress upstream failed", "host", r.Host, "error", err)
+	if p.gateway != nil && strings.Contains(err.Error(), "Forbidden") {
+		w.Header().Set(egressgate.DeniedHeader, "denied")
+		http.Error(w, "The egress gateway refused "+r.Host+"; the job log says whether it is on this job's allow list.", http.StatusForbidden)
+		return
+	}
 	http.Error(w, "The egress proxy could not reach "+r.Host+".", http.StatusBadGateway)
 }
 

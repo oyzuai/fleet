@@ -24,6 +24,7 @@ var driverFlags = map[string][]string{
 	"engine-cert-path":       {"container"},
 	"engine-allow-plaintext": {"container"},
 	"network":                {"container"},
+	"egress":                 {"container", "kubernetes"},
 	"user":                   {"container"},
 	"namespace":              {"kubernetes"},
 	"runtime-class":          {"kubernetes"},

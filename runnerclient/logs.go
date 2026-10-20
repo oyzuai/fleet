@@ -2,7 +2,10 @@ package runnerclient
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
+
+	"github.com/oyzuai/fleet/telemetry"
 )
 
 // LogEntry is one masked entry in an attempt's gapless log.
@@ -64,3 +67,29 @@ func (c *Client) FinishLogs(ctx context.Context, token string, in LogFinish) (Lo
 	err := c.do(ctx, "job/logs/finish", token, in, &out)
 	return out, err
 }
+
+// logDrain counts a log upload or finish call apart from other calls, so a
+// refusal on the drain routes shows in its own series. The phase (live, or
+// the finishing token's bounded exception) is known to the executor, which
+// sets it with SetDrainPhase.
+func logDrain(route string, o telemetry.Outcome, reason string) {
+	var kind string
+	switch route {
+	case "job/logs":
+		kind = "upload"
+	case "job/logs/finish":
+		kind = "finish"
+	default:
+		return
+	}
+	telemetry.Drain(kind, drainPhase.Load().(string), o, reason)
+}
+
+var drainPhase atomic.Value
+
+func init() { drainPhase.Store("live") }
+
+// SetDrainPhase names the phase later log calls are counted under: "live"
+// while the job runs, "post_finish" once its outcome is reported and only the
+// finishing token's bounded log exception remains.
+func SetDrainPhase(phase string) { drainPhase.Store(phase) }

@@ -139,3 +139,95 @@ func TestInClusterNeedsTheCluster(t *testing.T) {
 		t.Fatal("InCluster worked outside a cluster")
 	}
 }
+
+func TestClientEgressObjects(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		mu.Lock()
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		const ns = "/namespaces/oyzu-jobs"
+		switch r.Method + " " + r.URL.Path {
+		case "POST /apis/networking.k8s.io/v1" + ns + "/networkpolicies", "POST /apis/apps/v1" + ns + "/deployments", "POST /api/v1" + ns + "/services":
+			w.WriteHeader(409)
+			_, _ = w.Write([]byte(`{"message":"already exists"}`))
+		case "PUT /apis/networking.k8s.io/v1" + ns + "/networkpolicies/p1", "PUT /apis/apps/v1" + ns + "/deployments/gw":
+			_, _ = w.Write([]byte(`{}`))
+		case "GET /api/v1" + ns + "/services/gw":
+			_, _ = w.Write([]byte(`{"spec":{"clusterIP":"10.96.0.10"}}`))
+		case "GET /apis/apps/v1" + ns + "/deployments/gw":
+			_, _ = w.Write([]byte(`{"status":{"availableReplicas":1}}`))
+		case "GET /api/v1" + ns + "/secrets/tok":
+			_, _ = w.Write([]byte(`{"data":{"token":"c2VjcmV0"}}`))
+		case "GET /apis/networking.k8s.io/v1" + ns + "/networkpolicies":
+			_, _ = w.Write([]byte(`{"items":[{"metadata":{"name":"p1","labels":{"oyzu.io/job":"9"}}}]}`))
+		case "DELETE /apis/networking.k8s.io/v1" + ns + "/networkpolicies/p1":
+			_, _ = w.Write([]byte(`{}`))
+		case "GET /api/v1" + ns + "/services/oyzu-gateway-7:control/proxy/v1/health":
+			if r.Header.Get("Authorization") != "Bearer tok-1" {
+				w.WriteHeader(401)
+				return
+			}
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"message":"not found"}`))
+		}
+	}))
+	defer srv.Close()
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("tok-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewClient(srv.URL, "", tokenFile, "oyzu-jobs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := c.ApplyNetworkPolicy(ctx, NetworkPolicy{Metadata: ObjectMeta{Name: "p1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ApplyDeployment(ctx, Deployment{Metadata: ObjectMeta{Name: "gw"}}); err != nil {
+		t.Fatal(err)
+	}
+	if ip, err := c.ApplyService(ctx, Service{Metadata: ObjectMeta{Name: "gw"}}); err != nil || ip != "10.96.0.10" {
+		t.Fatalf("ApplyService = %q, %v", ip, err)
+	}
+	if ok, err := c.DeploymentAvailable(ctx, "gw"); !ok || err != nil {
+		t.Fatalf("DeploymentAvailable = %v, %v", ok, err)
+	}
+	if data, err := c.GetSecret(ctx, "tok"); err != nil || string(data["token"]) != "secret" {
+		t.Fatalf("GetSecret = %v, %v", data, err)
+	}
+	if _, err := c.GetSecret(ctx, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetSecret(missing) = %v", err)
+	}
+	if ps, err := c.ListNetworkPolicies(ctx, "oyzu.io/manager=7"); err != nil || len(ps) != 1 || ps[0].Labels[LabelJob] != "9" {
+		t.Fatalf("ListNetworkPolicies = %+v, %v", ps, err)
+	}
+	if err := c.DeleteNetworkPolicy(ctx, "p1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeleteNetworkPolicy(ctx, "gone"); err != nil {
+		t.Fatalf("DeleteNetworkPolicy(missing) = %v", err)
+	}
+	// Through the API server's proxy, with the cluster token and no other credential.
+	base, hc := c.ServiceProxy("oyzu-gateway-7", "control")
+	resp, err := hc.Get(base + "/v1/health")
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("service proxy = %v, %v", resp, err)
+	}
+	want := []string{
+		"POST /apis/networking.k8s.io/v1/namespaces/oyzu-jobs/networkpolicies",
+		"PUT /apis/networking.k8s.io/v1/namespaces/oyzu-jobs/networkpolicies/p1",
+		"POST /apis/apps/v1/namespaces/oyzu-jobs/deployments",
+		"PUT /apis/apps/v1/namespaces/oyzu-jobs/deployments/gw",
+		"POST /api/v1/namespaces/oyzu-jobs/services",
+		"GET /api/v1/namespaces/oyzu-jobs/services/gw",
+	}
+	if !slices.Equal(seen[:len(want)], want) {
+		t.Fatalf("requests = %v", seen)
+	}
+}
