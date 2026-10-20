@@ -2,6 +2,15 @@
 
 The Oyzu pool manager and executor.
 
+Manager and executor authentication have separate
+[lifecycles](docs/authentication.md). A manager enrolls
+once and signs login assertions; Oyzu issues the manager, startup and job
+credentials. Build code does not receive manager credentials or the executor's
+job credential. The public
+[runner protocol](https://github.com/oyzuai/oyzu/blob/main/docs/contracts/runner-v1/openapi.yaml)
+owns the wire contract. Isolation depends on the driver; the process-driver
+restriction below remains essential.
+
 The [distributed-build completion slice](https://github.com/oyzuai/oyzu/issues/479)
 binds admitted native plans to the existing executor. A slice requires the
 persisted executable plan, its coupled target group and assigned handoff. The
