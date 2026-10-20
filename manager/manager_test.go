@@ -2,6 +2,7 @@ package manager
 
 import (
 	"errors"
+	"github.com/oyzuai/fleet/telemetry"
 	"io"
 	"log/slog"
 	"os"
@@ -54,5 +55,32 @@ func TestStateAndKeysRoundTrip(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(s.Dir, k.File)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("key file not removed")
+	}
+}
+
+// Invariant (FLEET-AUTH-05): a telemetry setting reaches an executor only
+// through Process.Telemetry, never through the pass-through list, and what
+// the executor gets carries the endpoint and trace parent but no credential.
+func TestProcessHandsTelemetryToTheExecutorOnly(t *testing.T) {
+	p := &Process{Docker: true, ExtraEnv: []string{"OYZU_OTEL_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS", "TRACEPARENT", "BUILD_CACHE"},
+		Telemetry: telemetry.Config{Enabled: true, Endpoint: "http://collector:4318", Environment: "proof", Version: "v1"},
+		environ: func() []string {
+			return []string{"HOME=/h", "OYZU_OTEL_ENDPOINT=http://elsewhere:1", "OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer x", "TRACEPARENT=00-aa", "BUILD_CACHE=/c"}
+		}}
+	if got := strings.Join(p.env(), " "); got != "HOME=/h BUILD_CACHE=/c" {
+		t.Fatalf("env = %s", got)
+	}
+	parent := "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+	got := strings.Join(p.Telemetry.Env(parent), " ")
+	for _, want := range []string{"OYZU_OTEL_ENABLED=true", "OYZU_OTEL_ENDPOINT=http://collector:4318", "TRACEPARENT=" + parent} {
+		if !strings.Contains(got, want) {
+			t.Errorf("executor telemetry env lacks %s: %s", want, got)
+		}
+	}
+	if strings.Contains(strings.ToLower(got), "bearer") || strings.Contains(got, "authorization") {
+		t.Fatalf("a credential is in the executor's telemetry env: %s", got)
+	}
+	if env := (telemetry.Config{}).Env(parent); env != nil {
+		t.Fatalf("disabled telemetry still sets %v", env)
 	}
 }

@@ -30,6 +30,7 @@ import (
 
 	"github.com/oyzuai/fleet/kindrunner"
 	"github.com/oyzuai/fleet/runnerclient"
+	"github.com/oyzuai/fleet/telemetry"
 )
 
 const (
@@ -96,7 +97,7 @@ type Config struct {
 
 // Run reports the outcome, then drains any pending logs before returning.
 // It also returns when runs says the job is no longer this runner's.
-func Run(ctx context.Context, cfg Config) error {
+func Run(ctx context.Context, cfg Config) (runErr error) {
 	if cfg.GitURL == "" {
 		cfg.GitURL = "https://github.com"
 	}
@@ -130,11 +131,33 @@ func Run(ctx context.Context, cfg Config) error {
 			return err
 		}
 	}
+	// One span for the job, under the manager's when it handed one down.
+	// Identifiers are numbers runs assigned; nothing below records a
+	// credential, a path, a command line or build output.
+	ctx, span := telemetry.Start(ctx, "fleet.executor.job", telemetry.Internal)
+	state := ""
+	defer func() {
+		switch {
+		case runErr == nil:
+			span.Str("oyzu.fleet.state", state)
+			span.End(telemetry.Success, "")
+		case errors.Is(runErr, errLost):
+			span.End(telemetry.Challenge, "lease_lost")
+		default:
+			o, reason := telemetry.Classify(ctx, runErr, 0, errors.Is(runErr, runnerclient.ErrUnauthenticated))
+			span.End(o, reason)
+		}
+	}()
 	st, err := cfg.Client.Start(ctx, startup)
 	if err != nil {
 		return fmt.Errorf("start the job: %w", err)
 	}
 	job := st.Job
+	span.Int("oyzu.fleet.job", job.ID)
+	span.Int("oyzu.fleet.attempt", int64(job.Attempt))
+	span.Str("oyzu.fleet.kind", job.Kind)
+	span.Str("oyzu.fleet.operation", job.Operation)
+	span.Int("oyzu.fleet.heartbeat_seconds", int64(st.HeartbeatSeconds))
 	if job.Kind == runnerclient.KindOperationJob {
 		return kindrunner.Run(ctx, kindrunner.Config{
 			Client: cfg.Client, Token: st.JobToken, LeaseExpires: st.Expires, HeartbeatEvery: time.Duration(st.HeartbeatSeconds) * time.Second,
@@ -199,6 +222,11 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}
 	log.Info("job finished", "state", outcome.State)
+	state = outcome.State
+	telemetry.Execution(outcome.State)
+	// From here only the finishing token's bounded log exception remains, so
+	// log calls are counted (and, if refused, audited by runs) as the drain.
+	runnerclient.SetDrainPhase("post_finish")
 	// The server's log-only token window starts at job finish. Keep the
 	// original token and spool alive while the uploader drains that window.
 	if capture != nil && !capture.wait(drain) {
@@ -211,9 +239,18 @@ var errLost = errors.New("runs took the job back: the lease ran out or a credent
 var errCancelRequested = errors.New("runs requested cancellation; awaiting native stop confirmation")
 
 func heartbeat(ctx context.Context, c *runnerclient.Client, token string, every time.Duration, cancel context.CancelCauseFunc, log *slog.Logger, expires time.Time) {
+	last := expires
 	runnerclient.WatchLease(ctx, every, expires,
 		func(ctx context.Context) (time.Time, error) {
 			expires, requested, err := c.HeartbeatStatus(ctx, token)
+			if err == nil {
+				// How much lease was left when this renewal landed. A value
+				// near zero is a lease about to be lost to a slow network.
+				if !last.IsZero() {
+					telemetry.LeaseHeadroom(time.Until(last))
+				}
+				last = expires
+			}
 			if err == nil && requested {
 				cancel(errCancelRequested)
 			}
@@ -567,11 +604,13 @@ func freshNativeCompletion(previous, current []byte) bool {
 }
 
 // buildEnv is the runner's environment without anything that would let the
-// build reach for an ID token some other way.
+// build reach for an ID token some other way, and without any telemetry
+// setting: the exporter's endpoint and the trace parent are the executor's,
+// not the build's (FLEET-AUTH-05).
 func buildEnv(environ []string) []string {
 	out := make([]string, 0, len(environ))
 	for _, kv := range environ {
-		if strings.HasPrefix(kv, EnvIDTokenURL+"=") || strings.HasPrefix(kv, EnvIDTokenRequestToken+"=") {
+		if strings.HasPrefix(kv, EnvIDTokenURL+"=") || strings.HasPrefix(kv, EnvIDTokenRequestToken+"=") || telemetry.IsTelemetryVar(kv) {
 			continue
 		}
 		out = append(out, kv)
@@ -597,7 +636,7 @@ func failedWith(code, summary string) runnerclient.Outcome {
 func checkout(ctx context.Context, cfg Config, token string, job runnerclient.Job) error {
 	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	remote := strings.TrimRight(cfg.GitURL, "/") + "/" + job.Repository + ".git"
-	env := append(os.Environ(),
+	env := append(telemetry.Scrub(os.Environ()),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=http."+strings.TrimRight(cfg.GitURL, "/")+"/.extraHeader",
