@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -22,6 +23,17 @@ func TestHelperProcess(t *testing.T) {
 		return
 	}
 	switch mode {
+	case "execution-args":
+		for i, arg := range os.Args {
+			if arg == "--" {
+				raw, _ := json.Marshal(os.Args[i+1:])
+				if err := os.WriteFile(os.Getenv("POOLMANAGER_ARGS_FILE"), raw, 0o600); err != nil {
+					os.Exit(1)
+				}
+				os.Exit(0)
+			}
+		}
+		os.Exit(1)
 	case "sleep":
 		time.Sleep(time.Minute)
 		os.Exit(0)

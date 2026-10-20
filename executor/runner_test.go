@@ -68,6 +68,9 @@ func fakeGit() {
 }
 
 func fakeOyzu() {
+	if os.Getenv("FAKE_TRUST_REPORT") != "" {
+		reportTrust()
+	}
 	if mode := os.Getenv("FAKE_OYZU_HANDOFF"); mode != "" {
 		input, _ := io.ReadAll(os.Stdin)
 		calls, _ := os.OpenFile(os.Getenv("FAKE_OYZU_HANDOFF_CALLS"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)

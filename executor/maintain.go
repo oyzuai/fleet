@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/oyzuai/fleet/runnerclient"
-	"github.com/oyzuai/fleet/telemetry"
 )
 
 // The two jobs that write to the repository. Each asks runs for a token that
@@ -75,7 +74,7 @@ func renovate(ctx context.Context, cfg Config, token, startup string, job runner
 		return failed("Could not get a token that can open pull requests: " + err.Error())
 	}
 	forms := maskForms(token, startup, wt.Token, "x-access-token:"+wt.Token)
-	env := append(withoutPrefix(telemetry.Scrub(os.Environ()), "RENOVATE_"),
+	env := append(withoutPrefix(cfg.environ(), "RENOVATE_"),
 		"RENOVATE_TOKEN="+wt.Token,
 		"RENOVATE_CONFIG_FILE="+confFile,
 		"LOG_LEVEL=info",
@@ -142,7 +141,7 @@ func lockFix(ctx context.Context, cfg Config, token, startup string, job runnerc
 	}
 
 	what := "`oyzu lock` on `" + job.HeadSHA + "`"
-	code, out, err := runTool(ctx, cfg.Oyzu, []string{"lock"}, cfg.WorkDir, telemetry.Scrub(os.Environ()), forms)
+	code, out, err := runTool(ctx, cfg.Oyzu, []string{"lock"}, cfg.WorkDir, cfg.environ(), forms)
 	if err != nil || code != 0 {
 		return toolOutcome(ctx, what, code, out, err)
 	}
@@ -229,7 +228,7 @@ func splitAuthor(a string) (name, email string, ok bool) {
 // the token goes to git as an HTTP header through the environment, never in
 // its arguments or the repository's config.
 func git(ctx context.Context, cfg Config, token string, args ...string) (string, error) {
-	env := append(telemetry.Scrub(os.Environ()), "GIT_TERMINAL_PROMPT=0")
+	env := append(cfg.environ(), "GIT_TERMINAL_PROMPT=0")
 	if token != "" {
 		auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 		env = append(env,

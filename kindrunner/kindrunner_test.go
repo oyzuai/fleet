@@ -92,6 +92,11 @@ func fakeKind(mode string) {
 		return
 	}
 	switch mode {
+	case "trust":
+		body, err := os.ReadFile(os.Getenv("SSL_CERT_FILE"))
+		if err != nil || strings.Count(string(body), "-----BEGIN CERTIFICATE-----") != 2 || os.Getenv("HTTPS_PROXY") != "http://corporate.example:3128" {
+			os.Exit(7)
+		}
 	case "child-parent":
 		cmd := exec.Command(os.Args[0])
 		cmd.Env = append(os.Environ(), "OYZU_FAKE_KIND=child")
@@ -361,6 +366,9 @@ func TestUnchangedLedgerIsNotSent(t *testing.T) {
 }
 
 func TestImageKindGetsLedgerAndNetwork(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the docker fake is a shell script")
+	}
 	f, cfg, job, _ := setup(t, "docker", kindprotocol.OpApply, 30, 0, nil)
 	job.KindOperation.Ledger = true
 	job.KindOperation.Image = "registry.local/kinds/fake@sha256:" + strings.Repeat("b", 64)

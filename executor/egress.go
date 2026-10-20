@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/oyzuai/fleet/egressgate"
+	"github.com/oyzuai/fleet/executionconfig"
 	"github.com/oyzuai/fleet/runnerclient"
 )
 
@@ -72,20 +73,11 @@ var caBundleVars = []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUND
 // proxyVars are the proxy settings tools read, in both spellings.
 var proxyVars = []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"}
 
-// systemBundles are where Linux and macOS keep the system roots as PEM, as
-// Go's own crypto/x509 looks for them.
-var systemBundles = []string{
-	"/etc/ssl/certs/ca-certificates.crt",
-	"/etc/pki/tls/certs/ca-bundle.crt",
-	"/etc/ssl/ca-bundle.pem",
-	"/etc/pki/tls/cacert.pem",
-	"/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
-	"/etc/ssl/cert.pem",
-}
-
 // egressProxy is one job's credential-injecting proxy.
 type egressProxy struct {
-	refresh func(context.Context) (runnerclient.Egress, error)
+	corporate []byte
+	workDir   string
+	refresh   func(context.Context) (runnerclient.Egress, error)
 	// issued is told every credential and secret, so the log masks them.
 	issued func(...string)
 	log    *slog.Logger
@@ -121,10 +113,15 @@ type egressProxy struct {
 	tunnels map[net.Conn]bool
 }
 
+type egressExecution struct {
+	config  *runnerclient.ExecutionConfig
+	workDir string
+}
+
 // startEgress starts the proxy for first's grants on an ephemeral loopback
 // port. refresh mints them again as they near expiry. With a gateway URL it
 // chains through the gateway, and needs no grants.
-func startEgress(first runnerclient.Egress, refresh func(context.Context) (runnerclient.Egress, error), issued func(...string), log *slog.Logger, gateway string) (*egressProxy, error) {
+func startEgress(first runnerclient.Egress, refresh func(context.Context) (runnerclient.Egress, error), issued func(...string), log *slog.Logger, gateway string, execution ...egressExecution) (*egressProxy, error) {
 	var gw *url.URL
 	if gateway != "" {
 		var err error
@@ -160,7 +157,24 @@ func startEgress(first runnerclient.Egress, refresh func(context.Context) (runne
 		IdleConnTimeout:       90 * time.Second,
 		ExpectContinueTimeout: time.Second,
 	}
+	if len(execution) > 0 && execution[0].config != nil {
+		config := execution[0].config
+		corporate, err := executionconfig.Validate(config)
+		if err != nil {
+			return nil, err
+		}
+		transport, err := executionconfig.Transport(config)
+		if err != nil {
+			return nil, err
+		}
+		p.corporate, p.workDir = corporate, execution[0].workDir
+		p.upstream = transport
+		p.dial = executionconfig.TunnelDialer(transport)
+	}
 	if gw != nil {
+		if len(execution) > 0 && execution[0].config != nil && execution[0].config.Proxy != nil {
+			return nil, &executionconfig.Error{Code: executionconfig.ProxyUnsupported, Message: "a corporate proxy cannot be combined with the egress gateway"}
+		}
 		p.dial = func(ctx context.Context, _, addr string) (net.Conn, error) { return dialVia(ctx, gw, addr) }
 		if t, ok := p.upstream.(*http.Transport); ok {
 			t.Proxy = http.ProxyURL(gw)
@@ -301,6 +315,9 @@ func (p *egressProxy) env(environ []string) []string {
 // stop closes the proxy and every connection through it, and deletes the
 // CA files.
 func (p *egressProxy) stop() {
+	if t, ok := p.upstream.(*http.Transport); ok {
+		t.CloseIdleConnections()
+	}
 	_ = p.srv.Close()
 	_ = p.inner.Close()
 	p.mu.Lock()
@@ -313,6 +330,10 @@ func (p *egressProxy) stop() {
 
 func (p *egressProxy) removeFiles() {
 	if p.dir != "" {
+		if p.workDir != "" {
+			_ = os.Chmod(p.caFile, 0o600)
+			_ = os.Chmod(p.bundleFile, 0o600)
+		}
 		_ = os.RemoveAll(p.dir)
 	}
 }
@@ -624,14 +645,26 @@ func (p *egressProxy) makeCA() error {
 // writeCA writes the CA certificate, and the system roots with it when the
 // system keeps them in a PEM file.
 func (p *egressProxy) writeCA() error {
-	dir, err := os.MkdirTemp("", "oyzu-egress-")
+	if p.workDir != "" {
+		if err := os.MkdirAll(p.workDir, 0o700); err != nil {
+			return err
+		}
+	}
+	dir, err := os.MkdirTemp(p.workDir, "oyzu-egress-")
 	if err != nil {
 		return err
 	}
 	p.dir = dir
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: p.ca.Raw})
+	if len(p.corporate) > 0 {
+		caPEM = append(append([]byte{}, p.corporate...), caPEM...)
+	}
 	p.caFile = filepath.Join(dir, "ca.pem")
-	if err := os.WriteFile(p.caFile, caPEM, 0o644); err != nil {
+	mode := os.FileMode(0o644)
+	if p.workDir != "" {
+		mode = 0o444
+	}
+	if err := os.WriteFile(p.caFile, caPEM, mode); err != nil {
 		return err
 	}
 	roots := systemRoots()
@@ -643,22 +676,13 @@ func (p *egressProxy) writeCA() error {
 		roots = append(roots, '\n')
 	}
 	p.bundleFile = filepath.Join(dir, "bundle.pem")
-	return os.WriteFile(p.bundleFile, append(roots, caPEM...), 0o644)
+	return os.WriteFile(p.bundleFile, append(roots, caPEM...), mode)
 }
 
 // systemRoots reads the runner's trust store as PEM: the file SSL_CERT_FILE
 // names, else the first system bundle found.
 func systemRoots() []byte {
-	paths := systemBundles
-	if f := os.Getenv("SSL_CERT_FILE"); f != "" {
-		paths = append([]string{f}, paths...)
-	}
-	for _, f := range paths {
-		if b, err := os.ReadFile(f); err == nil && len(b) > 0 {
-			return b
-		}
-	}
-	return nil
+	return executionconfig.SystemRoots()
 }
 
 // leaf returns the certificate the proxy shows the build for host.
