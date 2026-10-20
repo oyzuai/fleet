@@ -147,6 +147,19 @@ verified. Under systemd, `KillMode=mixed` with `TimeoutStopSec` longer than
 `KillMode=control-group` signals executors at once and kills any survivors
 with the manager, so nothing is left to adopt.
 
+## Telemetry
+
+The manager and executor can export traces and metrics to an OpenTelemetry
+Collector over OTLP/HTTP: set `OYZU_OTEL_ENABLED=true` and `OYZU_OTEL_ENDPOINT`
+in the manager's environment. It is off by default, uses the standard library
+only, records server-assigned numbers and bounded reasons and never a
+credential, URL, log line or build content, and never delays a heartbeat,
+renewal or log upload. The settings are removed from the process environment at
+start, so builds and kinds never see them; the process driver gives its
+executor the endpoint and a trace parent, and the container and Kubernetes
+drivers give it nothing. The catalog and the limits are in
+[docs/telemetry.md](docs/telemetry.md).
+
 ## Egress control
 
 A build shares its network with whatever it runs, so a proxy inside the job

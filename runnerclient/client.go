@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/oyzuai/fleet/assertion"
+	"github.com/oyzuai/fleet/telemetry"
 )
 
 var (
@@ -38,7 +39,9 @@ const clientAssertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bea
 // Client calls one runs server.
 type Client struct {
 	base string
-	http *http.Client
+	// prefix is the runner API's path, which a route name is relative to.
+	prefix string
+	http   *http.Client
 }
 
 // New returns a Client for the runs server at base, such as
@@ -47,7 +50,11 @@ func New(base string, hc *http.Client) *Client {
 	if hc == nil {
 		hc = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Client{base: strings.TrimRight(base, "/") + "/runner/v1/", http: hc}
+	c := &Client{base: strings.TrimRight(base, "/") + "/runner/v1/", http: hc}
+	if u, err := url.Parse(c.base); err == nil {
+		c.prefix = u.Path
+	}
+	return c
 }
 
 // Enrolled is the manager an enrollment created or rekeyed.
@@ -393,13 +400,34 @@ func (c *Client) doStatus(ctx context.Context, path, bearer string, in, out any,
 func (c *Client) send(req *http.Request, out any) error { return c.sendStatus(req, out, nil) }
 
 // sendStatus sends req and decodes a 2xx body into out.
-func (c *Client) sendStatus(req *http.Request, out any, status func(int)) error {
+func (c *Client) sendStatus(req *http.Request, out any, status func(int)) (err error) {
 	req.Header.Set("Accept", "application/json")
+	// Telemetry is optional and never changes the call: it records the route
+	// (a fixed name, never the URL or a header), the outcome and the time, and
+	// offers runs a trace parent to link to. Nothing it holds is a credential.
+	route := telemetry.Route(strings.TrimPrefix(req.URL.Path, c.prefix))
+	ctx, span := telemetry.Start(req.Context(), "fleet.client."+strings.NewReplacer("/", "_", "-", "_").Replace(route), telemetry.Client)
+	start, code := time.Now(), 0
+	defer func() {
+		o, reason := telemetry.Classify(req.Context(), err, code, errors.Is(err, ErrUnauthenticated))
+		telemetry.Request(route, o, reason, time.Since(start))
+		span.Str("oyzu.fleet.route", route)
+		if code != 0 {
+			span.Int("http.response.status_code", int64(code))
+		}
+		span.End(o, reason)
+		logDrain(route, o, reason)
+	}()
+	if span != nil {
+		req = req.WithContext(ctx)
+		telemetry.Inject(ctx, req.Header)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	code = resp.StatusCode
 	if status != nil {
 		status(resp.StatusCode)
 	}

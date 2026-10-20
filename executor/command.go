@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/oyzuai/fleet/egressgate"
 	"github.com/oyzuai/fleet/kindrunner"
 	"github.com/oyzuai/fleet/runnerclient"
+	"github.com/oyzuai/fleet/telemetry"
 )
 
 // Command runs the oyzu-executor command line, args without the program
@@ -54,7 +56,20 @@ func Command(args []string, log *slog.Logger) error {
 			return err
 		}
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// Optional telemetry. Read once and removed from the environment, so the
+	// build, kinds, Git and Renovate never inherit the endpoint or the
+	// manager's trace parent. Off by default; a bad setting disables it.
+	tcfg, terr := telemetry.LoadConfig("oyzu-executor", true)
+	if terr != nil {
+		log.Warn(terr.Error())
+	}
+	tele := telemetry.Setup(tcfg, log)
+	defer func() {
+		c, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		tele.Shutdown(c)
+	}()
+	ctx, stop := signal.NotifyContext(telemetry.WithParent(context.Background(), tcfg.Parent), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return Run(ctx, Config{
 		Client:           runnerclient.New(*server, nil),

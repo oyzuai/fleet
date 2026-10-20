@@ -33,6 +33,7 @@ import (
 	"github.com/oyzuai/fleet/manager/container"
 	"github.com/oyzuai/fleet/manager/kubernetes"
 	"github.com/oyzuai/fleet/runnerclient"
+	"github.com/oyzuai/fleet/telemetry"
 )
 
 const usage = `usage:
@@ -95,6 +96,20 @@ func run(args []string, log *slog.Logger) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Optional telemetry (OYZU_OTEL_*), off by default. The settings are read
+	// and removed from this process's environment, so no executor, build or
+	// child inherits them; an executor gets its own through the driver.
+	tcfg, terr := telemetry.LoadConfig("oyzu-pool-manager", true)
+	if terr != nil {
+		log.Warn(terr.Error())
+	}
+	tele := telemetry.Setup(tcfg, log)
+	defer func() {
+		c, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		tele.Shutdown(c)
+	}()
 
 	fs := flag.NewFlagSet("oyzu-pool-manager "+args[0], flag.ContinueOnError)
 	stateDir := fs.String("state-dir", defaultDir(os.UserConfigDir, "state"), "where the manager's key and state live")
@@ -209,7 +224,7 @@ func run(args []string, log *slog.Logger) error {
 				Runner: *executor, Args: runnerArgs, Server: st.Server, Manager: st.ManagerID,
 				WorkDir: *workDir, LogDir: filepath.Join(*stateDir, "logs"), Slots: *concurrency, Docker: *docker,
 				Renovate: *renovate != "",
-				ExtraEnv: extra, Log: log,
+				ExtraEnv: extra, Log: log, Telemetry: tcfg,
 			}
 		case "container":
 			if *image == "" {
