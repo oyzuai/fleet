@@ -134,3 +134,38 @@ second attempt and exercise post-finish log limits independently. Broader Window
 cloud VM, untrusted-host and isolation qualification stay explicit follow-ups;
 process mode retains its trusted-code restriction. Do not forward platform
 exporter credentials or manager/job bearers into the customer's build process.
+
+## Implementation status
+
+Added October 20, 2026 with the platform's IAM-6 managed-execution package. The
+wire protocol and every lifetime above are unchanged. This repository now has
+optional, credential-free [telemetry](telemetry.md) for the manager and executor:
+spans and metrics over OTLP/HTTP with an attribute allowlist, a bounded
+non-blocking queue, environment settings that are consumed at start, scrubbed
+child environments (a build, a kind and the Docker CLI never see an endpoint or
+trace parent), and a trace parent handed to a process-driver executor so its
+spans join the manager's. The client sends a `traceparent` to runs only as
+optional correlation; runs links to it and never adopts it, and no
+authentication field is trace context.
+
+The platform's `iam-fleet-proof` task built this tree's manager and executor and
+ran them in process mode against a runs service built from the platform tree,
+with real Keycloak, Postgres and the OpenTelemetry stack, and a trusted build
+fixture. It ran once, directly (not through `oyzu run`), and passed all 77 of its
+checks. What that run covered, by acceptance ID, and what it did not:
+
+| ID | Covered by the connected run | Not covered |
+| --- | --- | --- |
+| FLEET-AUTH-01 | Real enrollment, login, claim and start reaching one assigned execution; a replayed enrollment token and a consumed startup token granted nothing | Wrong audience and a replayed login assertion at the connected level; an expired startup token |
+| FLEET-AUTH-02 | Heartbeat extended the same job bearer; manager revocation, key revocation, lease loss with requeue and run cancellation each denied every fresh ordinary route with the uniform 401 | Behavior under a slow or partitioned server |
+| FLEET-AUTH-03 | A manager rotated its key and kept its attribution; `rekey --revoke-now` revoked everything issued under the old keys while a key enrolled with the rekey token had fresh authority | Lost login or finish responses |
+| FLEET-AUTH-04 | After finish only the finishing bearer's `job/logs` and `job/logs/finish` worked, and manager and key revocation denied them | The full fifteen-minute expiry |
+| FLEET-AUTH-05 | Spans and metrics from the manager and executor in Tempo and Prometheus next to runs'; no credential in any signal, process output or the build's output (the scan covered 58 issued values); unit tests show a Collector outage never blocks renewal | An outage during the connected run; the container and Kubernetes drivers, which export no executor telemetry |
+
+The process driver ran only the trusted fixture. The proof did not exercise the
+container, Kubernetes or VM drivers, Windows, untrusted code or the secrets
+route, and it found no defect in this repository's client. The one pair of
+variables a build sees that look like credentials, `OYZU_ID_TOKEN_URL` and
+`OYZU_ID_TOKEN_REQUEST_TOKEN`, belongs to the executor's existing loopback
+ID-token broker: random per job, good only against that loopback port, never the
+job bearer. The acceptance IDs above remain planned criteria, not qualified.
