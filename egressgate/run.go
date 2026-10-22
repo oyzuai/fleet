@@ -128,6 +128,9 @@ const gatewayUsage = `usage:
 // pool manager starts it in the executor image: as the gateway itself, or
 // with probe as the startup self-test's job.
 func Command(args []string, log *slog.Logger) error {
+	if len(args) > 0 && args[0] == "probe-control" {
+		return readinessControlCommand(args[1:])
+	}
 	if len(args) > 0 && args[0] == "probe" {
 		return probeCommand(args[1:])
 	}

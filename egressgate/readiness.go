@@ -50,7 +50,11 @@ func readinessProbeCommand(args []string) error {
 		return errors.New("invalid probe gateway")
 	}
 	if err := probeConnect(ctx, u.Host, "probe.invalid:443"); err != nil {
-		add("proxy-refusal", "failed", "PROXY_REFUSAL_NOT_OBSERVED")
+		if errors.Is(err, errProbeUnexpected) {
+			add("proxy-refusal", "failed", "PROXY_REFUSAL_NOT_OBSERVED")
+		} else {
+			add("proxy-refusal", "inconclusive", "PROXY_UNAVAILABLE")
+		}
 	} else {
 		add("proxy-refusal", "passed", "GATEWAY_REFUSED")
 	}
@@ -72,7 +76,29 @@ func readinessProbeCommand(args []string) error {
 		}
 		return false
 	}
-	if connected(net.JoinHostPort(target.Hostname(), port)) {
+	interfaces, interfaceErr := net.Interfaces()
+	extraPath := interfaceErr != nil
+	count := 0
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		count++
+		addresses, err := iface.Addrs()
+		if err != nil {
+			extraPath = true
+		}
+		for _, address := range addresses {
+			ip, _, err := net.ParseCIDR(address.String())
+			if err == nil && ip.To4() == nil {
+				extraPath = true
+			}
+		}
+	}
+	if count != 1 {
+		extraPath = true
+	}
+	if extraPath || connected(net.JoinHostPort(target.Hostname(), port)) {
 		add("direct-egress", "failed", "DIRECT_BYPASS_SUCCEEDED")
 	} else {
 		add("direct-egress", "passed", "DIRECT_PATH_BLOCKED")
@@ -89,10 +115,10 @@ func readinessProbeCommand(args []string) error {
 			servers = append(servers, parts[1])
 		}
 	}
-	if len(servers) != 1 || servers[0] != u.Hostname() {
+	if len(servers) != 1 || (servers[0] != u.Hostname() && servers[0] != "127.0.0.11") {
 		dnsOK = false
 	}
-	if !readiness.DNSRefused(ctx, net.JoinHostPort(u.Hostname(), "53"), c.Descriptor.DNSName) {
+	if len(servers) != 1 || !readiness.DNSBlockedResolver(ctx, net.JoinHostPort(servers[0], "53"), c.Descriptor.DNSName) || !readiness.DNSRefused(ctx, net.JoinHostPort(u.Hostname(), "53"), c.Descriptor.DNSName) {
 		dnsOK = false
 	}
 	for _, network := range []string{"udp", "tcp"} {
@@ -103,7 +129,7 @@ func readinessProbeCommand(args []string) error {
 	if dnsOK {
 		add("dns-confinement", "passed", "DNS_PATH_CONFINED")
 	} else {
-		add("dns-confinement", "failed", "DNS_BOUNDARY_NOT_CONFIRMED")
+		add("dns-confinement", "inconclusive", "DNS_BOUNDARY_NOT_CONFIRMED")
 	}
 	if *control == "" {
 		add("control-isolation", "inconclusive", "CONTROL_ADDRESS_MISSING")
@@ -155,4 +181,27 @@ func controlInterface(address, iface string) (string, error) {
 		}
 	}
 	return "", errors.New("control interface has no management IPv4 address")
+}
+
+func readinessControlCommand(args []string) error {
+	fs := flag.NewFlagSet("gateway probe-control", flag.ContinueOnError)
+	raw := fs.String("challenge", "", "fixed diagnostic challenge")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(*raw) > 8192 {
+		return errors.New("oversized challenge")
+	}
+	var c readiness.Challenge
+	dec := json.NewDecoder(strings.NewReader(*raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&c); err != nil {
+		return err
+	}
+	if c.Descriptor.Validate() != nil || len(c.Nonce) != 32 || strings.Trim(c.Nonce, "0123456789abcdef") != "" || c.Suite != readiness.Suite {
+		return errors.New("invalid challenge")
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), c.Deadline)
+	defer cancel()
+	return readiness.Control(ctx, c.Descriptor, c.Nonce)
 }

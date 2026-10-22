@@ -29,6 +29,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/oyzuai/fleet/kindrunner"
+	"github.com/oyzuai/fleet/readiness"
 	"github.com/oyzuai/fleet/runnerclient"
 	"github.com/oyzuai/fleet/telemetry"
 )
@@ -42,7 +43,8 @@ const (
 
 // Config configures one run.
 type Config struct {
-	Client *runnerclient.Client
+	Readiness *readiness.Binding
+	Client    *runnerclient.Client
 	// StartupTokenFile is read once and deleted.
 	StartupTokenFile string
 	// StartupTokenEnv, used when StartupTokenFile is empty, names an
@@ -148,7 +150,7 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 			span.End(o, reason)
 		}
 	}()
-	st, err := cfg.Client.Start(ctx, startup)
+	st, err := cfg.Client.StartWithReadiness(ctx, startup, cfg.Readiness)
 	if err != nil {
 		return fmt.Errorf("start the job: %w", err)
 	}

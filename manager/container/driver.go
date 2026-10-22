@@ -26,7 +26,9 @@ import (
 	"sync"
 	"time"
 
+	"encoding/json"
 	"github.com/oyzuai/fleet/manager"
+	"github.com/oyzuai/fleet/readiness"
 	"github.com/oyzuai/fleet/runnerclient"
 )
 
@@ -108,8 +110,13 @@ type Driver struct {
 	testing, tested, egressOK, factsDirty bool
 	lastTest                              time.Time
 
-	gwMu sync.Mutex
-	gw   *gateway
+	readinessPoisoned        bool
+	readinessPassedChallenge string
+	managedReadiness         bool
+	activeMode               EgressMode
+	localBinding             *readiness.Binding
+	gwMu                     sync.Mutex
+	gw                       *gateway
 }
 
 // job is one job's container.
@@ -229,7 +236,7 @@ func (d *Driver) Capacity(context.Context) (manager.Capacity, error) {
 		}
 		return c, d.pullError
 	}
-	if d.Egress == EgressEnforce && !d.tested {
+	if !d.managedReadiness && d.modeLocked() == EgressEnforce && !d.tested {
 		// Not ready until the self-test says whether the pool enforces.
 		if !d.testing {
 			d.testing, d.lastTest = true, d.now()
@@ -238,7 +245,7 @@ func (d *Driver) Capacity(context.Context) (manager.Capacity, error) {
 		c.Provisioning = c.Max - c.Running
 		return c, nil
 	}
-	if d.Egress == EgressEnforce && !d.egressOK && !d.testing && d.now().Sub(d.lastTest) >= pullRetry {
+	if !d.managedReadiness && d.modeLocked() == EgressEnforce && !d.egressOK && !d.testing && d.now().Sub(d.lastTest) >= pullRetry {
 		d.testing, d.lastTest = true, d.now()
 		go d.selfTest(context.Background())
 	}
@@ -278,6 +285,9 @@ func (d *Driver) Provision(context.Context, int) error { return nil }
 // Start implements manager.Driver: a fresh workspace volume, then the
 // container, then the startup token copied in, then start.
 func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.Claim) (manager.Handle, error) {
+	if err := d.CheckReadiness(ctx, c.Readiness); err != nil {
+		return manager.Handle{}, err
+	}
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
 	name := fmt.Sprintf("oyzu-%d-job-%d-%d-%s", d.Manager, c.JobID, c.Attempt, hex.EncodeToString(suffix))
@@ -320,10 +330,14 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 	}
 	cmd := append(append([]string{}, d.Command...),
 		"--server", d.Server, "--startup-token-file", TokenDir+"/"+tokenFile, "--work-dir", WorkDir)
+	if c.Readiness != nil {
+		raw, _ := json.Marshal(c.Readiness)
+		cmd = append(cmd, "--readiness-binding", string(raw))
+	}
 	id, err := d.Engine.CreateContainer(ctx, name, Spec{
 		Image: d.Image, Cmd: cmd, User: d.user(), Labels: labels, Volume: j.volume, WorkDir: WorkDir,
 		NanoCPUs: int64(d.CPUs * 1e9), MemoryBytes: d.MemoryBytes, PidsLimit: pids, Network: network,
-		Env: env, DNS: dns,
+		Env: env, DNS: dns, Sysctls: map[string]string{"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"},
 	})
 	if err != nil {
 		return h, fmt.Errorf("create the container: %w", err)
@@ -337,6 +351,14 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 	}
 	if err := d.Engine.CopyFiles(ctx, id, "/", archive); err != nil {
 		return h, fmt.Errorf("copy the startup token in: %w", err)
+	}
+	if c.Readiness != nil {
+		if err := d.checkAllocation(ctx, id, dns); err != nil {
+			return h, err
+		}
+		if err := d.CheckReadiness(ctx, c.Readiness); err != nil {
+			return h, err
+		}
 	}
 	if err := d.Engine.StartContainer(ctx, id); err != nil {
 		return h, fmt.Errorf("start the container: %w", err)

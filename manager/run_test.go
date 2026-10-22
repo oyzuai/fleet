@@ -27,6 +27,8 @@ func (f *fakeRuns) server(t *testing.T) *httptest.Server {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch strings.TrimPrefix(r.URL.Path, "/runner/v1/") {
+		case "readiness/session":
+			_, _ = w.Write([]byte(`{"enabled":false,"session":""}`))
 		case "token":
 			_, _ = w.Write([]byte(`{"access_token":"access","expires_in":3600}`))
 		case "claim":

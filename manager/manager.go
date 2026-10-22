@@ -69,14 +69,18 @@ type Config struct {
 
 // Manager claims and runs jobs for one enrolled manager.
 type Manager struct {
-	cfg Config
+	cfg             Config
+	readinessDriver ReadinessDriver
 
-	mu        sync.Mutex
-	st        *State
-	current   ed25519.PrivateKey
-	next      ed25519.PrivateKey
-	access    runnerclient.AccessToken
-	lastRetry time.Time
+	mu                   sync.Mutex
+	st                   *State
+	current              ed25519.PrivateKey
+	next                 ed25519.PrivateKey
+	access               runnerclient.AccessToken
+	lastRetry            time.Time
+	readinessSession     string
+	readinessFingerprint string
+	readinessBusy        bool
 
 	liveMu sync.Mutex
 	live   map[JobID]int
@@ -308,6 +312,9 @@ func (m *Manager) Rotate(ctx context.Context) (err error) {
 func (m *Manager) Run(ctx context.Context) error {
 	log := m.cfg.Log.With("manager", m.st.ManagerID, "pool", m.st.Pool)
 	d := m.cfg.Driver
+	if err := m.beginReadiness(ctx); err != nil {
+		return err
+	}
 	facts, err := d.Facts(ctx)
 	if err != nil {
 		log.Warn("pool manager started; the driver reported no facts", "error", err)
@@ -370,8 +377,9 @@ func (m *Manager) Run(ctx context.Context) error {
 				reported, reportedAt = r, m.cfg.Now()
 			}
 		}
+		readyBoundary := m.readinessStep(ctx, newReport(facts, capacity))
 		m.scale(ctx, log, capacity)
-		if len(capacity.Ready) == 0 {
+		if !readyBoundary || len(capacity.Ready) == 0 {
 			sleep(ctx, m.cfg.PollInterval)
 			continue
 		}
@@ -470,6 +478,29 @@ func (m *Manager) withoutStarting(c Capacity) Capacity {
 // badly, and tears it down.
 func (m *Manager) watch(ctx context.Context, log *slog.Logger, h Handle, c runnerclient.Claim, startErr error) (clean bool) {
 	d := m.cfg.Driver
+	if rd, ok := d.(ReadinessDriver); ok && c.Readiness != nil {
+		local, cancel := context.WithCancel(ctx)
+		defer cancel()
+		ctx = local
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-local.Done():
+					return
+				case <-ticker.C:
+					check, stop := context.WithTimeout(local, 5*time.Second)
+					err := rd.CheckReadiness(check, c.Readiness)
+					stop()
+					if err != nil {
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+	}
 	log = log.With("job", c.JobID, "attempt", c.Attempt, "slot", h.Slot)
 	var exit Exit
 	if startErr != nil {
@@ -634,7 +665,10 @@ func (m *Manager) Claim(ctx context.Context) (c *runnerclient.Claim, err error) 
 	if err != nil {
 		return nil, err
 	}
-	c, err = m.cfg.Client.Claim(ctx, tok)
+	m.mu.Lock()
+	session := m.readinessSession
+	m.mu.Unlock()
+	c, err = m.cfg.Client.ClaimSession(ctx, tok, session)
 	if errors.Is(err, runnerclient.ErrUnauthenticated) {
 		m.forget()
 	}

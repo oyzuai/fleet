@@ -663,3 +663,32 @@ func (d *Docker) PublishedPort(ctx context.Context, id string, port int) (int, e
 	}
 	return 0, fmt.Errorf("the engine published no host port for %d", port)
 }
+
+func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (allocation, error) {
+	var out struct {
+		Image      string
+		HostConfig struct {
+			Dns         []string
+			Privileged  bool
+			NetworkMode string
+			Binds       []string
+		}
+		NetworkSettings struct {
+			Networks map[string]struct{ GlobalIPv6Address string }
+		}
+		Mounts []struct{ Destination string }
+	}
+	if err := d.do(ctx, "GET", "/containers/"+url.PathEscape(id)+"/json", nil, nil, &out); err != nil {
+		return allocation{}, err
+	}
+	a := allocation{DNS: out.HostConfig.Dns, Image: out.Image, Networks: len(out.NetworkSettings.Networks), Privileged: out.HostConfig.Privileged, HostNetwork: out.HostConfig.NetworkMode == "host"}
+	for _, n := range out.NetworkSettings.Networks {
+		a.IPv6 = a.IPv6 || n.GlobalIPv6Address != ""
+	}
+	for _, m := range out.Mounts {
+		if m.Destination != WorkDir {
+			a.ExtraMount = true
+		}
+	}
+	return a, nil
+}

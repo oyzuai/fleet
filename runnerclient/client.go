@@ -140,9 +140,15 @@ type EgressAllow struct {
 // Claim takes the next job in the manager's pool, or returns nil when there
 // is none.
 func (c *Client) Claim(ctx context.Context, access string) (*Claim, error) {
+	return c.ClaimSession(ctx, access, "")
+}
+
+func (c *Client) ClaimSession(ctx context.Context, access, session string) (*Claim, error) {
 	var out Claim
 	found := false
-	err := c.doStatus(ctx, "claim", access, nil, &out, func(status int) { found = status == http.StatusOK })
+	err := c.doStatus(ctx, "claim", access, struct {
+		Session string `json:"session"`
+	}{session}, &out, func(status int) { found = status == http.StatusOK })
 	if err != nil || !found {
 		return nil, err
 	}
@@ -248,8 +254,14 @@ type Started struct {
 
 // Start spends the startup token.
 func (c *Client) Start(ctx context.Context, startup string) (Started, error) {
+	return c.StartWithReadiness(ctx, startup, nil)
+}
+
+func (c *Client) StartWithReadiness(ctx context.Context, startup string, b *readiness.Binding) (Started, error) {
 	var out Started
-	return out, c.do(ctx, "job/start", startup, nil, &out)
+	return out, c.do(ctx, "job/start", startup, struct {
+		Readiness *readiness.Binding `json:"readiness,omitempty"`
+	}{b}, &out)
 }
 
 // Heartbeat renews the job's lease and token.

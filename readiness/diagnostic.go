@@ -150,3 +150,12 @@ func (r *Result) Aggregate() {
 		r.Outcome = "failed"
 	}
 }
+
+// DNSBlockedResolver observes an explicit negative response, never a timeout.
+// Docker's embedded resolver converts upstream REFUSED into SERVFAIL. The
+// driver independently verifies that its sole configured upstream is the
+// gateway; the probe also requires a direct REFUSED answer from that gateway.
+func DNSBlockedResolver(ctx context.Context, address, name string) bool {
+	b, err := dnsExchange(ctx, "udp", address, name)
+	return err == nil && (b[3]&15 == 5 || b[3]&15 == 2) && binary.BigEndian.Uint16(b[6:8]) == 0
+}

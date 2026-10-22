@@ -20,6 +20,7 @@ const MaxChecks = 16
 // Boundary identifies the actual manager-controlled allocation template. The
 // host and gateway are private opaque identities, never public topology.
 type Boundary struct {
+	Support       string `json:"support"`
 	Driver        string `json:"driver"`
 	Host          string `json:"host"`
 	Node          string `json:"node,omitempty"`
@@ -47,8 +48,16 @@ func (b Boundary) Valid() bool {
 	if b.Mode != "enforce" && b.Mode != "report" && b.Mode != "open" {
 		return false
 	}
+	if b.Support == "unsupported" {
+		return b.Driver == "process" || b.Driver == "vm" || b.Driver == "kubernetes"
+	}
+	if b.Support != "supported" {
+		return false
+	}
 	if b.Driver == "container" || b.Driver == "kubernetes" {
-		return b.Host != "" && b.Image != "" && b.Runtime != "" && b.Network != "" &&
+		_, digest, ok := strings.Cut(b.Image, "@sha256:")
+		_, err := hex.DecodeString(digest)
+		return ok && len(digest) == 64 && err == nil && b.Host != "" && b.Runtime != "" && b.Network != "" &&
 			(b.Mode == "open" || b.Gateway != "") && (b.Driver != "kubernetes" || b.Node != "")
 	}
 	return b.Driver == "process" || b.Driver == "vm"
@@ -158,6 +167,7 @@ func (r Result) Validate() error {
 // Binding is server-selected assignment context, not a job capability. A driver
 // must compare it to actual allocation before launching the executor.
 type Binding struct {
+	Challenge   string    `json:"challenge"`
 	Session     string    `json:"session"`
 	Generation  int64     `json:"generation"`
 	Fingerprint string    `json:"fingerprint"`
@@ -166,6 +176,9 @@ type Binding struct {
 }
 
 type Work struct {
-	Mode      string     `json:"mode"`
-	Challenge *Challenge `json:"challenge"`
+	Generation  int64      `json:"generation"`
+	Fingerprint string     `json:"fingerprint"`
+	Binding     *Binding   `json:"binding"`
+	Mode        string     `json:"mode"`
+	Challenge   *Challenge `json:"challenge"`
 }

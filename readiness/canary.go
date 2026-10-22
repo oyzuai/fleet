@@ -66,13 +66,21 @@ func ServeCanary(ctx context.Context, httpAddr, dnsAddr, dnsName string) error {
 			}
 		}
 	}()
+	slots := make(chan struct{}, 64)
 	go func() {
 		for {
 			c, e := tcp.Accept()
 			if e != nil {
 				return
 			}
+			select {
+			case slots <- struct{}{}:
+			default:
+				_ = c.Close()
+				continue
+			}
 			go func() {
+				defer func() { <-slots }()
 				defer c.Close()
 				_ = c.SetDeadline(time.Now().Add(3 * time.Second))
 				var h [2]byte

@@ -62,7 +62,7 @@ type GatewayControl interface {
 }
 
 // sandboxed reports whether jobs go through the gateway.
-func (d *Driver) sandboxed() bool { return d.Egress == EgressEnforce || d.Egress == EgressReport }
+func (d *Driver) sandboxed() bool { return d.mode() == EgressEnforce || d.mode() == EgressReport }
 
 // gateway is the manager's running gateway container.
 type gateway struct {
@@ -84,7 +84,7 @@ func (d *Driver) gatewayName() string { return fmt.Sprintf("oyzu-%d-gateway", d.
 // gatewayCmd starts the gateway from the executor image.
 func (d *Driver) gatewayCmd() []string {
 	mode := egressgate.ModeEnforce
-	if d.Egress == EgressReport {
+	if d.mode() == EgressReport {
 		mode = egressgate.ModeReport
 	}
 	return []string{d.Command[0], "gateway", "--mode", string(mode), "--pool", d.Pool,
@@ -152,7 +152,7 @@ func (d *Driver) ensureGateway(ctx context.Context) (*gateway, error) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	d.gw = gw
-	d.log().Info("started the egress gateway", "gateway", name, "mode", d.Egress)
+	d.log().Info("started the egress gateway", "gateway", name, "mode", d.mode())
 	return gw, nil
 }
 
@@ -199,7 +199,7 @@ func (d *Driver) openSandbox(ctx context.Context, j *job, labels map[string]stri
 	if err != nil {
 		return nil, nil, err
 	}
-	n, err := d.Engine.CreateNetwork(ctx, j.name, NetworkSpec{Labels: labels, Internal: d.Egress == EgressEnforce})
+	n, err := d.Engine.CreateNetwork(ctx, j.name, NetworkSpec{Labels: labels, Internal: d.mode() == EgressEnforce})
 	if err != nil {
 		return nil, nil, fmt.Errorf("create the job network: %w", err)
 	}
@@ -222,7 +222,7 @@ func (d *Driver) openSandbox(ctx context.Context, j *job, labels map[string]stri
 	d.mu.Lock()
 	j.registered = true
 	d.mu.Unlock()
-	if d.Egress == EgressEnforce {
+	if d.mode() == EgressEnforce {
 		dns = []string{ip}
 	}
 	return proxyEnv(ip), dns, nil
@@ -271,7 +271,7 @@ func (d *Driver) egressFacts(f manager.Facts) {
 	d.mu.Lock()
 	ok := d.egressOK
 	d.mu.Unlock()
-	switch d.Egress {
+	switch d.mode() {
 	case EgressEnforce:
 		if ok {
 			f[manager.FactEgress] = manager.EgressEnforced
