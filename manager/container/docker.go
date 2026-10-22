@@ -260,15 +260,17 @@ func labelFilter(labels map[string]string) url.Values {
 // Info implements Engine.
 func (d *Docker) Info(ctx context.Context) (Info, error) {
 	var i struct {
-		OSType       string
-		Architecture string
-		NCPU         int
-		MemTotal     int64
+		ID            string
+		ServerVersion string
+		OSType        string
+		Architecture  string
+		NCPU          int
+		MemTotal      int64
 	}
 	if err := d.do(ctx, http.MethodGet, "/info", nil, nil, &i); err != nil {
 		return Info{}, err
 	}
-	return Info{OSType: i.OSType, Architecture: i.Architecture, NCPU: i.NCPU, MemTotal: i.MemTotal}, nil
+	return Info{ID: i.ID, ServerVersion: i.ServerVersion, OSType: i.OSType, Architecture: i.Architecture, NCPU: i.NCPU, MemTotal: i.MemTotal}, nil
 }
 
 // ImagePresent implements Engine.

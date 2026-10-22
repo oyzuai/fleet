@@ -58,7 +58,9 @@ type Engine interface {
 
 // Info is the engine host's platform.
 type Info struct {
-	OSType string
+	ID            string
+	ServerVersion string
+	OSType        string
 	// Architecture is the kernel's: x86_64, aarch64 or arm64.
 	Architecture string
 	NCPU         int

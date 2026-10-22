@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/oyzuai/fleet/assertion"
+	"github.com/oyzuai/fleet/readiness"
 	"github.com/oyzuai/fleet/telemetry"
 )
 
@@ -120,7 +121,8 @@ type Claim struct {
 	// Egress is where the job may connect, enforced by the manager's
 	// gateway. A runs that predates it sends none, which allows only the
 	// runs server.
-	Egress ClaimEgress `json:"egress"`
+	Egress    ClaimEgress        `json:"egress"`
+	Readiness *readiness.Binding `json:"readiness,omitempty"`
 }
 
 // ClaimEgress is a job's network allow list.
@@ -166,8 +168,10 @@ func (c *Client) Demand(ctx context.Context, access string) (Demand, error) {
 // Report is what a manager tells runs about itself: the oyzu.io/ facts its
 // driver discovered and its slots.
 type Report struct {
-	Facts map[string]string `json:"facts"`
-	Slots Slots             `json:"slots"`
+	Facts    map[string]string   `json:"facts"`
+	Slots    Slots               `json:"slots"`
+	Session  string              `json:"session,omitempty"`
+	Boundary *readiness.Boundary `json:"boundary,omitempty"`
 }
 
 // Slots counts a manager's executor slots.

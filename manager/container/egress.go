@@ -89,7 +89,7 @@ func (d *Driver) gatewayCmd() []string {
 	}
 	return []string{d.Command[0], "gateway", "--mode", string(mode), "--pool", d.Pool,
 		"--proxy", fmt.Sprintf(":%d", gatewayProxyPort), "--dns", fmt.Sprintf(":%d", gatewayDNSPort),
-		"--control", fmt.Sprintf(":%d", gatewayControlPort)}
+		"--control", fmt.Sprintf(":%d", gatewayControlPort), "--control-interface", "eth0"}
 }
 
 // ensureGateway returns the manager's gateway, starting it if it is not
