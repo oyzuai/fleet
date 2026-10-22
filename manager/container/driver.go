@@ -131,6 +131,7 @@ type job struct {
 	// The job's sandbox, when egress is controlled: its network, the gateway
 	// it was joined to and whether the gateway knows the job.
 	network    string
+	networkID  string
 	gateway    *gateway
 	registered bool
 }
@@ -335,7 +336,7 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 		"--server", d.Server, "--startup-token-file", TokenDir+"/"+tokenFile, "--work-dir", WorkDir)
 	if c.Readiness != nil {
 		raw, _ := json.Marshal(c.Readiness)
-		cmd = append(cmd, "--readiness-binding", string(raw))
+		cmd = append(cmd, "--readiness-binding", string(raw), "--wait-for-startup-token")
 	}
 	id, err := d.Engine.CreateContainer(ctx, name, Spec{
 		Image: d.Image, Cmd: cmd, User: d.user(), Labels: labels, Volume: j.volume, WorkDir: WorkDir,
@@ -348,23 +349,31 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 	d.mu.Lock()
 	j.id = id
 	d.mu.Unlock()
-	archive, err := tokenArchive(d.user(), c.StartupToken)
+	archive, err := tokenArchiveWithReady(d.user(), c.StartupToken, c.Readiness != nil)
 	if err != nil {
 		return h, err
 	}
-	if err := d.Engine.CopyFiles(ctx, id, "/", archive); err != nil {
-		return h, fmt.Errorf("copy the startup token in: %w", err)
+	if c.Readiness == nil {
+		if err = d.Engine.CopyFiles(ctx, id, "/", archive); err != nil {
+			return h, fmt.Errorf("copy the startup token in: %w", err)
+		}
+	}
+	if err = d.Engine.StartContainer(ctx, id); err != nil {
+		return h, fmt.Errorf("start the container: %w", err)
 	}
 	if c.Readiness != nil {
-		if err := d.checkAllocation(ctx, id, dns); err != nil {
+		// Only the trusted executor bootstrap is running. It cannot spend a
+		// startup token until the actual namespace is observed and this archive's
+		// final ready marker is delivered. No job code or source runs beforehand.
+		if err = d.checkAllocation(ctx, id, dns, j.networkID); err != nil {
 			return h, err
 		}
-		if err := d.CheckReadiness(ctx, c.Readiness); err != nil {
+		if err = d.CheckReadiness(ctx, c.Readiness); err != nil {
 			return h, err
 		}
-	}
-	if err := d.Engine.StartContainer(ctx, id); err != nil {
-		return h, fmt.Errorf("start the container: %w", err)
+		if err = d.Engine.CopyFiles(ctx, id, "/", archive); err != nil {
+			return h, fmt.Errorf("handoff the startup token after allocation check: %w", err)
+		}
 	}
 	return h, nil
 }
@@ -372,6 +381,10 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 // tokenArchive is a tar holding TokenDir, owned by the job's user and
 // closed to anyone else, with the startup token in it.
 func tokenArchive(user, token string) ([]byte, error) {
+	return tokenArchiveWithReady(user, token, false)
+}
+
+func tokenArchiveWithReady(user, token string, ready bool) ([]byte, error) {
 	uidS, gidS, _ := strings.Cut(user, ":")
 	uid, _ := strconv.Atoi(uidS)
 	gid, err := strconv.Atoi(gidS)
@@ -393,6 +406,11 @@ func tokenArchive(user, token string) ([]byte, error) {
 	}
 	if _, err := tw.Write([]byte(token)); err != nil {
 		return nil, err
+	}
+	if ready {
+		if err := tw.WriteHeader(&tar.Header{Name: dir + "/" + tokenFile + ".ready", Typeflag: tar.TypeReg, Mode: 0o400, Uid: uid, Gid: gid, Size: 0, ModTime: now}); err != nil {
+			return nil, err
+		}
 	}
 	if err := tw.Close(); err != nil {
 		return nil, err

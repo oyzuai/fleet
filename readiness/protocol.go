@@ -100,6 +100,17 @@ func (d Descriptor) Validate() error {
 	return nil
 }
 
+type SessionRequest struct {
+	Boot string `json:"boot"`
+}
+type SessionBinding struct {
+	Session string `json:"session"`
+}
+type Invalidation struct {
+	Session    string `json:"session"`
+	Generation int64  `json:"generation"`
+}
+
 type Session struct {
 	ID      string `json:"session"`
 	Enabled bool   `json:"enabled"`

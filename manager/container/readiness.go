@@ -163,6 +163,7 @@ type allocationInspector interface {
 	InspectReadinessAllocation(context.Context, string) (allocation, error)
 }
 type allocation struct {
+	NetworkIDs     []string
 	ImageReference string
 	ExpectedImage  string
 	DNS            []string
@@ -174,7 +175,7 @@ type allocation struct {
 	ExtraMount     bool
 }
 
-func (d *Driver) checkAllocation(ctx context.Context, id string, expectedDNS []string) error {
+func (d *Driver) checkAllocation(ctx context.Context, id string, expectedDNS []string, expectedNetwork string) error {
 	inspector, ok := d.Engine.(allocationInspector)
 	if !ok {
 		return errors.New("engine cannot observe actual network allocation")
@@ -188,6 +189,9 @@ func (d *Driver) checkAllocation(ctx context.Context, id string, expectedDNS []s
 	}
 	if !slices.Equal(a.DNS, expectedDNS) {
 		return fmt.Errorf("%w: actual DNS upstream differs from the qualified gateway", readiness.ErrBoundaryChanged)
+	}
+	if expectedNetwork == "" || len(a.NetworkIDs) != 1 || a.NetworkIDs[0] != expectedNetwork {
+		return fmt.Errorf("%w: actual job network identity changed", readiness.ErrBoundaryChanged)
 	}
 	if a.Networks != 1 || a.IPv6 || a.Privileged || a.HostNetwork || a.ExtraMount {
 		return fmt.Errorf("%w: actual allocation exceeds the qualified container boundary", readiness.ErrBoundaryChanged)
@@ -301,6 +305,9 @@ func (d *Driver) ProbeReadiness(ctx context.Context, c readiness.Challenge) (res
 	}
 	env, dns, err := d.openSandbox(ctx, j, labels, 0, []egressgate.Allow{{Host: target.Hostname(), Port: port}})
 	if err != nil {
+		if errors.Is(err, readiness.ErrBoundaryChanged) {
+			add("direct-egress", "failed", "UNQUALIFIED_NETWORK_TEMPLATE")
+		}
 		return
 	}
 	proxy := ""
@@ -318,7 +325,10 @@ func (d *Driver) ProbeReadiness(ctx context.Context, c readiness.Challenge) (res
 	if err != nil {
 		return
 	}
-	if err = d.checkAllocation(ctx, j.id, dns); err != nil {
+	if err = d.Engine.StartContainer(ctx, j.id); err != nil {
+		return
+	}
+	if err = d.checkAllocation(ctx, j.id, dns, j.networkID); err != nil {
 		outcome := "inconclusive"
 		if errors.Is(err, readiness.ErrBoundaryChanged) {
 			outcome = "failed"
@@ -326,9 +336,7 @@ func (d *Driver) ProbeReadiness(ctx context.Context, c readiness.Challenge) (res
 		add("direct-egress", outcome, "UNQUALIFIED_ALLOCATION")
 		return
 	}
-	if err = d.Engine.StartContainer(ctx, j.id); err != nil {
-		return
-	}
+
 	code, err := d.Engine.WaitContainer(ctx, j.id)
 	if err != nil || code != 0 {
 		return
@@ -374,7 +382,7 @@ func (d *Driver) CheckReadinessAllocation(ctx context.Context, h manager.Handle,
 	id := j.id
 	dns := slices.Clone(j.dns)
 	d.mu.Unlock()
-	if err = d.checkAllocation(ctx, id, dns); err != nil && errors.Is(err, readiness.ErrBoundaryChanged) {
+	if err = d.checkAllocation(ctx, id, dns, j.networkID); err != nil && errors.Is(err, readiness.ErrBoundaryChanged) {
 		d.mu.Lock()
 		d.localBinding = nil
 		d.readinessPoisoned = true

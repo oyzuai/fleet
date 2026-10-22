@@ -574,14 +574,17 @@ func (d *Docker) CreateNetwork(ctx context.Context, name string, spec NetworkSpe
 }
 
 type networkJSON struct {
-	Id     string
-	Name   string
-	Labels map[string]string
-	IPAM   struct{ Config []struct{ Subnet string } }
+	Internal   bool
+	EnableIPv6 bool
+	Driver     string
+	Id         string
+	Name       string
+	Labels     map[string]string
+	IPAM       struct{ Config []struct{ Subnet string } }
 }
 
 func (n networkJSON) network() Network {
-	out := Network{ID: n.Id, Name: n.Name, Labels: n.Labels}
+	out := Network{ID: n.Id, Name: n.Name, Labels: n.Labels, Internal: n.Internal, IPv6: n.EnableIPv6, Driver: n.Driver}
 	for _, c := range n.IPAM.Config {
 		// The first IPv4 range is the one jobs connect from.
 		if c.Subnet != "" && !strings.Contains(c.Subnet, ":") {
@@ -675,7 +678,10 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 			Binds       []string
 		}
 		NetworkSettings struct {
-			Networks map[string]struct{ GlobalIPv6Address string }
+			Networks map[string]struct {
+				GlobalIPv6Address string
+				NetworkID         string
+			}
 		}
 		Mounts []struct{ Destination string }
 	}
@@ -691,6 +697,7 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 	a := allocation{ImageReference: out.Config.Image, ExpectedImage: image.ID, DNS: out.HostConfig.Dns, Image: out.Image, Networks: len(out.NetworkSettings.Networks), Privileged: out.HostConfig.Privileged, HostNetwork: out.HostConfig.NetworkMode == "host"}
 	for _, n := range out.NetworkSettings.Networks {
 		a.IPv6 = a.IPv6 || n.GlobalIPv6Address != ""
+		a.NetworkIDs = append(a.NetworkIDs, n.NetworkID)
 	}
 	for _, m := range out.Mounts {
 		if m.Destination != WorkDir {

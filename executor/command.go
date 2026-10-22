@@ -30,6 +30,7 @@ func Command(args []string, log *slog.Logger) error {
 	}
 	fs := flag.NewFlagSet("oyzu-executor", flag.ContinueOnError)
 	server := fs.String("server", "", "the runs URL")
+	waitToken := fs.Bool("wait-for-startup-token", false, "wait for the manager to verify allocation and finish credential handoff")
 	tokenFile := fs.String("startup-token-file", "", "file holding the job's startup token; deleted once read")
 	tokenEnv := fs.String("startup-token-env", "", "variable holding the job's startup token; unset once read")
 	secretsDir := fs.String("secrets-dir", "", "private job temporary directory; defaults to the system temp directory")
@@ -85,26 +86,27 @@ func Command(args []string, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(telemetry.WithParent(context.Background(), tcfg.Parent), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return Run(ctx, Config{
-		Client:           runnerclient.New(*server, nil),
-		Readiness:        binding,
-		StartupTokenFile: *tokenFile,
-		StartupTokenEnv:  *tokenEnv,
-		WorkDir:          *workDir,
-		SecretsDir:       *secretsDir,
-		JobDir:           *jobDir,
-		GitURL:           *gitURL,
-		Git:              *git,
-		Oyzu:             *oyzu,
-		Renovate:         *renovate,
-		GitHubAPI:        *apiURL,
-		GitAuthor:        *gitAuthor,
-		KindsDir:         *kindsDir,
-		KindStateDir:     *kindState,
-		Docker:           *docker,
-		DockerNetwork:    *dockerNetwork,
-		DockerEnv:        splitList(*dockerEnv),
-		EgressGateway:    *gateway,
-		Log:              log,
+		Client:              runnerclient.New(*server, nil),
+		Readiness:           binding,
+		StartupTokenFile:    *tokenFile,
+		WaitForStartupToken: *waitToken,
+		StartupTokenEnv:     *tokenEnv,
+		WorkDir:             *workDir,
+		SecretsDir:          *secretsDir,
+		JobDir:              *jobDir,
+		GitURL:              *gitURL,
+		Git:                 *git,
+		Oyzu:                *oyzu,
+		Renovate:            *renovate,
+		GitHubAPI:           *apiURL,
+		GitAuthor:           *gitAuthor,
+		KindsDir:            *kindsDir,
+		KindStateDir:        *kindState,
+		Docker:              *docker,
+		DockerNetwork:       *dockerNetwork,
+		DockerEnv:           splitList(*dockerEnv),
+		EgressGateway:       *gateway,
+		Log:                 log,
 	})
 }
 

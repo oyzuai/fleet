@@ -47,6 +47,9 @@ type Config struct {
 	Client    *runnerclient.Client
 	// StartupTokenFile is read once and deleted.
 	StartupTokenFile string
+	// WaitForStartupToken waits for a final ready marker from the manager,
+	// which is delivered only after the running allocation was verified.
+	WaitForStartupToken bool
 	// StartupTokenEnv, used when StartupTokenFile is empty, names an
 	// environment variable holding the token, for executors whose files are
 	// read-only (a Kubernetes Secret). It is read once and unset, so no
@@ -121,7 +124,14 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	var startup string
 	var err error
 	if cfg.StartupTokenFile != "" {
-		startup, err = readOnce(cfg.StartupTokenFile)
+		if cfg.WaitForStartupToken {
+			if cfg.Readiness == nil {
+				return errors.New("allocation handoff needs a readiness binding")
+			}
+			startup, err = readReadinessStartupToken(ctx, cfg.StartupTokenFile)
+		} else {
+			startup, err = readOnce(cfg.StartupTokenFile)
+		}
 	} else {
 		startup, err = readEnvOnce(cfg.StartupTokenEnv)
 	}
@@ -760,4 +770,35 @@ func (t *tail) String() string {
 		lines = append(append([]string{}, lines...), t.part)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func readReadinessStartupToken(ctx context.Context, path string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		_, err := os.Stat(path + ".ready")
+		if err == nil {
+			token, err := readOnce(path)
+			if err != nil {
+				return "", err
+			}
+			if err = os.Remove(path + ".ready"); err != nil {
+				return "", err
+			}
+			return token, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }

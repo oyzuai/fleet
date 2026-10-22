@@ -14,6 +14,7 @@ import (
 
 	"github.com/oyzuai/fleet/egressgate"
 	"github.com/oyzuai/fleet/manager"
+	"github.com/oyzuai/fleet/readiness"
 	"github.com/oyzuai/fleet/runnerclient"
 )
 
@@ -205,7 +206,13 @@ func (d *Driver) openSandbox(ctx context.Context, j *job, labels map[string]stri
 	}
 	d.mu.Lock()
 	j.network = j.name
+	j.networkID = n.ID
+	managed := d.managedReadiness
+	mode := d.modeLocked()
 	d.mu.Unlock()
+	if managed && mode == EgressEnforce && (n.ID == "" || !n.Internal || n.IPv6 || n.Driver != "bridge") {
+		return nil, nil, fmt.Errorf("%w: engine did not apply the qualified internal IPv4 bridge", readiness.ErrBoundaryChanged)
+	}
 	if n.Subnet == "" {
 		return nil, nil, fmt.Errorf("the engine gave network %s no subnet", n.Name)
 	}

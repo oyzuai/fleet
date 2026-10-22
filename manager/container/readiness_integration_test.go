@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/oyzuai/fleet/manager"
 	"github.com/oyzuai/fleet/readiness"
+	"github.com/oyzuai/fleet/runnerclient"
 )
 
 // This proof needs a real Docker engine and the repository's pinned executor
@@ -26,7 +28,8 @@ func TestReadinessDockerBoundaryAndGatewayReplacement(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	d := &Driver{Engine: engine, Image: image, Command: []string{"/executor"}, Server: "http://runs.invalid", Pool: "readiness-proof", Manager: 9876501, Slots: 1, Egress: EgressEnforce}
+	observed := &readinessProofEngine{Docker: engine}
+	d := &Driver{Engine: observed, Image: image, Command: []string{"/executor"}, Server: "http://127.0.0.1:1", Pool: "readiness-proof", Manager: 9876501, Slots: 1, Egress: EgressEnforce, StopGrace: time.Second}
 	if err = d.Check(); err != nil {
 		t.Fatal(err)
 	}
@@ -39,13 +42,19 @@ func TestReadinessDockerBoundaryAndGatewayReplacement(t *testing.T) {
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stop()
-		containers, _ := engine.ListContainers(cleanup, map[string]string{LabelManager: d.managerLabel()})
+		containers, _ := engine.ListContainers(cleanup, map[string]string{LabelManager: d.managerLabel(), LabelPool: d.Pool})
 		for _, c := range containers {
 			if err := engine.RemoveContainer(cleanup, c.ID); err != nil {
 				t.Error(err)
 			}
 		}
-		networks, _ := engine.ListNetworks(cleanup, map[string]string{LabelManager: d.managerLabel()})
+		networks, _ := engine.ListNetworks(cleanup, map[string]string{LabelManager: d.managerLabel(), LabelPool: d.Pool})
+		volumes, _ := engine.ListVolumes(cleanup, map[string]string{LabelManager: d.managerLabel(), LabelPool: d.Pool})
+		for _, v := range volumes {
+			if err := engine.RemoveVolume(cleanup, v.Name); err != nil {
+				t.Error(err)
+			}
+		}
 		for _, n := range networks {
 			if err := engine.RemoveNetwork(cleanup, n.Name); err != nil {
 				t.Error(err)
@@ -72,9 +81,22 @@ func TestReadinessDockerBoundaryAndGatewayReplacement(t *testing.T) {
 	if result.Outcome != "passed" {
 		t.Fatalf("actual container did not qualify: %+v", result)
 	}
-	binding := &readiness.Binding{Session: challenge.Session, Generation: challenge.Generation, Fingerprint: challenge.Fingerprint, Evidence: "33333333-3333-4333-8333-333333333333", ValidUntil: time.Now().Add(time.Minute)}
+	binding := &readiness.Binding{Challenge: challenge.ID, Session: challenge.Session, Generation: challenge.Generation, Fingerprint: challenge.Fingerprint, Evidence: "33333333-3333-4333-8333-333333333333", ValidUntil: time.Now().Add(time.Minute)}
 	d.SetReadiness(binding)
 	if err = d.CheckReadiness(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	// Exercise the ordinary typed Start path. The bootstrap must already
+	// have its observed namespace before the one-use handoff archive arrives.
+	// This marker is deliberately not a valid server credential.
+	h, err := d.Start(ctx, "0", runnerclient.Claim{JobID: 42, Attempt: 1, StartupToken: "fixture-startup-marker", Readiness: binding, Egress: runnerclient.ClaimEgress{Allow: []runnerclient.EgressAllow{{Host: "127.0.0.1", Port: 1}}}})
+	if err != nil {
+		t.Fatal("typed bootstrap handoff", err)
+	}
+	if observed.handoffs != 1 {
+		t.Fatal("typed bootstrap did not receive its checked allocation handoff")
+	}
+	if err = d.Teardown(ctx, h); err != nil {
 		t.Fatal(err)
 	}
 	// Inspect a real running allocation, then attach an extra network after
@@ -101,8 +123,14 @@ func TestReadinessDockerBoundaryAndGatewayReplacement(t *testing.T) {
 	if _, err = engine.ConnectNetwork(ctx, "bridge", j.id); err != nil {
 		t.Fatal(err)
 	}
+	if err = d.checkAllocation(ctx, j.id, j.dns, j.networkID); err == nil {
+		t.Fatal("actual extra network was accepted")
+	}
+	if err = engine.DisconnectNetwork(ctx, j.network, j.id); err != nil {
+		t.Fatal(err)
+	}
 	if err = d.CheckReadinessAllocation(ctx, handle, binding); err == nil {
-		t.Fatal("running allocation gained an unqualified extra network")
+		t.Fatal("a single replacement network inherited the qualified namespace")
 	}
 	d.SetReadiness(binding)
 	if err = d.CheckReadiness(ctx, binding); err == nil {
@@ -155,5 +183,31 @@ func TestReadinessDockerBoundaryAndGatewayReplacement(t *testing.T) {
 	if err = d.CheckReadiness(ctx, binding); err == nil {
 		t.Fatal("report mode accepted old enforcing assignment")
 	}
-	t.Log("real container: seven checks passed; live extra network fenced use and stale restore; clean boundary remeasured; gateway replacement fenced old assignment; mode change fenced old authority")
+	t.Log("real container: seven checks passed; checked bootstrap handoff; live extra/replacement networks fenced use and stale restore; clean boundary remeasured; gateway replacement fenced old assignment; mode change fenced old authority")
+}
+
+// The real engine is observed at the credential handoff point. A test fake
+// returning success from StartContainer cannot establish this ordering.
+type readinessProofEngine struct {
+	*Docker
+	handoffs int
+}
+
+func (e *readinessProofEngine) CopyFiles(ctx context.Context, id, path string, archive []byte) error {
+	state, err := e.Docker.InspectContainer(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !state.Running {
+		return errors.New("startup handoff preceded the trusted bootstrap")
+	}
+	allocation, err := e.Docker.InspectReadinessAllocation(ctx, id)
+	if err != nil {
+		return err
+	}
+	if allocation.Networks != 1 || len(allocation.NetworkIDs) != 1 || allocation.NetworkIDs[0] == "" {
+		return errors.New("startup handoff preceded actual namespace allocation")
+	}
+	e.handoffs++
+	return e.Docker.CopyFiles(ctx, id, path, archive)
 }

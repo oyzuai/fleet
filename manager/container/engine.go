@@ -106,9 +106,12 @@ type NetworkSpec struct {
 
 // Network is a network in a listing.
 type Network struct {
-	ID     string
-	Name   string
-	Labels map[string]string
+	Internal bool
+	IPv6     bool
+	Driver   string
+	ID       string
+	Name     string
+	Labels   map[string]string
 	// Subnet is the network's first address range, in CIDR form.
 	Subnet string
 }
