@@ -147,7 +147,7 @@ func (c *Client) ClaimSession(ctx context.Context, access, session string) (*Cla
 	var out Claim
 	found := false
 	err := c.doStatus(ctx, "claim", access, struct {
-		Session string `json:"session"`
+		Session string `json:"session,omitempty"`
 	}{session}, &out, func(status int) { found = status == http.StatusOK })
 	if err != nil || !found {
 		return nil, err

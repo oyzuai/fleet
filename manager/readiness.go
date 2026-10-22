@@ -109,6 +109,13 @@ func (m *Manager) readinessStep(ctx context.Context, report runnerclient.Report)
 		return false
 	}
 	d.SetReadiness(work.Binding)
+	if latch, ok := d.(interface{ ReadinessInvalidated() bool }); ok && latch.ReadinessInvalidated() && work.Binding != nil {
+		// Retry a known violation that the watcher's bounded first delivery may
+		// have lost. Once the server clears its binding this does not keep
+		// advancing generations while a fresh measurement is pending.
+		_ = m.cfg.Client.ReadinessInvalidate(ctx, token, session, work.Generation)
+		return false
+	}
 	if work.Challenge != nil {
 		c := *work.Challenge
 		if c.Session != session || c.Fingerprint != b.Fingerprint() {
@@ -116,16 +123,17 @@ func (m *Manager) readinessStep(ctx context.Context, report runnerclient.Report)
 			return false
 		}
 		m.mu.Lock()
-		busy := m.readinessBusy
+		busy := m.readinessBusy || m.readinessLastChallenge == c.ID
 		if !busy {
 			m.readinessBusy = true
+			m.readinessLastChallenge = c.ID
 		}
 		m.mu.Unlock()
 		if !busy {
 			go m.measureReadiness(runCtx, d, c)
 		}
 	}
-	return b.Mode != "enforce" || (work.Binding != nil && m.cfg.Now().Before(work.Binding.ValidUntil))
+	return b.Mode != "enforce" || (work.Binding != nil && d.CheckReadiness(ctx, work.Binding) == nil)
 }
 func (m *Manager) measureReadiness(parent context.Context, d ReadinessDriver, c readiness.Challenge) {
 	defer func() { m.mu.Lock(); m.readinessBusy = false; m.mu.Unlock() }()
@@ -182,4 +190,27 @@ func (d *unsupportedReadinessDriver) ProbeReadiness(_ context.Context, c readine
 	r := readiness.Result{Challenge: c.ID, Session: c.Session, Generation: c.Generation, Fingerprint: c.Fingerprint, Suite: c.Suite}
 	r.Aggregate()
 	return r
+}
+
+// A live allocation must keep the measured network and pinned image as well as
+// the boundary template. A known violation is reported before teardown returns.
+type readinessAllocationChecker interface {
+	CheckReadinessAllocation(context.Context, Handle, *readiness.Binding) error
+}
+
+func (m *Manager) checkReadinessAssignment(ctx context.Context, d ReadinessDriver, h Handle, b *readiness.Binding) error {
+	err := d.CheckReadiness(ctx, b)
+	if err == nil {
+		if checker, ok := m.cfg.Driver.(readinessAllocationChecker); ok {
+			err = checker.CheckReadinessAllocation(ctx, h, b)
+		}
+	}
+	if err != nil {
+		d.SetReadiness(nil)
+		token, tokenErr := m.accessToken(ctx)
+		if tokenErr == nil && errors.Is(err, readiness.ErrBoundaryChanged) {
+			_ = m.cfg.Client.ReadinessInvalidate(ctx, token, b.Session, b.Generation)
+		}
+	}
+	return err
 }

@@ -72,15 +72,16 @@ type Manager struct {
 	cfg             Config
 	readinessDriver ReadinessDriver
 
-	mu                   sync.Mutex
-	st                   *State
-	current              ed25519.PrivateKey
-	next                 ed25519.PrivateKey
-	access               runnerclient.AccessToken
-	lastRetry            time.Time
-	readinessSession     string
-	readinessFingerprint string
-	readinessBusy        bool
+	mu                     sync.Mutex
+	st                     *State
+	current                ed25519.PrivateKey
+	next                   ed25519.PrivateKey
+	access                 runnerclient.AccessToken
+	lastRetry              time.Time
+	readinessSession       string
+	readinessFingerprint   string
+	readinessBusy          bool
+	readinessLastChallenge string
 
 	liveMu sync.Mutex
 	live   map[JobID]int
@@ -491,7 +492,7 @@ func (m *Manager) watch(ctx context.Context, log *slog.Logger, h Handle, c runne
 					return
 				case <-ticker.C:
 					check, stop := context.WithTimeout(local, 5*time.Second)
-					err := rd.CheckReadiness(check, c.Readiness)
+					err := m.checkReadinessAssignment(check, rd, h, c.Readiness)
 					stop()
 					if err != nil {
 						cancel()
@@ -605,6 +606,9 @@ func (m *Manager) report(ctx context.Context, r runnerclient.Report) error {
 	if err != nil {
 		return err
 	}
+	m.mu.Lock()
+	r.Session = m.readinessSession
+	m.mu.Unlock()
 	err = m.cfg.Client.Report(ctx, tok, r)
 	if errors.Is(err, runnerclient.ErrUnauthenticated) {
 		m.forget()

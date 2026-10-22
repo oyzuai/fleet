@@ -4,11 +4,12 @@ package readiness
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,6 +17,10 @@ import (
 const Capability = "network-egress"
 const Suite = "fleet-egress-baseline"
 const MaxChecks = 16
+
+// ErrBoundaryChanged identifies an observed violation or replacement, as
+// distinct from an unavailable observation or an expired authority window.
+var ErrBoundaryChanged = errors.New("observed execution boundary changed")
 
 // Boundary identifies the actual manager-controlled allocation template. The
 // host and gateway are private opaque identities, never public topology.
@@ -34,9 +39,15 @@ type Boundary struct {
 }
 
 func (b Boundary) Fingerprint() string {
-	raw, _ := json.Marshal(b)
-	h := sha256.Sum256(raw)
-	return hex.EncodeToString(h[:])
+	h := sha256.New()
+	_, _ = h.Write([]byte("oyzu-readiness-boundary\x00"))
+	for _, value := range []string{b.Support, b.Driver, b.Host, b.Node, b.Image, b.Runtime, b.Network, b.Gateway, b.Mode, strconv.FormatBool(b.IPv6), strconv.FormatBool(b.ExtraNetworks)} {
+		var length [4]byte
+		binary.BigEndian.PutUint32(length[:], uint32(len(value)))
+		_, _ = h.Write(length[:])
+		_, _ = h.Write([]byte(value))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func (b Boundary) Valid() bool {
@@ -77,11 +88,14 @@ func (d Descriptor) Validate() error {
 		return errors.New("readiness: invalid diagnostic origin")
 	}
 	h, _, dnsErr := net.SplitHostPort(d.DNSAddress)
-	if dnsErr != nil || net.ParseIP(h) == nil || net.ParseIP(u.Hostname()) == nil {
+	if dnsErr != nil || net.ParseIP(h).To4() == nil || net.ParseIP(u.Hostname()).To4() == nil {
 		return errors.New("readiness: diagnostic controls require literal IP addresses")
 	}
 	if len(d.URL) > 512 || len(d.DNSAddress) > 256 || len(d.DNSName) > 253 || d.DNSName == "" || strings.ContainsAny(d.DNSName, " /\r\n\x00") {
 		return errors.New("readiness: invalid diagnostic descriptor")
+	}
+	if _, err := dnsQuestion(d.DNSName); err != nil {
+		return err
 	}
 	return nil
 }

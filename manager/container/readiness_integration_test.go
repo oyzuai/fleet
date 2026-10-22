@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oyzuai/fleet/manager"
 	"github.com/oyzuai/fleet/readiness"
 )
 
@@ -76,6 +77,56 @@ func TestReadinessDockerBoundaryAndGatewayReplacement(t *testing.T) {
 	if err = d.CheckReadiness(ctx, binding); err != nil {
 		t.Fatal(err)
 	}
+	// Inspect a real running allocation, then attach an extra network after
+	// startup. A fresh server response carrying old evidence cannot restore it.
+	j := &job{name: "oyzu-9876501-allocation-proof"}
+	labels := map[string]string{LabelPool: d.Pool, LabelManager: d.managerLabel(), LabelJob: "allocation-proof"}
+	env, dns, err := d.openSandbox(ctx, j, labels, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.dns = dns
+	j.id, err = engine.CreateContainer(ctx, j.name, Spec{Image: d.Image, Cmd: []string{"/executor", "gateway", "readiness-canary", "--http", ":8081", "--dns", ":8054"}, User: d.user(), Network: j.network, Env: env, DNS: dns, Labels: labels, ReadOnly: true, PidsLimit: 64, Sysctls: map[string]string{"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = engine.StartContainer(ctx, j.id); err != nil {
+		t.Fatal(err)
+	}
+	d.inUse = map[manager.SlotID]*job{"proof": j}
+	handle := manager.Handle{Slot: "proof", Ref: j.name}
+	if err = d.CheckReadinessAllocation(ctx, handle, binding); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = engine.ConnectNetwork(ctx, "bridge", j.id); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.CheckReadinessAllocation(ctx, handle, binding); err == nil {
+		t.Fatal("running allocation gained an unqualified extra network")
+	}
+	d.SetReadiness(binding)
+	if err = d.CheckReadiness(ctx, binding); err == nil {
+		t.Fatal("old evidence restored a locally failed allocation")
+	}
+	if err = engine.RemoveContainer(ctx, j.id); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.closeSandbox(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	delete(d.inUse, "proof")
+	challenge.ID = "55555555-5555-4555-8555-555555555555"
+	challenge.Deadline = time.Now().Add(90 * time.Second)
+	result = d.ProbeReadiness(ctx, challenge)
+	if result.Outcome != "passed" {
+		t.Fatalf("clean replacement allocation: %+v", result)
+	}
+	binding.Challenge = challenge.ID
+	binding.Evidence = "66666666-6666-4666-8666-666666666666"
+	d.SetReadiness(binding)
+	if err = d.CheckReadiness(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
 	if err = engine.RemoveContainer(ctx, b.Gateway); err != nil {
 		t.Fatal(err)
 	}
@@ -104,5 +155,5 @@ func TestReadinessDockerBoundaryAndGatewayReplacement(t *testing.T) {
 	if err = d.CheckReadiness(ctx, binding); err == nil {
 		t.Fatal("report mode accepted old enforcing assignment")
 	}
-	t.Log("real container: seven checks passed; gateway replacement fenced the old assignment; replacement remeasured; mode change fenced old authority")
+	t.Log("real container: seven checks passed; live extra network fenced use and stale restore; clean boundary remeasured; gateway replacement fenced old assignment; mode change fenced old authority")
 }

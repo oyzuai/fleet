@@ -667,6 +667,7 @@ func (d *Docker) PublishedPort(ctx context.Context, id string, port int) (int, e
 func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (allocation, error) {
 	var out struct {
 		Image      string
+		Config     struct{ Image string }
 		HostConfig struct {
 			Dns         []string
 			Privileged  bool
@@ -681,7 +682,13 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 	if err := d.do(ctx, "GET", "/containers/"+url.PathEscape(id)+"/json", nil, nil, &out); err != nil {
 		return allocation{}, err
 	}
-	a := allocation{DNS: out.HostConfig.Dns, Image: out.Image, Networks: len(out.NetworkSettings.Networks), Privileged: out.HostConfig.Privileged, HostNetwork: out.HostConfig.NetworkMode == "host"}
+	var image struct {
+		ID string `json:"Id"`
+	}
+	if err := d.do(ctx, "GET", "/images/"+url.PathEscape(out.Config.Image)+"/json", nil, nil, &image); err != nil {
+		return allocation{}, err
+	}
+	a := allocation{ImageReference: out.Config.Image, ExpectedImage: image.ID, DNS: out.HostConfig.Dns, Image: out.Image, Networks: len(out.NetworkSettings.Networks), Privileged: out.HostConfig.Privileged, HostNetwork: out.HostConfig.NetworkMode == "host"}
 	for _, n := range out.NetworkSettings.Networks {
 		a.IPv6 = a.IPv6 || n.GlobalIPv6Address != ""
 	}

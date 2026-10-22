@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/oyzuai/fleet/egressgate"
+	"github.com/oyzuai/fleet/manager"
 	"github.com/oyzuai/fleet/readiness"
 )
 
@@ -151,7 +152,7 @@ func (d *Driver) CheckReadiness(ctx context.Context, binding *readiness.Binding)
 	}
 	if b.Fingerprint() != binding.Fingerprint {
 		d.SetReadiness(nil)
-		return errors.New("the execution boundary changed")
+		return readiness.ErrBoundaryChanged
 	}
 	return nil
 }
@@ -162,13 +163,15 @@ type allocationInspector interface {
 	InspectReadinessAllocation(context.Context, string) (allocation, error)
 }
 type allocation struct {
-	DNS         []string
-	Image       string
-	Networks    int
-	IPv6        bool
-	Privileged  bool
-	HostNetwork bool
-	ExtraMount  bool
+	ImageReference string
+	ExpectedImage  string
+	DNS            []string
+	Image          string
+	Networks       int
+	IPv6           bool
+	Privileged     bool
+	HostNetwork    bool
+	ExtraMount     bool
 }
 
 func (d *Driver) checkAllocation(ctx context.Context, id string, expectedDNS []string) error {
@@ -180,11 +183,14 @@ func (d *Driver) checkAllocation(ctx context.Context, id string, expectedDNS []s
 	if err != nil {
 		return err
 	}
+	if a.ImageReference != d.Image || a.ExpectedImage == "" || a.Image != a.ExpectedImage {
+		return fmt.Errorf("%w: actual allocation image differs from its pinned image", readiness.ErrBoundaryChanged)
+	}
 	if !slices.Equal(a.DNS, expectedDNS) {
-		return errors.New("actual DNS upstream differs from the qualified gateway")
+		return fmt.Errorf("%w: actual DNS upstream differs from the qualified gateway", readiness.ErrBoundaryChanged)
 	}
 	if a.Networks != 1 || a.IPv6 || a.Privileged || a.HostNetwork || a.ExtraMount {
-		return errors.New("actual allocation exceeds the qualified container boundary")
+		return fmt.Errorf("%w: actual allocation exceeds the qualified container boundary", readiness.ErrBoundaryChanged)
 	}
 	return nil
 }
@@ -233,7 +239,7 @@ func (d *Driver) ProbeReadiness(ctx context.Context, c readiness.Challenge) (res
 		if clean {
 			add("cleanup", "passed", "RESOURCES_REMOVED")
 		} else {
-			add("cleanup", "failed", "CLEANUP_FAILED")
+			add("cleanup", "inconclusive", "CLEANUP_FAILED")
 		}
 		for _, name := range readiness.CheckNames() {
 			found := false
@@ -313,7 +319,11 @@ func (d *Driver) ProbeReadiness(ctx context.Context, c readiness.Challenge) (res
 		return
 	}
 	if err = d.checkAllocation(ctx, j.id, dns); err != nil {
-		add("direct-egress", "failed", "UNQUALIFIED_ALLOCATION")
+		outcome := "inconclusive"
+		if errors.Is(err, readiness.ErrBoundaryChanged) {
+			outcome = "failed"
+		}
+		add("direct-egress", outcome, "UNQUALIFIED_ALLOCATION")
 		return
 	}
 	if err = d.Engine.StartContainer(ctx, j.id); err != nil {
@@ -350,4 +360,34 @@ func (d *Driver) ProbeReadiness(ctx context.Context, c readiness.Challenge) (res
 		add("control-reachability", "inconclusive", "FIXED_CONTROLS_UNAVAILABLE")
 	}
 	return
+}
+
+func (d *Driver) CheckReadinessAllocation(ctx context.Context, h manager.Handle, b *readiness.Binding) error {
+	if err := d.CheckReadiness(ctx, b); err != nil {
+		return err
+	}
+	j, err := d.job(h)
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	id := j.id
+	dns := slices.Clone(j.dns)
+	d.mu.Unlock()
+	if err = d.checkAllocation(ctx, id, dns); err != nil && errors.Is(err, readiness.ErrBoundaryChanged) {
+		d.mu.Lock()
+		d.localBinding = nil
+		d.readinessPoisoned = true
+		d.readinessPassedChallenge = ""
+		d.mu.Unlock()
+	}
+	return err
+}
+
+// ReadinessInvalidated keeps a known local failure latched until a newly
+// accepted challenge replaces it, including while invalidation delivery retries.
+func (d *Driver) ReadinessInvalidated() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.readinessPoisoned
 }

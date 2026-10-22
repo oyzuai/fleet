@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -121,6 +122,7 @@ type Driver struct {
 
 // job is one job's container.
 type job struct {
+	dns    []string
 	name   string
 	volume string
 	id     string
@@ -324,6 +326,7 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 		}
 		network = j.network
 	}
+	j.dns = slices.Clone(dns)
 	pids := d.PidsLimit
 	if pids <= 0 {
 		pids = defaultPidsLimit

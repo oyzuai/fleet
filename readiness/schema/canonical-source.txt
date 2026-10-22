@@ -1,0 +1,5 @@
+repository: https://github.com/oyzuai/oyzu
+commit: 4f99670bf073a78da72e9ce5bd0f60b68ddcd7e7
+path: docs/contracts/runner-v1
+sha256: 9899726b696a693560a6929c83586b2b403e442526068a78f7bb2fa34f3c8d8b  readiness.schema.json
+sha256: 61b2455f31f6ba33fee427993cbe19522bf08d3a0ea30fad2cb998767887f909  readiness-vectors.json

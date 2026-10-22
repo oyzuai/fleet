@@ -24,8 +24,9 @@ counts as that observation, and a direct gateway REFUSED answer is also required
 
 The server-selected assignment binding accompanies startup. Fleet compares it
 to its current boundary before creating the executor and again before starting
-it. Running assignments are checked locally every five seconds, with a five
-second observation deadline. A confirmed failure clears local authority before
+it. Running assignments and their actual image/DNS/network allocation are checked
+locally every five seconds, with a five second observation deadline. Known
+invalidation delivery is retried while old server authority remains visible. A confirmed failure clears local authority before
 result delivery; an old server response cannot restore it. A fresh successful
 measurement for the same boundary can sustain a running job. Expiry and a known
 boundary change stop local use; teardown has its existing bounded deadline.
@@ -49,6 +50,7 @@ The task builds the executor with the pinned Go toolchain, packages it in a
 local digest-pinned image, creates credential-free HTTP/DNS fixtures and removes
 its containers and registry on exit. The proof passed on 2026-10-22 with Docker
 28.4.0: all seven checks, gateway replacement fencing, replacement measurement,
+live extra-network attachment and stale-restore refusal, clean remeasurement,
 and enforcing-to-report mode fencing. Unit checks for manager drivers, runner
 client, executor, diagnostics and wire validation passed. This is a component
 runtime proof; it does not claim a live App-connected platform build or

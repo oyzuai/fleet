@@ -1,0 +1,649 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/oyzuai/oyzu/blob/main/docs/contracts/runner-v1/readiness.schema.json",
+  "$comment": "SPDX-License-Identifier: Apache-2.0. First-party runner contract; see LICENSE beside this file.",
+  "$defs": {
+    "Boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "support",
+        "driver",
+        "host",
+        "image",
+        "runtime",
+        "network",
+        "gateway",
+        "mode",
+        "ipv6",
+        "extra_networks"
+      ],
+      "properties": {
+        "support": {
+          "type": "string",
+          "enum": [
+            "supported",
+            "unsupported"
+          ]
+        },
+        "driver": {
+          "type": "string",
+          "enum": [
+            "container",
+            "kubernetes",
+            "process",
+            "vm"
+          ]
+        },
+        "host": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "node": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "image": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "runtime": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "network": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "gateway": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "open",
+            "report",
+            "enforce"
+          ]
+        },
+        "ipv6": {
+          "type": "boolean"
+        },
+        "extra_networks": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "dns_address",
+        "dns_name"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 512,
+          "description": "Fixed HTTP(S) origin with a literal IPv4 address, no credentials, path, query or fragment."
+        },
+        "dns_address": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "Literal IPv4 address and port of the fixed positive UDP/TCP DNS control."
+        },
+        "dns_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        }
+      }
+    },
+    "SessionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "boot"
+      ],
+      "properties": {
+        "boot": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        }
+      }
+    },
+    "Session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session",
+        "enabled"
+      ],
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "UUID when enabled; empty for a pool outside this typed capability."
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "SessionBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session"
+      ],
+      "properties": {
+        "session": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "Binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "challenge",
+        "session",
+        "generation",
+        "fingerprint",
+        "evidence",
+        "valid_until"
+      ],
+      "properties": {
+        "challenge": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "session": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "evidence": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "valid_until": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "Challenge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "challenge",
+        "session",
+        "generation",
+        "fingerprint",
+        "suite",
+        "nonce",
+        "descriptor",
+        "dispatched_at",
+        "deadline_at"
+      ],
+      "properties": {
+        "challenge": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "session": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "suite": {
+          "type": "string",
+          "const": "fleet-egress-baseline"
+        },
+        "nonce": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "descriptor": {
+          "$ref": "#/$defs/Descriptor"
+        },
+        "dispatched_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "deadline_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "Subcheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "outcome",
+        "reason"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "allowed-path",
+            "control-reachability",
+            "proxy-refusal",
+            "direct-egress",
+            "dns-confinement",
+            "control-isolation",
+            "cleanup"
+          ]
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "inconclusive"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 128
+        }
+      }
+    },
+    "Result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "challenge",
+        "session",
+        "generation",
+        "fingerprint",
+        "suite",
+        "outcome",
+        "checks"
+      ],
+      "properties": {
+        "challenge": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "session": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "suite": {
+          "type": "string",
+          "const": "fleet-egress-baseline"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "inconclusive"
+          ]
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/Subcheck"
+          },
+          "allOf": [
+            {
+              "contains": {
+                "properties": {
+                  "name": {
+                    "const": "allowed-path"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": {
+                  "name": {
+                    "const": "control-reachability"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": {
+                  "name": {
+                    "const": "proxy-refusal"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": {
+                  "name": {
+                    "const": "direct-egress"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": {
+                  "name": {
+                    "const": "dns-confinement"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": {
+                  "name": {
+                    "const": "control-isolation"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": {
+                  "name": {
+                    "const": "cleanup"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "minContains": 0,
+              "maxContains": 1
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "passed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "checks": {
+                "minItems": 7,
+                "allOf": [
+                  {
+                    "contains": {
+                      "properties": {
+                        "name": {
+                          "const": "allowed-path"
+                        },
+                        "outcome": {
+                          "const": "passed"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "outcome"
+                      ]
+                    }
+                  },
+                  {
+                    "contains": {
+                      "properties": {
+                        "name": {
+                          "const": "control-reachability"
+                        },
+                        "outcome": {
+                          "const": "passed"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "outcome"
+                      ]
+                    }
+                  },
+                  {
+                    "contains": {
+                      "properties": {
+                        "name": {
+                          "const": "proxy-refusal"
+                        },
+                        "outcome": {
+                          "const": "passed"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "outcome"
+                      ]
+                    }
+                  },
+                  {
+                    "contains": {
+                      "properties": {
+                        "name": {
+                          "const": "direct-egress"
+                        },
+                        "outcome": {
+                          "const": "passed"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "outcome"
+                      ]
+                    }
+                  },
+                  {
+                    "contains": {
+                      "properties": {
+                        "name": {
+                          "const": "dns-confinement"
+                        },
+                        "outcome": {
+                          "const": "passed"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "outcome"
+                      ]
+                    }
+                  },
+                  {
+                    "contains": {
+                      "properties": {
+                        "name": {
+                          "const": "control-isolation"
+                        },
+                        "outcome": {
+                          "const": "passed"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "outcome"
+                      ]
+                    }
+                  },
+                  {
+                    "contains": {
+                      "properties": {
+                        "name": {
+                          "const": "cleanup"
+                        },
+                        "outcome": {
+                          "const": "passed"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "outcome"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "checks": {
+                "contains": {
+                  "properties": {
+                    "outcome": {
+                      "const": "failed"
+                    }
+                  },
+                  "required": [
+                    "outcome"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "generation",
+        "fingerprint",
+        "binding",
+        "challenge"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "",
+            "open",
+            "report",
+            "enforce"
+          ]
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "binding": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Binding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "challenge": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Challenge"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Invalidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session",
+        "generation"
+      ],
+      "properties": {
+        "session": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}
