@@ -70,6 +70,9 @@ func (d *Driver) ApplyReadinessMode(ctx context.Context, mode string) (bool, err
 func (d *Driver) SetReadiness(b *readiness.Binding) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if (d.localBinding == nil) != (b == nil) || (d.localBinding != nil && b != nil && *d.localBinding != *b) {
+		d.factsDirty = true
+	}
 	if b == nil {
 		d.localBinding = nil
 		return

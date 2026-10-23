@@ -12,6 +12,12 @@ fixed bounded work for that session and boundary. Ordinary slot reports and
 heartbeats never renew a measurement. A restart fences the old session; this
 slice does not adopt running jobs across sessions.
 
+An inconclusive refresh leaves a previously accepted capability usable only
+until its existing server deadline. The manager's scheduling facts follow that
+accepted binding, rather than the most recent probe outcome. A confirmed bypass,
+changed boundary or expiry removes authority; a successful local probe alone
+cannot advertise acceptance before Runs returns its binding.
+
 The manager runs a secret-free control container on the gateway management
 bridge before and after a diagnostic container built through the ordinary job
 sandbox constructor. The seven checks cover allowed proxy traffic, reachable

@@ -142,6 +142,10 @@ func TestReadinessDockerBoundaryAndGatewayReplacement(t *testing.T) {
 	if !binding.ValidUntil.Equal(d.localBinding.ValidUntil) {
 		t.Fatal("inconclusive probe extended prior successful evidence")
 	}
+	facts, err := d.Facts(ctx)
+	if err != nil || facts[manager.FactEgress] != manager.EgressEnforced || facts[manager.FactUntrusted] != manager.UntrustedAccepted {
+		t.Fatalf("inconclusive refresh removed a still-current accepted capability: %v %v", facts, err)
+	}
 	// Exercise the ordinary typed Start path. The bootstrap must already
 	// have its observed namespace before the one-use handoff archive arrives.
 	// This marker is deliberately not a valid server credential.

@@ -277,6 +277,12 @@ func (d *Driver) removeNetwork(ctx context.Context, name string) error {
 func (d *Driver) egressFacts(f manager.Facts) {
 	d.mu.Lock()
 	ok := d.egressOK
+	if d.managedReadiness {
+		// Facts describe accepted current authority, not the latest probe's
+		// outcome. An inconclusive refresh neither revokes nor extends an
+		// earlier success; failed probes clear/poison that binding immediately.
+		ok = d.localBinding != nil && !d.readinessPoisoned && d.now().Before(d.localBinding.ValidUntil)
+	}
 	d.mu.Unlock()
 	switch d.mode() {
 	case EgressEnforce:
