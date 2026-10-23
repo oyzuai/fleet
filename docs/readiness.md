@@ -71,3 +71,8 @@ still retrieve the assigned tree's promised blobs through its normal scoped
 source credential. This changes neither the admitted commit nor resource-use
 authorization. The actual Git reproduction and focused executor tests cover
 this correction; source-provider deployment qualification remains separate.
+
+Masked log spools use the executor's private temporary area. A non-root
+container whose checkout is `/work` cannot write its parent `/`; that layout
+must still upload diagnostics through the ordinary governed log protocol. The
+regression case exercises an unwritable checkout parent and checks delivery.

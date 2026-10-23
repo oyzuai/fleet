@@ -71,9 +71,10 @@ func newLogCapture(ctx context.Context, cfg Config, token string, job runnerclie
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	c := &logCapture{log: log, client: cfg.Client, token: token, attempt: job.Attempt,
 		ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{}), tickDone: make(chan struct{}), digest: sha256.New(), capBytes: logCapBytes}
-	// WorkDir is the checkout; its private sibling belongs to this attempt.
+	// The checkout's parent may be / in a non-root container. Use the
+	// executor's private temporary area, separate from captured source.
 	var err error
-	c.dir, err = os.MkdirTemp(filepath.Dir(cfg.WorkDir), ".oyzu-log-")
+	c.dir, err = os.MkdirTemp(cfg.SecretsDir, ".oyzu-log-")
 	if err == nil {
 		c.file, err = os.OpenFile(filepath.Join(c.dir, "entries.ndjson"), os.O_CREATE|os.O_RDWR|os.O_EXCL, 0o600)
 	}

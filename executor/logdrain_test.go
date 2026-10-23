@@ -84,12 +84,13 @@ func setupLogDelivery(t *testing.T, status int, recover bool) (*logDeliveryServe
 	t.Cleanup(server.Close)
 	cfg.Client = runnerclient.New(server.URL, server.Client())
 	cfg.LogDrainTimeout = time.Second
+	cfg.SecretsDir = t.TempDir()
 	return s, cfg
 }
 
 func assertLogSpoolRemoved(t *testing.T, cfg Config) {
 	t.Helper()
-	paths, err := filepath.Glob(filepath.Join(filepath.Dir(cfg.WorkDir), ".oyzu-log-*"))
+	paths, err := filepath.Glob(filepath.Join(cfg.SecretsDir, ".oyzu-log-*"))
 	if err != nil || len(paths) != 0 {
 		t.Fatalf("spool remains after Run: %v (%v)", paths, err)
 	}
@@ -139,7 +140,7 @@ func TestRunLogDrainAfterOutcome(t *testing.T) {
 			if state != "succeeded" {
 				t.Fatalf("upload failure changed outcome: %s", state)
 			}
-			paths, err := filepath.Glob(filepath.Join(filepath.Dir(cfg.WorkDir), ".oyzu-log-*", "entries.ndjson"))
+			paths, err := filepath.Glob(filepath.Join(cfg.SecretsDir, ".oyzu-log-*", "entries.ndjson"))
 			if err != nil || len(paths) != 1 {
 				t.Fatalf("spool missing at job finish: %v (%v)", paths, err)
 			}
