@@ -51,11 +51,15 @@ oyzu run readiness-container-proof
 
 The task builds the executor with the pinned Go toolchain, packages it in a
 local digest-pinned image, creates credential-free HTTP/DNS fixtures and removes
-its containers and registry on exit. The proof passed on 2026-10-22 with Docker
+its containers and registry on exit. The proof passed on 2026-10-23 with Docker
 28.4.0: all seven checks, gateway replacement fencing, replacement measurement,
 actual bootstrap handoff, live extra/replacement-network attachment and
-stale-restore refusal, clean remeasurement,
-and enforcing-to-report mode fencing. Unit checks for manager drivers, runner
+stale-restore refusal, clean remeasurement and enforcing-to-report mode fencing.
+An intentionally ineffective boundary produced definitive direct TCP and DNS
+bypass failures. A missing positive DNS fixture was inconclusive and did not
+extend previous evidence. Any direct reply from the off-path DNS fixture proves
+a bypass, including an NXDOMAIN reply; a blocked resolver returning NXDOMAIN
+alone cannot prove confinement. Unit checks for manager drivers, runner
 client, executor, diagnostics and wire validation passed. This is a component
 runtime proof; it does not claim a live App-connected platform build or
 Kubernetes qualification.

@@ -121,12 +121,18 @@ func readinessProbeCommand(args []string) error {
 	if len(servers) != 1 || !readiness.DNSBlockedResolver(ctx, net.JoinHostPort(servers[0], "53"), c.Descriptor.DNSName) || !readiness.DNSRefused(ctx, net.JoinHostPort(u.Hostname(), "53"), c.Descriptor.DNSName) {
 		dnsOK = false
 	}
+	dnsBypass := false
 	for _, network := range []string{"udp", "tcp"} {
 		if readiness.DNSResponds(ctx, network, c.Descriptor.DNSAddress, c.Descriptor.DNSName) {
-			dnsOK = false
+			// An answer from the off-path fixture proves that a direct DNS
+			// route exists, even if its response is NXDOMAIN. Treat this as a
+			// violation so a previous good measurement cannot survive it.
+			dnsBypass = true
 		}
 	}
-	if dnsOK {
+	if dnsBypass {
+		add("dns-confinement", "failed", "DNS_BYPASS_SUCCEEDED")
+	} else if dnsOK {
 		add("dns-confinement", "passed", "DNS_PATH_CONFINED")
 	} else {
 		add("dns-confinement", "inconclusive", "DNS_BOUNDARY_NOT_CONFIRMED")

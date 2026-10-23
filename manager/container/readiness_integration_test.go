@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
@@ -85,6 +86,61 @@ func TestReadinessDockerBoundaryAndGatewayReplacement(t *testing.T) {
 	d.SetReadiness(binding)
 	if err = d.CheckReadiness(ctx, binding); err != nil {
 		t.Fatal(err)
+	}
+	// Exercise a deliberately ineffective boundary with the actual probe
+	// executable. The public canary is reachable directly from the normal
+	// bridge, so both direct TCP and DNS are observed bypasses, regardless
+	// of whether a proxy refused some other request.
+	faultName := "oyzu-9876501-probe-ineffective-boundary"
+	faultChallenge := challenge
+	faultChallenge.ID = "77777777-7777-4777-8777-777777777777"
+	faultRaw, err := json.Marshal(faultChallenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	faultID, err := engine.CreateContainer(ctx, faultName, Spec{Image: d.Image, Cmd: []string{"/executor", "gateway", "probe-readiness", "--challenge", string(faultRaw), "--proxy", descriptor.URL, "--control", "127.0.0.1:1"}, User: d.user(), Network: defaultNetwork, ReadOnly: true, PidsLimit: 256, Labels: map[string]string{LabelPool: d.Pool, LabelManager: d.managerLabel()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = engine.StartContainer(ctx, faultID); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := engine.WaitContainer(ctx, faultID); err != nil || code != 0 {
+		t.Fatalf("ineffective boundary probe: %d %v", code, err)
+	}
+	faultOutput, err := engine.ContainerLogs(ctx, faultID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bypass readiness.Result
+	if err = json.Unmarshal(faultOutput, &bypass); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"direct-egress", "dns-confinement"} {
+		failed := false
+		for _, check := range bypass.Checks {
+			failed = failed || (check.Name == name && check.Outcome == "failed")
+		}
+		if !failed {
+			t.Fatalf("reachable %s was not a definitive failure: %+v", name, bypass)
+		}
+	}
+	if err = engine.RemoveContainer(ctx, faultID); err != nil {
+		t.Fatal(err)
+	}
+
+	// The ordinary driver must distinguish missing positive prerequisites
+	// from an observed bypass and may not manufacture a new success.
+	missing := challenge
+	missing.ID = "88888888-8888-4888-8888-888888888888"
+	missing.Descriptor.DNSName = "absent.readiness.oyzu.test"
+	missing.Deadline = time.Now().Add(30 * time.Second)
+	inconclusive := d.ProbeReadiness(ctx, missing)
+	if inconclusive.Outcome != "inconclusive" {
+		t.Fatalf("missing positive DNS fixture: %+v", inconclusive)
+	}
+	if !binding.ValidUntil.Equal(d.localBinding.ValidUntil) {
+		t.Fatal("inconclusive probe extended prior successful evidence")
 	}
 	// Exercise the ordinary typed Start path. The bootstrap must already
 	// have its observed namespace before the one-use handoff archive arrives.
@@ -183,7 +239,7 @@ func TestReadinessDockerBoundaryAndGatewayReplacement(t *testing.T) {
 	if err = d.CheckReadiness(ctx, binding); err == nil {
 		t.Fatal("report mode accepted old enforcing assignment")
 	}
-	t.Log("real container: seven checks passed; checked bootstrap handoff; live extra/replacement networks fenced use and stale restore; clean boundary remeasured; gateway replacement fenced old assignment; mode change fenced old authority")
+	t.Log("real container: seven checks passed; ineffective boundary exposed direct TCP and DNS bypasses as failures; missing positive fixture was inconclusive without extending evidence; checked bootstrap handoff; live extra/replacement networks fenced use and stale restore; clean boundary remeasured; gateway replacement fenced old assignment; mode change fenced old authority")
 }
 
 // The real engine is observed at the credential handoff point. A test fake
