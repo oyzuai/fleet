@@ -340,23 +340,26 @@ func (d *Docker) ListVolumes(ctx context.Context, labels map[string]string) ([]V
 }
 
 // hostConfig is the part of a container's configuration that decides its
-// isolation. Everything not set here is the engine's default, which keeps
-// the default seccomp and AppArmor profiles and a private PID, IPC and UTS
-// namespace.
+// isolation. The fixed daemonless syscall/proc policy is explicit; AppArmor and
+// private PID, IPC and UTS namespaces retain the engine's normal configuration.
 type hostConfig struct {
-	Privileged     bool
-	CapDrop        []string
-	SecurityOpt    []string
-	Mounts         []mount
-	NetworkMode    string
-	NanoCpus       int64 `json:",omitempty"`
-	Memory         int64 `json:",omitempty"`
-	MemorySwap     int64 `json:",omitempty"`
-	PidsLimit      int64 `json:",omitempty"`
-	ReadonlyRootfs bool
-	Dns            []string                 `json:",omitempty"`
-	Sysctls        map[string]string        `json:",omitempty"`
-	PortBindings   map[string][]portBinding `json:",omitempty"`
+	Privileged                                          bool
+	CapDrop                                             []string
+	CapAdd                                              []string `json:",omitempty"`
+	SecurityOpt                                         []string
+	MaskedPaths                                         []string
+	ReadonlyPaths                                       []string
+	PidMode, IpcMode, UTSMode, CgroupnsMode, UsernsMode string `json:",omitempty"`
+	Mounts                                              []mount
+	NetworkMode                                         string
+	NanoCpus                                            int64 `json:",omitempty"`
+	Memory                                              int64 `json:",omitempty"`
+	MemorySwap                                          int64 `json:",omitempty"`
+	PidsLimit                                           int64 `json:",omitempty"`
+	ReadonlyRootfs                                      bool
+	Dns                                                 []string                 `json:",omitempty"`
+	Sysctls                                             map[string]string        `json:",omitempty"`
+	PortBindings                                        map[string][]portBinding `json:",omitempty"`
 }
 
 type portBinding struct {
@@ -386,9 +389,13 @@ type containerConfig struct {
 // createBody is what CreateContainer sends for spec; it is separate so the
 // isolation it asks for can be tested without an engine.
 func createBody(spec Spec) containerConfig {
+	policy := containerSandboxPolicy()
 	hc := hostConfig{
-		CapDrop:     []string{"ALL"},
-		SecurityOpt: []string{"no-new-privileges:true"},
+		CapDrop:       policy.CapDrop,
+		SecurityOpt:   policy.SecurityOpt,
+		MaskedPaths:   policy.MaskedPaths,
+		ReadonlyPaths: policy.ReadonlyPaths,
+		IpcMode:       policy.IpcMode, CgroupnsMode: policy.CgroupnsMode,
 		NetworkMode: spec.Network,
 		Dns:         spec.DNS,
 		Sysctls:     spec.Sysctls,
@@ -669,14 +676,9 @@ func (d *Docker) PublishedPort(ctx context.Context, id string, port int) (int, e
 
 func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (allocation, error) {
 	var out struct {
-		Image      string
-		Config     struct{ Image string }
-		HostConfig struct {
-			Dns         []string
-			Privileged  bool
-			NetworkMode string
-			Binds       []string
-		}
+		Image           string
+		Config          struct{ Image, User string }
+		HostConfig      hostConfig
 		NetworkSettings struct {
 			Networks map[string]struct {
 				GlobalIPv6Address string
@@ -694,7 +696,8 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 	if err := d.do(ctx, "GET", "/images/"+url.PathEscape(out.Config.Image)+"/json", nil, nil, &image); err != nil {
 		return allocation{}, err
 	}
-	a := allocation{ImageReference: out.Config.Image, ExpectedImage: image.ID, DNS: out.HostConfig.Dns, Image: out.Image, Networks: len(out.NetworkSettings.Networks), Privileged: out.HostConfig.Privileged, HostNetwork: out.HostConfig.NetworkMode == "host"}
+	a := allocation{ImageReference: out.Config.Image, ExpectedImage: image.ID, DNS: out.HostConfig.Dns, Image: out.Image, Networks: len(out.NetworkSettings.Networks), Privileged: out.HostConfig.Privileged, HostNetwork: out.HostConfig.NetworkMode == "host", User: out.Config.User,
+		SandboxApplied: out.HostConfig.sandbox().applied()}
 	for _, n := range out.NetworkSettings.Networks {
 		a.IPv6 = a.IPv6 || n.GlobalIPv6Address != ""
 		a.NetworkIDs = append(a.NetworkIDs, n.NetworkID)
@@ -705,4 +708,9 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 		}
 	}
 	return a, nil
+}
+
+func (h hostConfig) sandbox() sandboxPolicy {
+	return sandboxPolicy{CapDrop: h.CapDrop, CapAdd: h.CapAdd, SecurityOpt: h.SecurityOpt, MaskedPaths: h.MaskedPaths, ReadonlyPaths: h.ReadonlyPaths,
+		PidMode: h.PidMode, IpcMode: h.IpcMode, UTSMode: h.UTSMode, CgroupnsMode: h.CgroupnsMode, UsernsMode: h.UsernsMode}
 }

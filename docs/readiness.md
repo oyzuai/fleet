@@ -12,6 +12,12 @@ fixed bounded work for that session and boundary. Ordinary slot reports and
 heartbeats never renew a measurement. A restart fences the old session; this
 slice does not adopt running jobs across sessions.
 
+The [container build sandbox](container-sandbox.md) defines the fixed syscall
+and proc/sys controls that support the admitted rootless worker. Its policy
+digest and observed engine security configuration are part of runtime identity;
+actual startup/running inspection verifies those controls rather than accepting
+an image assertion or silently using a different profile.
+
 An inconclusive refresh leaves a previously accepted capability usable only
 until its existing server deadline. The manager's scheduling facts follow that
 accepted binding, rather than the most recent probe outcome. A confirmed bypass,

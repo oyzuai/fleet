@@ -5,8 +5,8 @@
 //
 // A job's container gets a fresh workspace volume as its only mount, the
 // claim's startup token as its only credential, CPU, memory and process
-// limits, no capabilities, no privilege escalation and the engine's default
-// seccomp and AppArmor profiles. It never gets the engine's socket and never
+// limits, no capabilities, no privilege escalation, the fixed daemonless OCI
+// syscall/proc policy and the engine's AppArmor configuration. It never gets the engine's socket and never
 // runs a daemon, so container pools do not advertise oyzu.io/docker and take
 // no build that needs a RUN step (IMPL-114).
 package container

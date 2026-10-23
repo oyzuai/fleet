@@ -106,12 +106,14 @@ func (d *Driver) ReadinessBoundary(ctx context.Context) (readiness.Boundary, err
 		mode = EgressOpen
 	}
 	command, _ := json.Marshal(struct {
-		Command []string
-		User    string
-		CPUs    float64
-		Memory  int64
-		Pids    int64
-	}{slices.Clone(d.Command), d.user(), d.CPUs, d.MemoryBytes, d.PidsLimit})
+		Command      []string
+		User         string
+		CPUs         float64
+		Memory       int64
+		Pids         int64
+		Sandbox      string
+		HostSecurity []string
+	}{slices.Clone(d.Command), d.user(), d.CPUs, d.MemoryBytes, d.PidsLimit, sandboxPolicyFingerprint(), slices.Clone(info.SecurityOptions)})
 	runtime := sha256.Sum256(append([]byte(info.ServerVersion), command...))
 	b := readiness.Boundary{Support: "supported", Driver: "container", Host: info.ID, Image: d.Image, Runtime: hex.EncodeToString(runtime[:]), Network: "internal-bridge-ipv4-gateway-dns-v1", Mode: string(mode)}
 	if mode != EgressOpen {
@@ -176,6 +178,8 @@ type allocation struct {
 	Privileged     bool
 	HostNetwork    bool
 	ExtraMount     bool
+	User           string
+	SandboxApplied bool
 }
 
 func (d *Driver) checkAllocation(ctx context.Context, id string, expectedDNS []string, expectedNetwork string) error {
@@ -198,6 +202,9 @@ func (d *Driver) checkAllocation(ctx context.Context, id string, expectedDNS []s
 	}
 	if a.Networks != 1 || a.IPv6 || a.Privileged || a.HostNetwork || a.ExtraMount {
 		return fmt.Errorf("%w: actual allocation exceeds the qualified container boundary", readiness.ErrBoundaryChanged)
+	}
+	if a.User != d.user() || !a.SandboxApplied {
+		return fmt.Errorf("%w: actual syscall/proc or non-root policy differs from the measured runtime", readiness.ErrBoundaryChanged)
 	}
 	return nil
 }
