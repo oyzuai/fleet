@@ -681,6 +681,12 @@ func checkout(ctx context.Context, cfg Config, token string, job runnerclient.Jo
 	for _, args := range steps {
 		cmd := exec.CommandContext(ctx, cfg.Git, args...)
 		cmd.Dir, cmd.Env = cfg.WorkDir, env
+		if args[0] == "fetch" {
+			// Explicit acquisition must not recursively lazy-fetch a missing
+			// tip while initializing a promisor remote. Checkout may still
+			// fetch the assigned tree's promised blobs with this source token.
+			cmd.Env = append(cmd.Env, "GIT_NO_LAZY_FETCH=1")
+		}
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {

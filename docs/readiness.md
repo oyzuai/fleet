@@ -63,3 +63,11 @@ alone cannot prove confinement. Unit checks for manager drivers, runner
 client, executor, diagnostics and wire validation passed. This is a component
 runtime proof; it does not claim a live App-connected platform build or
 Kubernetes qualification.
+
+The connected source-checkout work also exposed recursive lazy acquisition when
+initializing a partial clone with some Git versions. The explicit `fetch` now
+sets `GIT_NO_LAZY_FETCH=1` for that command only; the subsequent checkout can
+still retrieve the assigned tree's promised blobs through its normal scoped
+source credential. This changes neither the admitted commit nor resource-use
+authorization. The actual Git reproduction and focused executor tests cover
+this correction; source-provider deployment qualification remains separate.
