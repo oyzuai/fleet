@@ -68,3 +68,15 @@ adaptation and commercial distribution with its notices retained; this data
 keeps its own license alongside Fleet's FSL implementation. No Wardyn code or
 dependency is used. crun remains an existing Oyzu-managed runtime; the disposable
 test uses the normally installed binary.
+
+The subsequent owning-service connected local flow passed in 297.54 seconds at
+Fleet `21f47dbd64279e1857edf6939a5824f4ab61700a`, using the normally installed
+Oyzu engine built from `29951f06982968903da84448157878f074d29841`. The admitted
+worker independently verified its plan, completed all 14 native actions in crun,
+and delivered 22 accepted output members whose byte counts and SHA-256 values
+matched their descriptors. The same run passed public action/ownership checks,
+Access/database outages and actual gateway/mode replacement. Its 31 checks
+complement the earlier native startup/running-loss and elapsed-expiry evidence.
+Source/identity endpoints were authenticated provider fixtures; hosted deployment,
+pinned-node Kubernetes and other host policies remain separate qualifications.
+This is manager-measured evidence, not independent host attestation.
