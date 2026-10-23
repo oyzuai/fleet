@@ -58,7 +58,10 @@ type Engine interface {
 
 // Info is the engine host's platform.
 type Info struct {
-	OSType string
+	ID              string
+	ServerVersion   string
+	SecurityOptions []string
+	OSType          string
 	// Architecture is the kernel's: x86_64, aarch64 or arm64.
 	Architecture string
 	NCPU         int
@@ -104,9 +107,12 @@ type NetworkSpec struct {
 
 // Network is a network in a listing.
 type Network struct {
-	ID     string
-	Name   string
-	Labels map[string]string
+	Internal bool
+	IPv6     bool
+	Driver   string
+	ID       string
+	Name     string
+	Labels   map[string]string
 	// Subnet is the network's first address range, in CIDR form.
 	Subnet string
 }

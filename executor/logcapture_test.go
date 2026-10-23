@@ -137,11 +137,14 @@ func (r *logReceiver) serve(w http.ResponseWriter, req *http.Request) {
 	_ = json.NewEncoder(w).Encode(runnerclient.LogAck{NextSeq: int64(len(r.chunks) + 1), State: "open"})
 }
 
-func captureForTest(t *testing.T, handler http.Handler) *logCapture {
+func captureForTest(t *testing.T, handler http.Handler, configure ...func(*Config)) *logCapture {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	cfg := Config{Client: runnerclient.New(srv.URL, srv.Client()), WorkDir: filepath.Join(t.TempDir(), "checkout")}
+	for _, apply := range configure {
+		apply(&cfg)
+	}
 	c := newLogCapture(context.Background(), cfg, "job-token", runnerclient.Job{Attempt: 1}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(func() {
 		c.cancel()
@@ -158,6 +161,33 @@ func captureForTest(t *testing.T, handler http.Handler) *logCapture {
 		}
 	})
 	return c
+}
+
+func TestContainerLogsDoNotNeedAWritableCheckoutParent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write the deliberately read-only checkout parent")
+	}
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(parent, 0o755)
+	r := &logReceiver{}
+	c := captureForTest(t, http.HandlerFunc(r.serve), func(cfg *Config) {
+		cfg.WorkDir = filepath.Join(parent, "checkout")
+		cfg.SecretsDir = t.TempDir()
+	})
+	c.system("A non-root container diagnostic survives.\n", nil)
+	c.finish()
+	if !c.wait(5 * time.Second) {
+		t.Fatal("masked diagnostic logs did not upload")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entries := logEntries(t, r)
+	if len(entries) != 1 || entries[0].Text != "A non-root container diagnostic survives.\n" || r.finish == nil || r.finish.Incomplete {
+		t.Fatalf("container diagnostics were lost: %+v / %+v", entries, r.finish)
+	}
 }
 
 func logEntries(t *testing.T, r *logReceiver) []runnerclient.LogEntry {

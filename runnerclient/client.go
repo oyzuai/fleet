@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/oyzuai/fleet/assertion"
+	"github.com/oyzuai/fleet/readiness"
 	"github.com/oyzuai/fleet/telemetry"
 )
 
@@ -120,7 +121,8 @@ type Claim struct {
 	// Egress is where the job may connect, enforced by the manager's
 	// gateway. A runs that predates it sends none, which allows only the
 	// runs server.
-	Egress ClaimEgress `json:"egress"`
+	Egress    ClaimEgress        `json:"egress"`
+	Readiness *readiness.Binding `json:"readiness,omitempty"`
 }
 
 // ClaimEgress is a job's network allow list.
@@ -138,9 +140,15 @@ type EgressAllow struct {
 // Claim takes the next job in the manager's pool, or returns nil when there
 // is none.
 func (c *Client) Claim(ctx context.Context, access string) (*Claim, error) {
+	return c.ClaimSession(ctx, access, "")
+}
+
+func (c *Client) ClaimSession(ctx context.Context, access, session string) (*Claim, error) {
 	var out Claim
 	found := false
-	err := c.doStatus(ctx, "claim", access, nil, &out, func(status int) { found = status == http.StatusOK })
+	err := c.doStatus(ctx, "claim", access, struct {
+		Session string `json:"session,omitempty"`
+	}{session}, &out, func(status int) { found = status == http.StatusOK })
 	if err != nil || !found {
 		return nil, err
 	}
@@ -166,8 +174,10 @@ func (c *Client) Demand(ctx context.Context, access string) (Demand, error) {
 // Report is what a manager tells runs about itself: the oyzu.io/ facts its
 // driver discovered and its slots.
 type Report struct {
-	Facts map[string]string `json:"facts"`
-	Slots Slots             `json:"slots"`
+	Facts    map[string]string   `json:"facts"`
+	Slots    Slots               `json:"slots"`
+	Session  string              `json:"session,omitempty"`
+	Boundary *readiness.Boundary `json:"boundary,omitempty"`
 }
 
 // Slots counts a manager's executor slots.
@@ -244,8 +254,14 @@ type Started struct {
 
 // Start spends the startup token.
 func (c *Client) Start(ctx context.Context, startup string) (Started, error) {
+	return c.StartWithReadiness(ctx, startup, nil)
+}
+
+func (c *Client) StartWithReadiness(ctx context.Context, startup string, b *readiness.Binding) (Started, error) {
 	var out Started
-	return out, c.do(ctx, "job/start", startup, nil, &out)
+	return out, c.do(ctx, "job/start", startup, struct {
+		Readiness *readiness.Binding `json:"readiness,omitempty"`
+	}{b}, &out)
 }
 
 // Heartbeat renews the job's lease and token.

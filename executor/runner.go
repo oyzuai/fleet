@@ -29,6 +29,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/oyzuai/fleet/kindrunner"
+	"github.com/oyzuai/fleet/readiness"
 	"github.com/oyzuai/fleet/runnerclient"
 	"github.com/oyzuai/fleet/telemetry"
 )
@@ -42,9 +43,13 @@ const (
 
 // Config configures one run.
 type Config struct {
-	Client *runnerclient.Client
+	Readiness *readiness.Binding
+	Client    *runnerclient.Client
 	// StartupTokenFile is read once and deleted.
 	StartupTokenFile string
+	// WaitForStartupToken waits for a final ready marker from the manager,
+	// which is delivered only after the running allocation was verified.
+	WaitForStartupToken bool
 	// StartupTokenEnv, used when StartupTokenFile is empty, names an
 	// environment variable holding the token, for executors whose files are
 	// read-only (a Kubernetes Secret). It is read once and unset, so no
@@ -119,7 +124,14 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	var startup string
 	var err error
 	if cfg.StartupTokenFile != "" {
-		startup, err = readOnce(cfg.StartupTokenFile)
+		if cfg.WaitForStartupToken {
+			if cfg.Readiness == nil {
+				return errors.New("allocation handoff needs a readiness binding")
+			}
+			startup, err = readReadinessStartupToken(ctx, cfg.StartupTokenFile)
+		} else {
+			startup, err = readOnce(cfg.StartupTokenFile)
+		}
 	} else {
 		startup, err = readEnvOnce(cfg.StartupTokenEnv)
 	}
@@ -148,7 +160,7 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 			span.End(o, reason)
 		}
 	}()
-	st, err := cfg.Client.Start(ctx, startup)
+	st, err := cfg.Client.StartWithReadiness(ctx, startup, cfg.Readiness)
 	if err != nil {
 		return fmt.Errorf("start the job: %w", err)
 	}
@@ -669,6 +681,12 @@ func checkout(ctx context.Context, cfg Config, token string, job runnerclient.Jo
 	for _, args := range steps {
 		cmd := exec.CommandContext(ctx, cfg.Git, args...)
 		cmd.Dir, cmd.Env = cfg.WorkDir, env
+		if args[0] == "fetch" {
+			// Explicit acquisition must not recursively lazy-fetch a missing
+			// tip while initializing a promisor remote. Checkout may still
+			// fetch the assigned tree's promised blobs with this source token.
+			cmd.Env = append(cmd.Env, "GIT_NO_LAZY_FETCH=1")
+		}
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
@@ -758,4 +776,35 @@ func (t *tail) String() string {
 		lines = append(append([]string{}, lines...), t.part)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func readReadinessStartupToken(ctx context.Context, path string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		_, err := os.Stat(path + ".ready")
+		if err == nil {
+			token, err := readOnce(path)
+			if err != nil {
+				return "", err
+			}
+			if err = os.Remove(path + ".ready"); err != nil {
+				return "", err
+			}
+			return token, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }

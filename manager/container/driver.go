@@ -5,8 +5,8 @@
 //
 // A job's container gets a fresh workspace volume as its only mount, the
 // claim's startup token as its only credential, CPU, memory and process
-// limits, no capabilities, no privilege escalation and the engine's default
-// seccomp and AppArmor profiles. It never gets the engine's socket and never
+// limits, no capabilities, no privilege escalation, the fixed daemonless OCI
+// syscall/proc policy and the engine's AppArmor configuration. It never gets the engine's socket and never
 // runs a daemon, so container pools do not advertise oyzu.io/docker and take
 // no build that needs a RUN step (IMPL-114).
 package container
@@ -21,12 +21,15 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"encoding/json"
 	"github.com/oyzuai/fleet/manager"
+	"github.com/oyzuai/fleet/readiness"
 	"github.com/oyzuai/fleet/runnerclient"
 )
 
@@ -108,12 +111,18 @@ type Driver struct {
 	testing, tested, egressOK, factsDirty bool
 	lastTest                              time.Time
 
-	gwMu sync.Mutex
-	gw   *gateway
+	readinessPoisoned        bool
+	readinessPassedChallenge string
+	managedReadiness         bool
+	activeMode               EgressMode
+	localBinding             *readiness.Binding
+	gwMu                     sync.Mutex
+	gw                       *gateway
 }
 
 // job is one job's container.
 type job struct {
+	dns    []string
 	name   string
 	volume string
 	id     string
@@ -122,6 +131,7 @@ type job struct {
 	// The job's sandbox, when egress is controlled: its network, the gateway
 	// it was joined to and whether the gateway knows the job.
 	network    string
+	networkID  string
 	gateway    *gateway
 	registered bool
 }
@@ -229,7 +239,7 @@ func (d *Driver) Capacity(context.Context) (manager.Capacity, error) {
 		}
 		return c, d.pullError
 	}
-	if d.Egress == EgressEnforce && !d.tested {
+	if !d.managedReadiness && d.modeLocked() == EgressEnforce && !d.tested {
 		// Not ready until the self-test says whether the pool enforces.
 		if !d.testing {
 			d.testing, d.lastTest = true, d.now()
@@ -238,7 +248,7 @@ func (d *Driver) Capacity(context.Context) (manager.Capacity, error) {
 		c.Provisioning = c.Max - c.Running
 		return c, nil
 	}
-	if d.Egress == EgressEnforce && !d.egressOK && !d.testing && d.now().Sub(d.lastTest) >= pullRetry {
+	if !d.managedReadiness && d.modeLocked() == EgressEnforce && !d.egressOK && !d.testing && d.now().Sub(d.lastTest) >= pullRetry {
 		d.testing, d.lastTest = true, d.now()
 		go d.selfTest(context.Background())
 	}
@@ -278,6 +288,9 @@ func (d *Driver) Provision(context.Context, int) error { return nil }
 // Start implements manager.Driver: a fresh workspace volume, then the
 // container, then the startup token copied in, then start.
 func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.Claim) (manager.Handle, error) {
+	if err := d.CheckReadiness(ctx, c.Readiness); err != nil {
+		return manager.Handle{}, err
+	}
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
 	name := fmt.Sprintf("oyzu-%d-job-%d-%d-%s", d.Manager, c.JobID, c.Attempt, hex.EncodeToString(suffix))
@@ -314,16 +327,21 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 		}
 		network = j.network
 	}
+	j.dns = slices.Clone(dns)
 	pids := d.PidsLimit
 	if pids <= 0 {
 		pids = defaultPidsLimit
 	}
 	cmd := append(append([]string{}, d.Command...),
 		"--server", d.Server, "--startup-token-file", TokenDir+"/"+tokenFile, "--work-dir", WorkDir)
+	if c.Readiness != nil {
+		raw, _ := json.Marshal(c.Readiness)
+		cmd = append(cmd, "--readiness-binding", string(raw), "--wait-for-startup-token")
+	}
 	id, err := d.Engine.CreateContainer(ctx, name, Spec{
 		Image: d.Image, Cmd: cmd, User: d.user(), Labels: labels, Volume: j.volume, WorkDir: WorkDir,
 		NanoCPUs: int64(d.CPUs * 1e9), MemoryBytes: d.MemoryBytes, PidsLimit: pids, Network: network,
-		Env: env, DNS: dns,
+		Env: env, DNS: dns, Sysctls: map[string]string{"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"},
 	})
 	if err != nil {
 		return h, fmt.Errorf("create the container: %w", err)
@@ -331,15 +349,31 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 	d.mu.Lock()
 	j.id = id
 	d.mu.Unlock()
-	archive, err := tokenArchive(d.user(), c.StartupToken)
+	archive, err := tokenArchiveWithReady(d.user(), c.StartupToken, c.Readiness != nil)
 	if err != nil {
 		return h, err
 	}
-	if err := d.Engine.CopyFiles(ctx, id, "/", archive); err != nil {
-		return h, fmt.Errorf("copy the startup token in: %w", err)
+	if c.Readiness == nil {
+		if err = d.Engine.CopyFiles(ctx, id, "/", archive); err != nil {
+			return h, fmt.Errorf("copy the startup token in: %w", err)
+		}
 	}
-	if err := d.Engine.StartContainer(ctx, id); err != nil {
+	if err = d.Engine.StartContainer(ctx, id); err != nil {
 		return h, fmt.Errorf("start the container: %w", err)
+	}
+	if c.Readiness != nil {
+		// Only the trusted executor bootstrap is running. It cannot spend a
+		// startup token until the actual namespace is observed and this archive's
+		// final ready marker is delivered. No job code or source runs beforehand.
+		if err = d.checkAllocation(ctx, id, dns, j.networkID); err != nil {
+			return h, err
+		}
+		if err = d.CheckReadiness(ctx, c.Readiness); err != nil {
+			return h, err
+		}
+		if err = d.Engine.CopyFiles(ctx, id, "/", archive); err != nil {
+			return h, fmt.Errorf("handoff the startup token after allocation check: %w", err)
+		}
 	}
 	return h, nil
 }
@@ -347,6 +381,10 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 // tokenArchive is a tar holding TokenDir, owned by the job's user and
 // closed to anyone else, with the startup token in it.
 func tokenArchive(user, token string) ([]byte, error) {
+	return tokenArchiveWithReady(user, token, false)
+}
+
+func tokenArchiveWithReady(user, token string, ready bool) ([]byte, error) {
 	uidS, gidS, _ := strings.Cut(user, ":")
 	uid, _ := strconv.Atoi(uidS)
 	gid, err := strconv.Atoi(gidS)
@@ -368,6 +406,11 @@ func tokenArchive(user, token string) ([]byte, error) {
 	}
 	if _, err := tw.Write([]byte(token)); err != nil {
 		return nil, err
+	}
+	if ready {
+		if err := tw.WriteHeader(&tar.Header{Name: dir + "/" + tokenFile + ".ready", Typeflag: tar.TypeReg, Mode: 0o400, Uid: uid, Gid: gid, Size: 0, ModTime: now}); err != nil {
+			return nil, err
+		}
 	}
 	if err := tw.Close(); err != nil {
 		return nil, err

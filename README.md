@@ -99,6 +99,12 @@ Alongside them:
 
 ## Executor images
 
+Linux container jobs use the fixed
+[container build sandbox](docs/container-sandbox.md), including its default-deny
+syscall policy, rootless OCI namespace setup and measured proc/sys controls.
+The pinned runtime must be provisioned in an executor image through normal
+Oyzu installation. A working network probe does not install a missing runtime.
+
 The default manager driver changed from `process` to `container`. A manager
 that ran with no `--driver` now needs `--image NAME@sha256:DIGEST` (and a
 Docker or Podman engine), or `--driver process` to keep the old behaviour. The

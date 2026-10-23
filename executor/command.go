@@ -2,8 +2,10 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
+	"github.com/oyzuai/fleet/readiness"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -28,6 +30,7 @@ func Command(args []string, log *slog.Logger) error {
 	}
 	fs := flag.NewFlagSet("oyzu-executor", flag.ContinueOnError)
 	server := fs.String("server", "", "the runs URL")
+	waitToken := fs.Bool("wait-for-startup-token", false, "wait for the manager to verify allocation and finish credential handoff")
 	tokenFile := fs.String("startup-token-file", "", "file holding the job's startup token; deleted once read")
 	tokenEnv := fs.String("startup-token-env", "", "variable holding the job's startup token; unset once read")
 	secretsDir := fs.String("secrets-dir", "", "private job temporary directory; defaults to the system temp directory")
@@ -44,6 +47,7 @@ func Command(args []string, log *slog.Logger) error {
 	docker := fs.String("docker", "docker", "the docker CLI that image kinds run with")
 	dockerNetwork := fs.String("docker-network", "", "the network image kinds join (docker run --network); Docker's default when empty")
 	dockerEnv := fs.String("docker-env", "", "comma-separated names of this process's variables that image kinds also get")
+	bindingJSON := fs.String("readiness-binding", "", "server-selected non-secret allocation binding")
 	gateway := fs.String("egress-gateway", os.Getenv(EnvEgressGateway), "the pool's egress gateway proxy URL on this job's network; the credential proxy chains through it")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -53,6 +57,16 @@ func Command(args []string, log *slog.Logger) error {
 	}
 	if *secretsDir != "" {
 		if err := os.MkdirAll(*secretsDir, 0o700); err != nil {
+			return err
+		}
+	}
+	var binding *readiness.Binding
+	if *bindingJSON != "" {
+		if len(*bindingJSON) > 2048 {
+			return errors.New("oversized readiness binding")
+		}
+		binding = &readiness.Binding{}
+		if err := json.Unmarshal([]byte(*bindingJSON), binding); err != nil {
 			return err
 		}
 	}
@@ -72,25 +86,27 @@ func Command(args []string, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(telemetry.WithParent(context.Background(), tcfg.Parent), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return Run(ctx, Config{
-		Client:           runnerclient.New(*server, nil),
-		StartupTokenFile: *tokenFile,
-		StartupTokenEnv:  *tokenEnv,
-		WorkDir:          *workDir,
-		SecretsDir:       *secretsDir,
-		JobDir:           *jobDir,
-		GitURL:           *gitURL,
-		Git:              *git,
-		Oyzu:             *oyzu,
-		Renovate:         *renovate,
-		GitHubAPI:        *apiURL,
-		GitAuthor:        *gitAuthor,
-		KindsDir:         *kindsDir,
-		KindStateDir:     *kindState,
-		Docker:           *docker,
-		DockerNetwork:    *dockerNetwork,
-		DockerEnv:        splitList(*dockerEnv),
-		EgressGateway:    *gateway,
-		Log:              log,
+		Client:              runnerclient.New(*server, nil),
+		Readiness:           binding,
+		StartupTokenFile:    *tokenFile,
+		WaitForStartupToken: *waitToken,
+		StartupTokenEnv:     *tokenEnv,
+		WorkDir:             *workDir,
+		SecretsDir:          *secretsDir,
+		JobDir:              *jobDir,
+		GitURL:              *gitURL,
+		Git:                 *git,
+		Oyzu:                *oyzu,
+		Renovate:            *renovate,
+		GitHubAPI:           *apiURL,
+		GitAuthor:           *gitAuthor,
+		KindsDir:            *kindsDir,
+		KindStateDir:        *kindState,
+		Docker:              *docker,
+		DockerNetwork:       *dockerNetwork,
+		DockerEnv:           splitList(*dockerEnv),
+		EgressGateway:       *gateway,
+		Log:                 log,
 	})
 }
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/oyzuai/fleet/egressgate"
 	"github.com/oyzuai/fleet/manager"
+	"github.com/oyzuai/fleet/readiness"
 	"github.com/oyzuai/fleet/runnerclient"
 )
 
@@ -62,7 +63,7 @@ type GatewayControl interface {
 }
 
 // sandboxed reports whether jobs go through the gateway.
-func (d *Driver) sandboxed() bool { return d.Egress == EgressEnforce || d.Egress == EgressReport }
+func (d *Driver) sandboxed() bool { return d.mode() == EgressEnforce || d.mode() == EgressReport }
 
 // gateway is the manager's running gateway container.
 type gateway struct {
@@ -84,12 +85,12 @@ func (d *Driver) gatewayName() string { return fmt.Sprintf("oyzu-%d-gateway", d.
 // gatewayCmd starts the gateway from the executor image.
 func (d *Driver) gatewayCmd() []string {
 	mode := egressgate.ModeEnforce
-	if d.Egress == EgressReport {
+	if d.mode() == EgressReport {
 		mode = egressgate.ModeReport
 	}
 	return []string{d.Command[0], "gateway", "--mode", string(mode), "--pool", d.Pool,
 		"--proxy", fmt.Sprintf(":%d", gatewayProxyPort), "--dns", fmt.Sprintf(":%d", gatewayDNSPort),
-		"--control", fmt.Sprintf(":%d", gatewayControlPort)}
+		"--control", fmt.Sprintf(":%d", gatewayControlPort), "--control-interface", "eth0"}
 }
 
 // ensureGateway returns the manager's gateway, starting it if it is not
@@ -152,7 +153,7 @@ func (d *Driver) ensureGateway(ctx context.Context) (*gateway, error) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	d.gw = gw
-	d.log().Info("started the egress gateway", "gateway", name, "mode", d.Egress)
+	d.log().Info("started the egress gateway", "gateway", name, "mode", d.mode())
 	return gw, nil
 }
 
@@ -199,13 +200,19 @@ func (d *Driver) openSandbox(ctx context.Context, j *job, labels map[string]stri
 	if err != nil {
 		return nil, nil, err
 	}
-	n, err := d.Engine.CreateNetwork(ctx, j.name, NetworkSpec{Labels: labels, Internal: d.Egress == EgressEnforce})
+	n, err := d.Engine.CreateNetwork(ctx, j.name, NetworkSpec{Labels: labels, Internal: d.mode() == EgressEnforce})
 	if err != nil {
 		return nil, nil, fmt.Errorf("create the job network: %w", err)
 	}
 	d.mu.Lock()
 	j.network = j.name
+	j.networkID = n.ID
+	managed := d.managedReadiness
+	mode := d.modeLocked()
 	d.mu.Unlock()
+	if managed && mode == EgressEnforce && (n.ID == "" || !n.Internal || n.IPv6 || n.Driver != "bridge") {
+		return nil, nil, fmt.Errorf("%w: engine did not apply the qualified internal IPv4 bridge", readiness.ErrBoundaryChanged)
+	}
 	if n.Subnet == "" {
 		return nil, nil, fmt.Errorf("the engine gave network %s no subnet", n.Name)
 	}
@@ -222,7 +229,7 @@ func (d *Driver) openSandbox(ctx context.Context, j *job, labels map[string]stri
 	d.mu.Lock()
 	j.registered = true
 	d.mu.Unlock()
-	if d.Egress == EgressEnforce {
+	if d.mode() == EgressEnforce {
 		dns = []string{ip}
 	}
 	return proxyEnv(ip), dns, nil
@@ -270,8 +277,14 @@ func (d *Driver) removeNetwork(ctx context.Context, name string) error {
 func (d *Driver) egressFacts(f manager.Facts) {
 	d.mu.Lock()
 	ok := d.egressOK
+	if d.managedReadiness {
+		// Facts describe accepted current authority, not the latest probe's
+		// outcome. An inconclusive refresh neither revokes nor extends an
+		// earlier success; failed probes clear/poison that binding immediately.
+		ok = d.localBinding != nil && !d.readinessPoisoned && d.now().Before(d.localBinding.ValidUntil)
+	}
 	d.mu.Unlock()
-	switch d.Egress {
+	switch d.mode() {
 	case EgressEnforce:
 		if ok {
 			f[manager.FactEgress] = manager.EgressEnforced
