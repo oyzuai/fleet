@@ -1,7 +1,7 @@
 # Builds, signs and publishes a fleet release when a version tag is pushed.
 #
 # Every release carries, for each binary and platform:
-#   - the binary in a .tar.gz with LICENSE.md,
+#   - the binary in a .tar.gz with LICENSE.md and additional license notices,
 #   - a CycloneDX SBOM of the modules compiled into it,
 # plus SHA256SUMS over all of them, its Sigstore bundle, and SLSA build
 # provenance attested by GitHub for every asset.
@@ -69,7 +69,10 @@ jobs:
               stem="${name}_${version}_${GOOS}_${GOARCH}"
               mkdir -p "build/$stem"
               go build -ldflags "-s -w -X main.version=$version" -o "build/$stem/$name" "./cmd/$dir"
-              cp LICENSE.md "build/$stem/"
+              cp LICENSE.md THIRD_PARTY_NOTICES.md "build/$stem/"
+              mkdir -p "build/$stem/third-party/moby-profiles" "build/$stem/third-party/runner-v1"
+              cp manager/container/profiles/LICENSE manager/container/profiles/docker-default.json "build/$stem/third-party/moby-profiles/"
+              cp readiness/schema/LICENSE "build/$stem/third-party/runner-v1/"
               tar -C build -czf "dist/$stem.tar.gz" "$stem"
               cyclonedx-gomod app -json -licenses -main "cmd/$dir" -output "dist/$stem.cdx.json" .
             done

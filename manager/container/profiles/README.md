@@ -11,3 +11,6 @@ Fleet's `sandbox.go` derives the fixed daemonless OCI profile from this input.
 It retains default-deny behavior and adds the bounded namespace setup rules
 listed there. The profile's applied options and filesystem controls are part of
 the readiness runtime fingerprint and are inspected before startup handoff.
+
+Binary release archives retain the input, full license and attribution through
+the root `THIRD_PARTY_NOTICES.md` and `third-party/moby-profiles/` directory.
