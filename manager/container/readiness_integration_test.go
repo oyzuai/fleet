@@ -146,6 +146,23 @@ func TestReadinessDockerBoundaryAndGatewayReplacement(t *testing.T) {
 	if err != nil || facts[manager.FactEgress] != manager.EgressEnforced || facts[manager.FactUntrusted] != manager.UntrustedAccepted {
 		t.Fatalf("inconclusive refresh removed a still-current accepted capability: %v %v", facts, err)
 	}
+	// Inject one failed cleanup operation around an otherwise real probe.
+	// Qualification cannot turn a measured pass into a pass with leaked resources.
+	cleanupChallenge := challenge
+	cleanupChallenge.ID = "99999999-9999-4999-8999-999999999999"
+	cleanupChallenge.Deadline = time.Now().Add(30 * time.Second)
+	cleanupNetwork := "oyzu-9876501-probe-" + cleanupChallenge.ID
+	observed.failNetwork = cleanupNetwork
+	cleanupResult := d.ProbeReadiness(ctx, cleanupChallenge)
+	if cleanupResult.Outcome != "inconclusive" || observed.failNetwork != "" {
+		t.Fatalf("failed cleanup manufactured a pass: %+v", cleanupResult)
+	}
+	if d.localBinding == nil || !binding.ValidUntil.Equal(d.localBinding.ValidUntil) {
+		t.Fatal("cleanup failure changed the prior evidence deadline")
+	}
+	if err = engine.RemoveNetwork(ctx, cleanupNetwork); err != nil {
+		t.Fatal("remove the deliberately retained test network", err)
+	}
 	// Exercise the ordinary typed Start path. The bootstrap must already
 	// have its observed namespace before the one-use handoff archive arrives.
 	// This marker is deliberately not a valid server credential.
@@ -250,7 +267,16 @@ func TestReadinessDockerBoundaryAndGatewayReplacement(t *testing.T) {
 // returning success from StartContainer cannot establish this ordering.
 type readinessProofEngine struct {
 	*Docker
-	handoffs int
+	handoffs    int
+	failNetwork string
+}
+
+func (e *readinessProofEngine) RemoveNetwork(ctx context.Context, name string) error {
+	if name == e.failNetwork {
+		e.failNetwork = ""
+		return errors.New("task-owned cleanup fault")
+	}
+	return e.Docker.RemoveNetwork(ctx, name)
 }
 
 func (e *readinessProofEngine) CopyFiles(ctx context.Context, id, path string, archive []byte) error {

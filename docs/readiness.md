@@ -70,6 +70,11 @@ client, executor, diagnostics and wire validation passed. This is a component
 runtime proof; it does not claim a live App-connected platform build or
 Kubernetes qualification.
 
+The component task also injects one failed network-cleanup operation around an
+actual probe. It requires an inconclusive result with no extension of previous
+evidence, then removes the deliberately retained task network. This fault is
+injected at the Engine interface; the probe itself still runs in real Docker.
+
 The connected source-checkout work also exposed recursive lazy acquisition when
 initializing a partial clone with some Git versions. The explicit `fetch` now
 sets `GIT_NO_LAZY_FETCH=1` for that command only; the subsequent checkout can
