@@ -135,12 +135,13 @@ func newDriver(api *fakeAPI) *Driver {
 }
 
 func TestPodIsRestricted(t *testing.T) {
+	const decision = "11111111-2222-4333-8444-555555555555"
 	api := newFakeAPI()
 	d := newDriver(api)
 	if err := d.Check(); err != nil {
 		t.Fatal(err)
 	}
-	h, err := d.Start(context.Background(), "0", runnerclient.Claim{JobID: 42, Attempt: 2, StartupToken: "st_secret"})
+	h, err := d.Start(context.Background(), "0", runnerclient.Claim{JobID: 42, Attempt: 2, StartupToken: "st_secret", ExecutionTrustDecision: decision})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +169,7 @@ func TestPodIsRestricted(t *testing.T) {
 		!slices.Equal(c.SecurityContext.Capabilities.Drop, []string{"ALL"}) {
 		t.Fatalf("container security = %s", raw)
 	}
-	wantArgs := []string{"--oyzu", "oyzu", "--server", "https://runs.example", "--startup-token-env", TokenEnv, "--work-dir", "/work"}
+	wantArgs := []string{"--oyzu", "oyzu", "--server", "https://runs.example", "--startup-token-env", TokenEnv, "--work-dir", "/work", "--execution-trust-decision", decision}
 	if !slices.Equal(c.Command, []string{"oyzu-executor"}) || !slices.Equal(c.Args, wantArgs) {
 		t.Fatalf("command %q args %q", c.Command, c.Args)
 	}

@@ -2,7 +2,10 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oyzuai/fleet/executor"
 	"github.com/oyzuai/fleet/runnerclient"
 )
 
@@ -22,6 +26,12 @@ func TestHelperProcess(t *testing.T) {
 		return
 	}
 	switch mode {
+	case "decision-echo":
+		args := slices.Index(os.Args, "--")
+		if args < 0 || !errors.Is(executor.Command(os.Args[args+1:], quiet()), runnerclient.ErrUnauthenticated) {
+			os.Exit(42)
+		}
+		os.Exit(0)
 	case "sleep":
 		time.Sleep(time.Minute)
 		os.Exit(0)
@@ -43,6 +53,45 @@ func TestHelperProcess(t *testing.T) {
 	default:
 		code, _ := strconv.Atoi(mode)
 		os.Exit(code)
+	}
+}
+
+// Real process driver, executor command and HTTP client. The controlled server
+// refuses before issuing work; this qualifies transport, not native execution.
+func TestProcessDriverExecutionDecisionEcho(t *testing.T) {
+	const decision = "11111111-2222-4333-8444-555555555555"
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in runnerclient.StartupAssignment
+		if r.URL.Path == "/runner/v1/job/start" && r.Header.Get("Authorization") == "Bearer task-startup" && json.NewDecoder(r.Body).Decode(&in) == nil {
+			received <- in.ExecutionTrustDecision
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	p := helperDriver(t, "decision-echo")
+	p.Server = server.URL
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h, err := p.Start(ctx, "0", runnerclient.Claim{JobID: 17, Attempt: 3, StartupToken: "task-startup", ExecutionTrustDecision: decision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Teardown(context.Background(), h)
+	exit, err := p.Wait(ctx, h)
+	if err != nil || exit.Code != 0 {
+		t.Fatalf("executor command did not reach controlled startup refusal: %+v %v", exit, err)
+	}
+	select {
+	case got := <-received:
+		if got != decision {
+			t.Fatal("manager/driver/executor handoff lost the server reference")
+		}
+	default:
+		t.Fatal("executor never echoed its claimed reference")
+	}
+	if _, err := os.Stat(filepath.Join(h.Ref, StartupTokenFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("executor did not consume its one-read startup file")
 	}
 }
 

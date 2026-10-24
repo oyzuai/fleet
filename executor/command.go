@@ -48,6 +48,7 @@ func Command(args []string, log *slog.Logger) error {
 	dockerNetwork := fs.String("docker-network", "", "the network image kinds join (docker run --network); Docker's default when empty")
 	dockerEnv := fs.String("docker-env", "", "comma-separated names of this process's variables that image kinds also get")
 	bindingJSON := fs.String("readiness-binding", "", "server-selected non-secret allocation binding")
+	decision := fs.String("execution-trust-decision", "", "server-issued non-secret execution decision reference to echo at startup")
 	gateway := fs.String("egress-gateway", os.Getenv(EnvEgressGateway), "the pool's egress gateway proxy URL on this job's network; the credential proxy chains through it")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -86,27 +87,28 @@ func Command(args []string, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(telemetry.WithParent(context.Background(), tcfg.Parent), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return Run(ctx, Config{
-		Client:              runnerclient.New(*server, nil),
-		Readiness:           binding,
-		StartupTokenFile:    *tokenFile,
-		WaitForStartupToken: *waitToken,
-		StartupTokenEnv:     *tokenEnv,
-		WorkDir:             *workDir,
-		SecretsDir:          *secretsDir,
-		JobDir:              *jobDir,
-		GitURL:              *gitURL,
-		Git:                 *git,
-		Oyzu:                *oyzu,
-		Renovate:            *renovate,
-		GitHubAPI:           *apiURL,
-		GitAuthor:           *gitAuthor,
-		KindsDir:            *kindsDir,
-		KindStateDir:        *kindState,
-		Docker:              *docker,
-		DockerNetwork:       *dockerNetwork,
-		DockerEnv:           splitList(*dockerEnv),
-		EgressGateway:       *gateway,
-		Log:                 log,
+		ExecutionTrustDecision: *decision,
+		Client:                 runnerclient.New(*server, nil),
+		Readiness:              binding,
+		StartupTokenFile:       *tokenFile,
+		WaitForStartupToken:    *waitToken,
+		StartupTokenEnv:        *tokenEnv,
+		WorkDir:                *workDir,
+		SecretsDir:             *secretsDir,
+		JobDir:                 *jobDir,
+		GitURL:                 *gitURL,
+		Git:                    *git,
+		Oyzu:                   *oyzu,
+		Renovate:               *renovate,
+		GitHubAPI:              *apiURL,
+		GitAuthor:              *gitAuthor,
+		KindsDir:               *kindsDir,
+		KindStateDir:           *kindState,
+		Docker:                 *docker,
+		DockerNetwork:          *dockerNetwork,
+		DockerEnv:              splitList(*dockerEnv),
+		EgressGateway:          *gateway,
+		Log:                    log,
 	})
 }
 

@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -114,10 +115,13 @@ func (c *Client) RegisterKey(ctx context.Context, signedRotation string) (int64,
 
 // Claim is a job claimed for this manager.
 type Claim struct {
-	JobID          int64     `json:"job_id"`
-	Attempt        int       `json:"attempt"`
-	StartupToken   string    `json:"startup_token"`
-	StartupExpires time.Time `json:"startup_expires_at"`
+	// ExecutionTrustDecision is server-issued correlation metadata. It grants
+	// no authority and must reach startup unchanged when present.
+	ExecutionTrustDecision string    `json:"execution_trust_decision,omitempty"`
+	JobID                  int64     `json:"job_id"`
+	Attempt                int       `json:"attempt"`
+	StartupToken           string    `json:"startup_token"`
+	StartupExpires         time.Time `json:"startup_expires_at"`
 	// Egress is where the job may connect, enforced by the manager's
 	// gateway. A runs that predates it sends none, which allows only the
 	// runs server.
@@ -150,6 +154,9 @@ func (c *Client) ClaimSession(ctx context.Context, access, session string) (*Cla
 		Session string `json:"session,omitempty"`
 	}{session}, &out, func(status int) { found = status == http.StatusOK })
 	if err != nil || !found {
+		return nil, err
+	}
+	if err := (StartupAssignment{ExecutionTrustDecision: out.ExecutionTrustDecision}).Validate(); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -252,16 +259,31 @@ type Started struct {
 	Job              Job       `json:"job"`
 }
 
-// Start spends the startup token.
-func (c *Client) Start(ctx context.Context, startup string) (Started, error) {
-	return c.StartWithReadiness(ctx, startup, nil)
+// StartupAssignment echoes only server-selected assignment metadata. The
+// server still validates the exact current startup credential and attempt.
+type StartupAssignment struct {
+	Readiness              *readiness.Binding `json:"readiness,omitempty"`
+	ExecutionTrustDecision string             `json:"execution_trust_decision,omitempty"`
 }
 
-func (c *Client) StartWithReadiness(ctx context.Context, startup string, b *readiness.Binding) (Started, error) {
+var executionDecisionReference = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// Validate checks wire shape only, never decision facts or current authority.
+// An absent reference is meaningful only when the server did not require one.
+func (a StartupAssignment) Validate() error {
+	if a.ExecutionTrustDecision != "" && (!executionDecisionReference.MatchString(a.ExecutionTrustDecision) || a.ExecutionTrustDecision == "00000000-0000-0000-0000-000000000000") {
+		return errors.New("invalid server execution decision reference")
+	}
+	return nil
+}
+
+// Start spends the startup token once, preserving the claimed assignment.
+func (c *Client) Start(ctx context.Context, startup string, assignment StartupAssignment) (Started, error) {
 	var out Started
-	return out, c.do(ctx, "job/start", startup, struct {
-		Readiness *readiness.Binding `json:"readiness,omitempty"`
-	}{b}, &out)
+	if err := assignment.Validate(); err != nil {
+		return out, err
+	}
+	return out, c.do(ctx, "job/start", startup, assignment, &out)
 }
 
 // Heartbeat renews the job's lease and token.
