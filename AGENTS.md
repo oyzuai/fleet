@@ -26,4 +26,3 @@ verification, including older billing/plan exceptions.
   workspace may continue under their resource rules, without an Actions worker.
 - Preserve workflow definitions and runner installations for a future approved
   run. Do not delete source, retained evidence or installed tools under this policy.
-
