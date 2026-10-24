@@ -46,6 +46,21 @@ shipped binary selects container, Kubernetes or process; cloud VM adapters remai
 library code requiring integration. A configured infrastructure role does not
 replace Oyzu enrollment.
 
+## Planned execution decision reference
+
+A pending runner-v1 extension adds the server-issued opaque
+`execution_trust_decision` reference to assignment/startup transport. Fleet must
+carry a supplied reference through the driver to the executor and echo it without
+constructing decision facts. Required omission or substitution must refuse
+startup; the reference grants no execution, resource-use or credential authority.
+Current one-use startup, assignment and readiness checks remain mandatory.
+
+This is a draft transport plan before implementation. Wire presence/refusal rules
+belong to the public runner contract. Client transport, driver handoff and server
+binding checks remain to be implemented and verified with explicitly attributed
+fixtures. No native Secret, host-integrity or deployment qualification is claimed.
+GitHub Actions remains intentionally disabled/unrun.
+
 ## Renewal and rotation
 
 Executors heartbeat every 30 seconds. The running lease is two minutes, and the
