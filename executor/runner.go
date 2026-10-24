@@ -391,6 +391,7 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		errSink.close()
 	}()
 	env := buildEnv(os.Environ())
+	var runtime *runtimeInputs
 	if job.Kind != "plan" && len(job.Secrets) > 0 {
 		secretEnv, cleanup, err := pullSecrets(ctx, cfg, token, job.Secrets, func(v string) {
 			stdout.Add(v)
@@ -402,7 +403,14 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 			log.Warn("build secrets not delivered", "error", msg)
 			return failed("Could not get the job's build secrets: " + msg), capture
 		}
-		env = withEnv(env, secretEnv)
+		if job.Kind == "slice" {
+			if len(secretEnv.Files) != len(job.Secrets) {
+				return failedWith("RUNTIME_INPUT_UNSUPPORTED", "Isolated native runtime inputs require file Secret mappings."), capture
+			}
+			runtime = &runtimeInputs{Assignment: assignmentRef{Job: job.ID, Attempt: job.Attempt}, Directory: secretEnv.Directory, Files: secretEnv.Files}
+		} else {
+			env = withEnv(env, secretEnv.Env)
+		}
 	}
 	var proxy *egressProxy
 	// A plan runs without credentials: no ID token, no egress.
@@ -434,6 +442,22 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 			}
 			defer proxy.stop()
 			env = proxy.env(env)
+			if job.Kind == "slice" && proxy.gateway != nil {
+				if runtime == nil {
+					directory, err := os.MkdirTemp(cfg.SecretsDir, "oyzu-runtime-")
+					if err != nil {
+						return failedWith("RUNNER_ERROR", "Could not create private runtime directory."), capture
+					}
+					defer os.RemoveAll(directory)
+					runtime = &runtimeInputs{Assignment: assignmentRef{Job: job.ID, Attempt: job.Attempt}, Directory: directory, Files: []string{}}
+				}
+				stop, err := proxy.startRuntimeProxy(runtime.Directory)
+				if err != nil {
+					return failedWith("RUNTIME_INPUT_UNSUPPORTED", "Could not bind the enforced runtime HTTP proxy."), capture
+				}
+				defer stop()
+				runtime.HTTPProxy = true
+			}
 		}
 	}
 	var denials *denialWatcher
@@ -446,6 +470,10 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	args := append([]string{}, job.Command[1:]...)
 	if job.Kind == "slice" {
 		args = []string{"__oyzu-build-worker", "execute"}
+		input, err = sliceInputWithRuntime(cfg.WorkDir, job, runtime)
+		if err != nil {
+			return failedWith("PLAN_MISMATCH", err.Error()), capture
+		}
 	} else if job.Kind != "plan" && (job.Operation == "build" || job.Operation == "run") && !slices.Contains(args, "--json") {
 		args = append([]string{"--json"}, args...)
 	}
