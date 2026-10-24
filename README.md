@@ -2,6 +2,10 @@
 
 The Oyzu pool manager and executor.
 
+The [private native-input contract](docs/runtime-inputs.md) describes the current
+executor/engine file binding and controlled Unix-socket proxy integration in
+progress. Native qualification is pending.
+
 Manager and executor authentication have separate
 [lifecycles](docs/authentication.md). A manager enrolls
 once and signs login assertions; Oyzu issues the manager, startup and job
