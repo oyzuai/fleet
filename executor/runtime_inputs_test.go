@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -204,6 +205,35 @@ func TestNativeRuntimeInputs(t *testing.T) {
 	if !passed {
 		t.Fatal("native test did not produce its required non-skipped report")
 	}
+	// Validate the usable result before the fixture's temporary tree is removed.
+	artifacts, _ := manifest["artifacts"].([]any)
+	var executable string
+	for _, entry := range artifacts {
+		artifact, _ := entry.(map[string]any)
+		if artifact["name"] != "primary" || artifact["kind"] != "file" {
+			continue
+		}
+		path, _ := artifact["path"].(string)
+		if path == "" || filepath.IsAbs(path) || !filepath.IsLocal(path) {
+			t.Fatal("invalid native artifact path")
+		}
+		executable = filepath.Join(project, "dist", filepath.FromSlash(path))
+		data, err := os.ReadFile(executable)
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
+		if artifact["digest"] != digest || artifact["size"] != float64(len(data)) {
+			t.Fatal("native artifact does not match its accepted manifest")
+		}
+	}
+	if executable == "" {
+		t.Fatal("native application artifact is absent")
+	}
+	applicationOutput, err := command(nil, "--root", project, "exec", "--", executable)
+	if err != nil || string(applicationOutput) != "runtime file proof\n" {
+		t.Fatal("accepted application did not execute with its expected result")
+	}
 	if err = filepath.WalkDir(filepath.Join(project, "dist"), func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -232,6 +262,22 @@ func TestNativeRuntimeInputs(t *testing.T) {
 	request, _ := json.Marshal(map[string]any{"root": project, "targets": []string{"proof"}, "admittedPlan": json.RawMessage(plan), "assignment": identity, "runtime_inputs": wrong})
 	if _, err = command(request, "__oyzu-build-worker", "execute"); err == nil {
 		t.Fatal("mismatched runtime assignment accepted")
+	}
+	if receiptPath := os.Getenv("FLEET_RUNTIME_PROOF_RECEIPT"); receiptPath != "" {
+		if !filepath.IsAbs(receiptPath) {
+			t.Fatal("receipt path must be absolute")
+		}
+		receipt, err := json.MarshalIndent(map[string]any{
+			"plan": planRecord, "manifest": manifest,
+			"application_stdout": string(applicationOutput), "authenticated_receipts": receipts.Load(),
+			"missing_inputs": "refused", "mismatched_assignment": "refused",
+		}, "", "  ")
+		if err != nil || len(receipt) > 20*1024*1024 || bytes.Contains(receipt, []byte(token)) {
+			t.Fatal("unsafe or oversized proof receipt")
+		}
+		if err = os.WriteFile(receiptPath, receipt, 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Logf("real admitted native file test passed; missing input and assignment mismatch refused; authenticated receipts=%d", receipts.Load())
 }
