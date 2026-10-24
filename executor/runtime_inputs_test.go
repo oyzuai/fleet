@@ -178,6 +178,11 @@ func TestNativeRuntimeInputs(t *testing.T) {
 		request, _ := json.Marshal(map[string]any{"root": project, "targets": []string{"proof"}, "admittedPlan": json.RawMessage(plan), "assignment": identity, "runtime_inputs": runtime})
 		out, err := command(request, "__oyzu-build-worker", "execute")
 		if expected == 0 && err != nil || expected != 0 && err == nil {
+			diagnostic := strings.ReplaceAll(string(out), token, "[redacted]")
+			if len(diagnostic) > 64*1024 {
+				diagnostic = diagnostic[:64*1024]
+			}
+			t.Logf("native failure manifest: %s", diagnostic)
 			t.Fatalf("unexpected native execution status: %v", err)
 		}
 		var manifest map[string]any
