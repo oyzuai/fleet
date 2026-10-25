@@ -99,7 +99,6 @@ func TestGitHubOIDCCallerAndDenials(t *testing.T) {
 		t.Fatal("another Actions run read the result")
 	}
 	// Unknown kid forces a bounded refresh; an invalid signature never passes.
-	f.now.Add(2)
 	bad := signRSA(t, key, "unknown", claims)
 	status, _, _ = f.request(t, "GET", runsPath, "", nil, map[string]string{"Authorization": "Bearer " + bad})
 	if status != 401 || fetches.Load() != 2 {

@@ -280,11 +280,26 @@ func TestAccessValidationAndIdempotency(t *testing.T) {
 	if status != 422 || !bytes.Contains(b, []byte("COMMIT_NOT_FOUND")) {
 		t.Fatalf("missing commit %d %s", status, b)
 	}
-	for _, query := range []string{"?page_size=0", "?cursor=!!!"} {
+	for _, query := range []string{"?page_size=0", "?cursor=!!!", "?commit=main", "?state=unknown", "?repository=other"} {
 		status, _, _ = f.request(t, "GET", runsPath+query, "micah@example.com", nil, nil)
 		if status != 400 {
 			t.Fatalf("bad page %s: %d", query, status)
 		}
+	}
+}
+
+func TestCreateSchemaAndServerSelectedCommands(t *testing.T) {
+	f:=newFixture(t)
+	for _,bad:=range []any{
+		map[string]any{"repository":createBody().Repository,"commit":testSHA,"operation":map[string]any{"kind":"build","command":[]string{"sh"}}},
+		map[string]any{"repository":createBody().Repository,"commit":testSHA,"operation":map[string]any{"kind":"build","targets":nil}},
+		map[string]any{"repository":createBody().Repository,"commit":testSHA},
+	} {status,b,_:=f.request(t,"POST",runsPath,"micah@example.com",bad,nil);if status!=422||!bytes.Contains(b,[]byte("VALIDATION_FAILED")){t.Fatalf("schema validation %d %s",status,b)}}
+	id:=f.login(t)
+	for _,op:=range []Operation{{Kind:"build",AffectedBase:testSHA},{Kind:"run",Task:"cli:test"}} {
+		body:=createBody();body.Operation=op;status,b,_:=f.request(t,"POST",runsPath,"micah@example.com",body,nil);if status!=201{t.Fatalf("create operation %d %s",status,b)}
+		st:=f.start(t,id.access);want:="oyzu build --isolated --full --affected "+testSHA;if op.Kind=="run"{want="oyzu run --isolated cli:test"};if strings.Join(st.Job.Command," ")!=want{t.Fatalf("command %v",st.Job.Command)}
+		if err:=f.c.Finish(context.Background(),st.JobToken,runnerclient.Outcome{State:"succeeded"});err!=nil{t.Fatal(err)}
 	}
 }
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }

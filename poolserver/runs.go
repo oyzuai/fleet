@@ -228,6 +228,21 @@ type fieldError struct {
 func validateCreate(in RunCreate, raw []byte) []fieldError {
 	var failures []fieldError
 	add := func(f, c string) { failures = append(failures, fieldError{f, c, "Invalid or conflicting field."}) }
+	var top map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &top)
+	check := func(prefix string, fields map[string]json.RawMessage, allowed, required []string) {
+		for key, value := range fields {
+			if !contains(allowed, key) { add(prefix+"/"+key, "UNKNOWN_FIELD") }
+			if bytes.Equal(bytes.TrimSpace(value), []byte("null")) { add(prefix+"/"+key, "INVALID_FORMAT") }
+		}
+		for _, key := range required { if _, ok := fields[key]; !ok { add(prefix+"/"+key, "REQUIRED") } }
+	}
+	check("", top, []string{"repository", "commit", "ref", "operation"}, []string{"repository", "commit", "operation"})
+	var repo, operation map[string]json.RawMessage
+	_ = json.Unmarshal(top["repository"], &repo)
+	_ = json.Unmarshal(top["operation"], &operation)
+	check("/repository", repo, []string{"provider", "name"}, []string{"provider", "name"})
+	check("/operation", operation, []string{"kind", "targets", "affected_base", "task"}, []string{"kind"})
 	if in.Repository.Provider != "github" || !repositoryRE.MatchString(in.Repository.Name) {
 		add("/repository", "INVALID_FORMAT")
 	}
@@ -291,12 +306,16 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, c caller) {
 		problem(w, 400, "REQUEST_INVALID", "Request is too large.")
 		return
 	}
-	var in RunCreate
-	if decodeJSON(bytes.NewReader(raw), &in) != nil {
-		problem(w, 400, "REQUEST_INVALID", "Expected one JSON request with known fields.")
+	var fields map[string]json.RawMessage
+	if !utf8.Valid(raw) || json.Unmarshal(raw, &fields) != nil || fields == nil {
+		problem(w, 400, "REQUEST_INVALID", "Expected one JSON request object.")
 		return
 	}
-	if errs := validateCreate(in, raw); len(errs) > 0 {
+	var in RunCreate
+	decodeErr := json.Unmarshal(raw, &in)
+	errs := validateCreate(in, raw)
+	if decodeErr != nil { errs = append(errs, fieldError{Field:"/", Code:"INVALID_FORMAT", Message:"A field has the wrong JSON type."}) }
+	if len(errs) > 0 {
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(422)
 		_ = json.NewEncoder(w).Encode(map[string]any{"type": "urn:oyzu:problem:validation-failed", "title": "Request validation failed", "status": 422, "code": "VALIDATION_FAILED", "request_id": w.Header().Get("X-Request-Id"), "errors": errs})
@@ -384,6 +403,10 @@ func (s *Server) idempotent(w http.ResponseWriter, owner, key, bodyHash string) 
 	return false
 }
 func (s *Server) listRuns(w http.ResponseWriter, r *http.Request, c caller) {
+	q := r.URL.Query()
+	if v := q.Get("repository"); v != "" && (!strings.HasPrefix(v,"github:") || !repositoryRE.MatchString(strings.TrimPrefix(v,"github:"))) { problem(w,400,"REQUEST_INVALID","Invalid repository filter."); return }
+	if v := q.Get("commit"); v != "" && !commitRE.MatchString(v) { problem(w,400,"REQUEST_INVALID","Invalid commit filter."); return }
+	if v := q.Get("state"); v != "" { for _, state := range strings.Split(v,",") { if !contains([]string{"queued","running","succeeded","failed","skipped","cancelled","timed_out"},state) { problem(w,400,"REQUEST_INVALID","Invalid state filter."); return } } }
 	size, ok := queryInt(w, r, "page_size", 25, 1, 100)
 	if !ok {
 		return
@@ -404,7 +427,6 @@ func (s *Server) listRuns(w http.ResponseWriter, r *http.Request, c caller) {
 		return
 	}
 	items := []Run{}
-	q := r.URL.Query()
 	states := strings.Split(q.Get("state"), ",")
 	for _, rr := range s.state.Runs {
 		v := rr.Run

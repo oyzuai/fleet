@@ -49,6 +49,7 @@ type oidcVerifier struct {
 	keys              map[string]*rsa.PublicKey
 	fetched           time.Time
 	attempts          map[string]time.Time
+	refreshes        []time.Time
 }
 
 func (v *oidcVerifier) verify(ctx context.Context, token string) (*oidcClaims, error) {
@@ -103,9 +104,9 @@ func (v *oidcVerifier) key(ctx context.Context, kid string) (*rsa.PublicKey, err
 	// A new kid triggers a refresh immediately, including just after rotation.
 	// Bound attacker-controlled unknown-kid requests across the whole verifier.
 	last := v.attempts[kid]
-	global := v.attempts[""]
+	for len(v.refreshes)>0 && now.Sub(v.refreshes[0])>=time.Minute { v.refreshes=v.refreshes[1:] }
 	refresh := key == nil || now.Sub(v.fetched) >= time.Hour
-	if refresh && (last.IsZero() || now.Sub(last) >= time.Minute) && (global.IsZero() || now.Sub(global) >= time.Second) {
+	if refresh && (last.IsZero() || now.Sub(last) >= time.Minute) && len(v.refreshes)<8 {
 		if v.attempts == nil {
 			v.attempts = map[string]time.Time{}
 		}
@@ -113,7 +114,7 @@ func (v *oidcVerifier) key(ctx context.Context, kid string) (*rsa.PublicKey, err
 			v.attempts = map[string]time.Time{}
 		}
 		v.attempts[kid] = now
-		v.attempts[""] = now
+		v.refreshes=append(v.refreshes,now)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.jwksURL, nil)
 		if err != nil {
 			return nil, err

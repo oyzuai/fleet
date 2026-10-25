@@ -153,7 +153,7 @@ func (a *GitHubApp) Source(ctx context.Context, repo string) (runnerclient.Sourc
 		}
 		return runnerclient.Source{}, errors.New("source credential unavailable")
 	}
-	if out.Token == "" || !out.Expires.After(a.now()) || out.Expires.After(a.now().Add(time.Hour+time.Minute)) || out.Permissions["contents"] != "read" || len(out.Repositories) != 1 || !strings.EqualFold(out.Repositories[0].FullName, repo) {
+	if out.Token == "" || !out.Expires.After(a.now()) || out.Expires.After(a.now().Add(time.Hour)) || out.Permissions["contents"] != "read" || len(out.Repositories) != 1 || !strings.EqualFold(out.Repositories[0].FullName, repo) {
 		return runnerclient.Source{}, errors.New("source credential scope mismatch")
 	}
 	for name, permission := range out.Permissions {
@@ -164,6 +164,7 @@ func (a *GitHubApp) Source(ctx context.Context, repo string) (runnerclient.Sourc
 	return runnerclient.Source{Token: out.Token, Expires: out.Expires, Repository: repo}, nil
 }
 func (a *GitHubApp) CommitExists(ctx context.Context, repo, sha string) (bool, error) {
+	if !repositoryRE.MatchString(repo) || !commitRE.MatchString(sha) { return false, errors.New("invalid commit source") }
 	s, e := a.Source(ctx, repo)
 	if e != nil {
 		return false, e
