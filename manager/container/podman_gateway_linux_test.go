@@ -17,6 +17,46 @@ import (
 	"github.com/oyzuai/fleet/egressgate"
 )
 
+type boundedGatewayEngine struct {
+	Engine
+	containers []string
+}
+
+func (e *boundedGatewayEngine) CreateContainer(ctx context.Context, name string, spec Spec) (string, error) {
+	spec.MemoryBytes, spec.NanoCPUs = 64<<20, 500000000
+	if spec.Labels[LabelRole] == roleGateway { spec.MemoryBytes = 128<<20 }
+	id, err := e.Engine.CreateContainer(ctx, name, spec)
+	if err == nil { e.containers = append(e.containers, id) }
+	return id, err
+}
+
+func TestPodmanDriverGatewayProbeCleanup(t *testing.T) {
+	socket, image := os.Getenv("FLEET_PODMAN_PROOF_SOCKET"), os.Getenv("FLEET_PODMAN_GATEWAY_IMAGE")
+	if socket == "" || image == "" { t.Skip("dedicated Podman driver probe needs explicit socket and immutable local image") }
+	if os.Geteuid() != 1002 || !strings.HasPrefix(socket, "/run/user/1002/") || !strings.HasPrefix(image, "localhost/oyzu-pool-executor@sha256:") { t.Fatal("proof restricted to dedicated uid1002 and immutable local executor image") }
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	engine, err := NewDocker("unix://"+socket, DockerOptions{})
+	if err != nil { t.Fatal(err) }
+	bounded := &boundedGatewayEngine{Engine: engine}
+	d := &Driver{Engine: bounded, Image: image, Command: []string{"oyzu-executor"}, Manager: time.Now().UnixNano(), Pool: "oyzu-pool-slice1-proof", Egress: EgressEnforce}
+	t.Cleanup(func() {
+		cleanup, done := context.WithTimeout(context.Background(), 15*time.Second)
+		defer done()
+		for _, id := range bounded.containers { if err := engine.RemoveContainer(cleanup, id); err != nil { t.Error(err) } }
+		networks, err := engine.ListNetworks(cleanup, map[string]string{LabelManager: d.managerLabel()})
+		if err != nil { t.Error(err); return }
+		for _, network := range networks { if err := engine.RemoveNetwork(cleanup, network.Name); err != nil { t.Error(err) } }
+	})
+	for i := 0; i < 2; i++ {
+		if err := d.probe(ctx); err != nil { t.Fatalf("real driver probe cycle%d: %v", i, err) }
+		if err := d.gw.control.Health(ctx); err != nil { t.Fatalf("management transport lost after probe cycle%d: %v", i, err) }
+		if err := d.Reap(ctx, nil); err != nil { t.Fatal(err) }
+		if err := d.gw.control.Health(ctx); err != nil { t.Fatalf("management transport lost after Reap cycle%d: %v", i, err) }
+		t.Logf("real probe cleanup and Reap retained authenticated gateway control cycle%d", i)
+	}
+}
+
 // This opt-in proof uses only a dedicated gateway and two temporary internal
 // networks, never a job or the production manager's gateway/token.
 func TestPodmanGatewayRegistrationAfterNetworkCleanup(t *testing.T) {
