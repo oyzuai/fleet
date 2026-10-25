@@ -107,18 +107,22 @@ func (d *Docker) InspectNamespaceAnchor(ctx context.Context, id string, spec Spe
 	if len(failed) > 0 {
 		return identity, errors.New("namespace anchor allocation differs from its fixed template: " + strings.Join(failed, ","))
 	}
-	var networkName,networkIP string
+	var networkName, networkIP string
 	for _, n := range out.NetworkSettings.Networks {
 		if n.NetworkID != "" && n.IPAddress != "" {
-			networkName,networkIP = n.NetworkID,n.IPAddress
+			networkName, networkIP = n.NetworkID, n.IPAddress
 		}
 	}
-	if networkName!=defaultNetwork {
+	if networkName != defaultNetwork {
 		return identity, errors.New("namespace anchor has no actual default bridge allocation")
 	}
-	bridge,err:=d.inspectPodmanNetwork(ctx,id,networkName,networkIP)
-	if err!=nil {return identity,err}
-	if bridge.Internal {return identity,errors.New("namespace anchor default bridge is internal")}
+	bridge, err := d.inspectPodmanNetwork(ctx, id, networkName, networkIP)
+	if err != nil {
+		return identity, err
+	}
+	if bridge.Internal {
+		return identity, errors.New("namespace anchor default bridge is internal")
+	}
 	namespace, process, err := d.profile.inspectAnchor(native.OCIConfigPath, id, spec, out.State.Pid)
 	if err != nil {
 		return identity, err

@@ -22,17 +22,24 @@ func testPodmanPeer(context.Context, string) (podmanIdentity, error) {
 }
 
 func TestPodmanNetworkNamesRequireActualEndpointIdentity(t *testing.T) {
-	for _,test:=range []struct{name,body string;ok bool}{
-		{"actual",`{"Id":"definition-id","Name":"bridge","Driver":"bridge","Containers":{"own":{"IPv4Address":"10.88.0.2/16"}}}`,true},
-		{"missing-container",`{"Id":"definition-id","Name":"bridge","Driver":"bridge","Containers":{}}`,false},
-		{"changed-address",`{"Id":"definition-id","Name":"bridge","Driver":"bridge","Containers":{"own":{"IPv4Address":"10.88.0.3/16"}}}`,false},
-		{"changed-name",`{"Id":"definition-id","Name":"other","Driver":"bridge","Containers":{"own":{"IPv4Address":"10.88.0.2/16"}}}`,false},
-		{"missing-definition-id",`{"Name":"bridge","Driver":"bridge","Containers":{"own":{"IPv4Address":"10.88.0.2/16"}}}`,false},
-	} {t.Run(test.name,func(t *testing.T){
-		d,_:=newStub(t,map[string]func(http.ResponseWriter,*http.Request){"GET /networks/bridge":reply(200,test.body)})
-		n,err:=d.inspectPodmanNetwork(context.Background(),"own","bridge","10.88.0.2")
-		if (err==nil)!=test.ok {t.Fatalf("network observation: %+v %v",n,err)}
-	})}
+	for _, test := range []struct {
+		name, body string
+		ok         bool
+	}{
+		{"actual", `{"Id":"definition-id","Name":"bridge","Driver":"bridge","Containers":{"own":{"IPv4Address":"10.88.0.2/16"}}}`, true},
+		{"missing-container", `{"Id":"definition-id","Name":"bridge","Driver":"bridge","Containers":{}}`, false},
+		{"changed-address", `{"Id":"definition-id","Name":"bridge","Driver":"bridge","Containers":{"own":{"IPv4Address":"10.88.0.3/16"}}}`, false},
+		{"changed-name", `{"Id":"definition-id","Name":"other","Driver":"bridge","Containers":{"own":{"IPv4Address":"10.88.0.2/16"}}}`, false},
+		{"missing-definition-id", `{"Name":"bridge","Driver":"bridge","Containers":{"own":{"IPv4Address":"10.88.0.2/16"}}}`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			d, _ := newStub(t, map[string]func(http.ResponseWriter, *http.Request){"GET /networks/bridge": reply(200, test.body)})
+			n, err := d.inspectPodmanNetwork(context.Background(), "own", "bridge", "10.88.0.2")
+			if (err == nil) != test.ok {
+				t.Fatalf("network observation: %+v %v", n, err)
+			}
+		})
+	}
 }
 func TestPodmanManagedProfileConcurrentAndTamper(t *testing.T) {
 	runtime := t.TempDir()

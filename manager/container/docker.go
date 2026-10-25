@@ -722,7 +722,7 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 			Networks map[string]struct {
 				GlobalIPv6Address string
 				NetworkID         string
-				IPAddress string
+				IPAddress         string
 			}
 		}
 		Mounts        []struct{ Destination string }
@@ -769,8 +769,14 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 	}
 	for _, n := range out.NetworkSettings.Networks {
 		a.IPv6 = a.IPv6 || n.GlobalIPv6Address != ""
-		networkID:=n.NetworkID
-		if d.podman {measured,err:=d.inspectPodmanNetwork(ctx,id,n.NetworkID,n.IPAddress);if err!=nil {return a,err};networkID=measured.ID}
+		networkID := n.NetworkID
+		if d.podman {
+			measured, err := d.inspectPodmanNetwork(ctx, id, n.NetworkID, n.IPAddress)
+			if err != nil {
+				return a, err
+			}
+			networkID = measured.ID
+		}
 		a.NetworkIDs = append(a.NetworkIDs, networkID)
 	}
 	for _, m := range out.Mounts {
