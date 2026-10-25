@@ -37,5 +37,7 @@ docs (status or qualification files, proof files, internal write-ups) or new
 scripts unless the change needs them or the task asks. Keep PR descriptions short.
 Clean up builds, workspaces, containers and images you created (never other
 people's data) and say how much disk you used. Never skip signing, provenance,
-access-control or compliance checks, and never hide a failure. Where another rule
+access-control or compliance checks, and never hide a failure. Open PRs as drafts;
+once the work is done and checked, mark the PR ready for review, and only then ask
+Micah to look at it. Never ask him to review or check a draft. Where another rule
 here asks for more, this one wins.
