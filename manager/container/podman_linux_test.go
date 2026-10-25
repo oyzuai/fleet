@@ -188,10 +188,16 @@ func TestPodmanRejectsForwardedAndRemoteEngine(t *testing.T) {
 		t.Fatal("remote Podman accepted")
 	}
 }
-func TestPodmanNormalizesOnlyKnownProfileEcho(t *testing.T){
- path:="/run/user/1002/oyzu-fleet-sandbox/known.json"
- if !podmanEchoedOptions([]string{"no-new-privileges","seccomp="+path},path){t.Fatal("native normalized echo refused")}
- for _,options:=range [][]string{{"no-new-privileges","seccomp=/tmp/arbitrary"},{"no-new-privileges:false","seccomp="+path},{"no-new-privileges","seccomp="+path,"apparmor=unconfined"}}{if podmanEchoedOptions(options,path){t.Fatalf("unqualified echo accepted: %v",options)}}
+func TestPodmanNormalizesOnlyKnownProfileEcho(t *testing.T) {
+	path := "/run/user/1002/oyzu-fleet-sandbox/known.json"
+	if !podmanEchoedOptions([]string{"no-new-privileges", "seccomp=" + path}, path) {
+		t.Fatal("native normalized echo refused")
+	}
+	for _, options := range [][]string{{"no-new-privileges", "seccomp=/tmp/arbitrary"}, {"no-new-privileges:false", "seccomp=" + path}, {"no-new-privileges", "seccomp=" + path, "apparmor=unconfined"}} {
+		if podmanEchoedOptions(options, path) {
+			t.Fatalf("unqualified echo accepted: %v", options)
+		}
+	}
 }
 func expectedOCISeccomp(t *testing.T) json.RawMessage {
 	t.Helper()
@@ -238,8 +244,10 @@ func TestPodmanAppliedOCIRejectsControlDrift(t *testing.T) {
 		t.Fatal(e)
 	}
 	// Podman4.9 adds powercap both as an OCI default and an explicit mask.
-	o.Linux.MaskedPaths=append(o.Linux.MaskedPaths,"/sys/devices/virtual/powercap")
-	if e:=verifyPodmanOCI(o,"1000:1000");e!=nil{t.Fatalf("same effective mask set refused: %v",e)}
+	o.Linux.MaskedPaths = append(o.Linux.MaskedPaths, "/sys/devices/virtual/powercap")
+	if e := verifyPodmanOCI(o, "1000:1000"); e != nil {
+		t.Fatalf("same effective mask set refused: %v", e)
+	}
 	for _, drift := range []string{"NNP", "caps", "proc", "namespace", "sys", "seccomp"} {
 		copy := o
 		data, _ := json.Marshal(o)

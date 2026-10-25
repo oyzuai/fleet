@@ -734,7 +734,10 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 		if !podmanEchoedOptions(out.HostConfig.SecurityOpt, d.profile.path) {
 			return a, errors.New("Podman sandbox options changed")
 		}
-		ociPath,err:=d.podmanOCIPath(ctx,id);if err!=nil{return a,err}
+		ociPath, err := d.podmanOCIPath(ctx, id)
+		if err != nil {
+			return a, err
+		}
 		if err := d.profile.inspectOCI(ociPath, id, out.Config.User); err != nil {
 			return a, err
 		}
