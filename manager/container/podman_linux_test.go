@@ -16,7 +16,9 @@ import (
 	"time"
 )
 
-func testPodmanPeer(context.Context, string) (podmanIdentity, error) { return podmanIdentity{pid:123,start:"test"}, nil }
+func testPodmanPeer(context.Context, string) (podmanIdentity, error) {
+	return podmanIdentity{pid: 123, start: "test"}, nil
+}
 func TestPodmanManagedProfileConcurrentAndTamper(t *testing.T) {
 	runtime := t.TempDir()
 	if e := os.Chmod(runtime, 0700); e != nil {
@@ -29,7 +31,7 @@ func TestPodmanManagedProfileConcurrentAndTamper(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p, e := newPodmanProfileForPeer(context.Background(), "test", testPodmanPeer,func(*podmanProfile)error{return nil})
+			p, e := newPodmanProfileForPeer(context.Background(), "test", testPodmanPeer, func(*podmanProfile) error { return nil })
 			if e != nil {
 				t.Error(e)
 				return
@@ -49,19 +51,35 @@ func TestPodmanManagedProfileConcurrentAndTamper(t *testing.T) {
 	if path == "" {
 		t.Fatal("no profile")
 	}
-	p, e := newPodmanProfileForPeer(context.Background(), "test", testPodmanPeer,func(*podmanProfile)error{return nil})
+	p, e := newPodmanProfileForPeer(context.Background(), "test", testPodmanPeer, func(*podmanProfile) error { return nil })
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e=os.Chmod(path,0644);e!=nil{t.Fatal(e)};if p.validate()==nil{t.Fatal("public file mode accepted")};if e=os.Chmod(path,0600);e!=nil{t.Fatal(e)}
-	if e=os.Chmod(filepath.Dir(path),0755);e!=nil{t.Fatal(e)};if p.validate()==nil{t.Fatal("public directory mode accepted")};if e=os.Chmod(filepath.Dir(path),0700);e!=nil{t.Fatal(e)}
+	if e = os.Chmod(path, 0644); e != nil {
+		t.Fatal(e)
+	}
+	if p.validate() == nil {
+		t.Fatal("public file mode accepted")
+	}
+	if e = os.Chmod(path, 0600); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.Chmod(filepath.Dir(path), 0755); e != nil {
+		t.Fatal(e)
+	}
+	if p.validate() == nil {
+		t.Fatal("public directory mode accepted")
+	}
+	if e = os.Chmod(filepath.Dir(path), 0700); e != nil {
+		t.Fatal(e)
+	}
 	if e = os.WriteFile(path, []byte(`{}`), 0600); e != nil {
 		t.Fatal(e)
 	}
 	if p.validate() == nil {
 		t.Fatal("changed profile accepted")
 	}
-	if _, e = newPodmanProfileForPeer(context.Background(), "test", testPodmanPeer,func(*podmanProfile)error{return nil}); e == nil {
+	if _, e = newPodmanProfileForPeer(context.Background(), "test", testPodmanPeer, func(*podmanProfile) error { return nil }); e == nil {
 		t.Fatal("tamper overwritten")
 	}
 	if e = os.Remove(path); e != nil {
@@ -74,7 +92,7 @@ func TestPodmanManagedProfileConcurrentAndTamper(t *testing.T) {
 	if e = os.Symlink(outside, path); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = newPodmanProfileForPeer(context.Background(), "test", testPodmanPeer,func(*podmanProfile)error{return nil}); e == nil {
+	if _, e = newPodmanProfileForPeer(context.Background(), "test", testPodmanPeer, func(*podmanProfile) error { return nil }); e == nil {
 		t.Fatal("profile symlink reused")
 	}
 }

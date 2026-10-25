@@ -24,12 +24,30 @@ import (
 
 type podmanProfile struct {
 	path, socket string
-	identity podmanIdentity
-	peer func(context.Context,string)(podmanIdentity,error)
-	shared func(*podmanProfile)error
+	identity     podmanIdentity
+	peer         func(context.Context, string) (podmanIdentity, error)
+	shared       func(*podmanProfile) error
 }
-type podmanIdentity struct {pid int32;start string}
-func processStart(pid int32)(string,error){b,e:=os.ReadFile(fmt.Sprintf("/proc/%d/stat",pid));if e!=nil{return "",e};end:=bytes.LastIndexByte(b,')');if end<0{return "",errors.New("invalid process metadata")};fields:=strings.Fields(string(b[end+1:]));if len(fields)<20{return "",errors.New("incomplete process metadata")};return fields[19],nil}
+type podmanIdentity struct {
+	pid   int32
+	start string
+}
+
+func processStart(pid int32) (string, error) {
+	b, e := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if e != nil {
+		return "", e
+	}
+	end := bytes.LastIndexByte(b, ')')
+	if end < 0 {
+		return "", errors.New("invalid process metadata")
+	}
+	fields := strings.Fields(string(b[end+1:]))
+	if len(fields) < 20 {
+		return "", errors.New("incomplete process metadata")
+	}
+	return fields[19], nil
+}
 
 func qualifyPodmanPeer(ctx context.Context, socket string) (podmanIdentity, error) {
 	var zero podmanIdentity
@@ -54,14 +72,37 @@ func qualifyPodmanPeer(ctx context.Context, socket string) (podmanIdentity, erro
 	if err != nil || sockerr != nil || cred == nil || cred.Uid != uint32(os.Geteuid()) {
 		return zero, errors.New("Podman service must run as the manager's effective UID")
 	}
-	start,err:=processStart(cred.Pid);if err!=nil{return zero,err}
-	socketInfo,err:=os.Lstat(socket);if err!=nil{return zero,err};socketOwner,ok:=socketInfo.Sys().(*syscall.Stat_t);if !ok||socketInfo.Mode()&os.ModeSocket==0||socketOwner.Uid!=cred.Uid{return zero,errors.New("Podman socket owner differs from its peer UID")}
-	proc := fmt.Sprintf("/proc/%d", cred.Pid)
-	exe,err:=os.Open(proc+"/exe");if err!=nil{return zero,err};defer exe.Close();info, err := exe.Stat()
+	start, err := processStart(cred.Pid)
 	if err != nil {
 		return zero, err
 	}
-	trusted,err:=openNoSymlinks("/usr/bin/podman",syscall.O_RDONLY);if err!=nil{return zero,err};defer trusted.Close();trustedInfo,err:=trusted.Stat();if err!=nil||!os.SameFile(info,trustedInfo){return zero,errors.New("Unix peer is not the trusted directly-bound /usr/bin/podman; proxies/socket activation are unqualified")}
+	socketInfo, err := os.Lstat(socket)
+	if err != nil {
+		return zero, err
+	}
+	socketOwner, ok := socketInfo.Sys().(*syscall.Stat_t)
+	if !ok || socketInfo.Mode()&os.ModeSocket == 0 || socketOwner.Uid != cred.Uid {
+		return zero, errors.New("Podman socket owner differs from its peer UID")
+	}
+	proc := fmt.Sprintf("/proc/%d", cred.Pid)
+	exe, err := os.Open(proc + "/exe")
+	if err != nil {
+		return zero, err
+	}
+	defer exe.Close()
+	info, err := exe.Stat()
+	if err != nil {
+		return zero, err
+	}
+	trusted, err := openNoSymlinks("/usr/bin/podman", syscall.O_RDONLY)
+	if err != nil {
+		return zero, err
+	}
+	defer trusted.Close()
+	trustedInfo, err := trusted.Stat()
+	if err != nil || !os.SameFile(info, trustedInfo) {
+		return zero, errors.New("Unix peer is not the trusted directly-bound /usr/bin/podman; proxies/socket activation are unqualified")
+	}
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || st.Uid != 0 || info.Mode().Perm()&0022 != 0 {
 		return zero, errors.New("Podman executable must be root-owned and not group/world writable")
@@ -76,11 +117,45 @@ func qualifyPodmanPeer(ctx context.Context, socket string) (podmanIdentity, erro
 	// Kernel-reported UIDs are relative to this manager's user namespace. A
 	// rootless daemon may have an internal UID0, but its effective host UID
 	// must be exactly this manager and be covered by its kernel UID mapping.
-	status,err:=os.ReadFile(proc+"/status");if err!=nil{return zero,err};effective:="";for _,line:=range strings.Split(string(status),"\n"){fields:=strings.Fields(line);if len(fields)>=3&&fields[0]=="Uid:"{effective=fields[2]}}
-	if effective!=strconv.Itoa(os.Geteuid()){return zero,errors.New("Podman effective host UID differs")}
-	mapping,err:=os.ReadFile(proc+"/uid_map");if err!=nil{return zero,err};mapped:=false;for _,line:=range strings.Split(string(mapping),"\n"){v:=strings.Fields(line);if len(v)!=3{continue};outer,e:=strconv.ParseUint(v[1],10,64);count,f:=strconv.ParseUint(v[2],10,64);uid:=uint64(cred.Uid);if e==nil&&f==nil&&uid>=outer&&uid-outer<count{mapped=true}}
-	if !mapped{return zero,errors.New("Podman UID mapping does not cover its host identity")};after,err:=processStart(cred.Pid);if err!=nil||after!=start{return zero,errors.New("Podman peer identity changed during qualification")}
-	return podmanIdentity{pid:cred.Pid,start:start}, nil
+	status, err := os.ReadFile(proc + "/status")
+	if err != nil {
+		return zero, err
+	}
+	effective := ""
+	for _, line := range strings.Split(string(status), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && fields[0] == "Uid:" {
+			effective = fields[2]
+		}
+	}
+	if effective != strconv.Itoa(os.Geteuid()) {
+		return zero, errors.New("Podman effective host UID differs")
+	}
+	mapping, err := os.ReadFile(proc + "/uid_map")
+	if err != nil {
+		return zero, err
+	}
+	mapped := false
+	for _, line := range strings.Split(string(mapping), "\n") {
+		v := strings.Fields(line)
+		if len(v) != 3 {
+			continue
+		}
+		outer, e := strconv.ParseUint(v[1], 10, 64)
+		count, f := strconv.ParseUint(v[2], 10, 64)
+		uid := uint64(cred.Uid)
+		if e == nil && f == nil && uid >= outer && uid-outer < count {
+			mapped = true
+		}
+	}
+	if !mapped {
+		return zero, errors.New("Podman UID mapping does not cover its host identity")
+	}
+	after, err := processStart(cred.Pid)
+	if err != nil || after != start {
+		return zero, errors.New("Podman peer identity changed during qualification")
+	}
+	return podmanIdentity{pid: cred.Pid, start: start}, nil
 }
 
 // openNoSymlinks traverses every component with openat(O_NOFOLLOW), retaining
@@ -122,9 +197,9 @@ func privateOwned(f *os.File, dir bool) error {
 	return nil
 }
 func newPodmanProfile(ctx context.Context, socket string) (*podmanProfile, error) {
-	return newPodmanProfileForPeer(ctx, socket, qualifyPodmanPeer,validateSharedProfile)
+	return newPodmanProfileForPeer(ctx, socket, qualifyPodmanPeer, validateSharedProfile)
 }
-func newPodmanProfileForPeer(ctx context.Context, socket string, peer func(context.Context, string) (podmanIdentity, error),shared func(*podmanProfile)error) (*podmanProfile, error) {
+func newPodmanProfileForPeer(ctx context.Context, socket string, peer func(context.Context, string) (podmanIdentity, error), shared func(*podmanProfile) error) (*podmanProfile, error) {
 	identity, e := peer(ctx, socket)
 	if e != nil {
 		return nil, e
@@ -186,7 +261,7 @@ func newPodmanProfileForPeer(ctx context.Context, socket string, peer func(conte
 	} else if e != nil {
 		return nil, e
 	}
-	p := &podmanProfile{path: path, socket: socket, identity: identity, peer: peer,shared:shared}
+	p := &podmanProfile{path: path, socket: socket, identity: identity, peer: peer, shared: shared}
 	if e = p.validate(); e != nil {
 		return nil, e
 	}
@@ -230,15 +305,76 @@ func (p *podmanProfile) validate() error {
 	return p.shared(p)
 }
 
-func validateSharedProfile(p *podmanProfile)error{
+func validateSharedProfile(p *podmanProfile) error {
 	// /proc/PID/root is the one intentional kernel magic-link anchor. All
 	// components after that held descriptor use O_NOFOLLOW. A different mount
 	// namespace qualifies only when the actual private directory and fixed file
 	// are the very same device/inode on both sides, never a lookalike pathname.
-	root,e:=syscall.Open(fmt.Sprintf("/proc/%d/root",p.identity.pid),syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC,0);if e!=nil{return e};defer syscall.Close(root)
-	openPeer:=func(path string,flags int)(*os.File,error){fd,e:=syscall.Dup(root);if e!=nil{return nil,e};parts:=strings.Split(strings.TrimPrefix(path,"/"),"/");for i,part:=range parts{f:=syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC;if i==len(parts)-1{f=flags|syscall.O_NOFOLLOW|syscall.O_CLOEXEC};next,e:=syscall.Openat(fd,part,f,0);syscall.Close(fd);if e!=nil{return nil,e};fd=next};return os.NewFile(uintptr(fd),path),nil}
-	for _,path:=range []string{filepath.Dir(p.path),p.path}{dir:=path!=p.path;flags:=syscall.O_RDONLY;if dir{flags|=syscall.O_DIRECTORY};local,e:=openNoSymlinks(path,flags);if e!=nil{return e};peer,e:=openPeer(path,flags);if e!=nil{local.Close();return e};a,ae:=local.Stat();b,be:=peer.Stat();local.Close();if ae!=nil||be!=nil||!os.SameFile(a,b){peer.Close();return errors.New("Podman and manager do not share the same profile directory/file")};if e=privateOwned(peer,dir);e!=nil{peer.Close();return e};if !dir{bytesRead,e:=io.ReadAll(io.LimitReader(peer,int64(len(daemonlessSyscallPolicy)+1)));if e!=nil||!bytes.Equal(bytesRead,[]byte(daemonlessSyscallPolicy)){peer.Close();return errors.New("Podman-visible fixed policy differs")}};peer.Close()}
-	after,e:=processStart(p.identity.pid);if e!=nil||after!=p.identity.start{return errors.New("Podman peer was replaced during filesystem validation")};return nil
+	root, e := syscall.Open(fmt.Sprintf("/proc/%d/root", p.identity.pid), syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
+	if e != nil {
+		return e
+	}
+	defer syscall.Close(root)
+	openPeer := func(path string, flags int) (*os.File, error) {
+		fd, e := syscall.Dup(root)
+		if e != nil {
+			return nil, e
+		}
+		parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+		for i, part := range parts {
+			f := syscall.O_RDONLY | syscall.O_DIRECTORY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
+			if i == len(parts)-1 {
+				f = flags | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
+			}
+			next, e := syscall.Openat(fd, part, f, 0)
+			syscall.Close(fd)
+			if e != nil {
+				return nil, e
+			}
+			fd = next
+		}
+		return os.NewFile(uintptr(fd), path), nil
+	}
+	for _, path := range []string{filepath.Dir(p.path), p.path} {
+		dir := path != p.path
+		flags := syscall.O_RDONLY
+		if dir {
+			flags |= syscall.O_DIRECTORY
+		}
+		local, e := openNoSymlinks(path, flags)
+		if e != nil {
+			return e
+		}
+		peer, e := openPeer(path, flags)
+		if e != nil {
+			local.Close()
+			return e
+		}
+		a, ae := local.Stat()
+		b, be := peer.Stat()
+		local.Close()
+		if ae != nil || be != nil || !os.SameFile(a, b) {
+			peer.Close()
+			return errors.New("Podman and manager do not share the same profile directory/file")
+		}
+		if e = privateOwned(peer, dir); e != nil {
+			peer.Close()
+			return e
+		}
+		if !dir {
+			bytesRead, e := io.ReadAll(io.LimitReader(peer, int64(len(daemonlessSyscallPolicy)+1)))
+			if e != nil || !bytes.Equal(bytesRead, []byte(daemonlessSyscallPolicy)) {
+				peer.Close()
+				return errors.New("Podman-visible fixed policy differs")
+			}
+		}
+		peer.Close()
+	}
+	after, e := processStart(p.identity.pid)
+	if e != nil || after != p.identity.start {
+		return errors.New("Podman peer was replaced during filesystem validation")
+	}
+	return nil
 }
 
 type ociSandbox struct {
