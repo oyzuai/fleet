@@ -102,7 +102,7 @@ func TestPodmanEffectiveSandbox(t *testing.T) {
 	if socket == "" || image == "" {
 		t.Skip("dedicated uid1002 Podman4.9 proof requires explicit socket and immutable image")
 	}
-	if os.Geteuid() != 1002 || !strings.HasPrefix(socket, "/run/user/1002/") || !strings.HasPrefix(image, "sha256:") {
+	if os.Geteuid() != 1002 || !strings.HasPrefix(socket, "/run/user/1002/") || !strings.HasPrefix(image, "ghcr.io/oyzuai/oyzu-execution/base@sha256:") {
 		t.Fatal("proof is restricted to dedicated uid1002 and immutable image")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -128,6 +128,7 @@ func TestPodmanEffectiveSandbox(t *testing.T) {
 	}
 	a, e := engine.InspectReadinessAllocation(ctx, id)
 	if e != nil || !a.SandboxApplied || a.Privileged || a.HostNetwork || a.ExtraMount {
+		var metadata struct{HostConfig struct{SecurityOpt []string};OCIConfigPath string};_ =engine.do(ctx,"GET","/containers/"+id+"/json",nil,nil,&metadata);t.Logf("own container policy metadata: %+v",metadata)
 		t.Fatalf("actual OCI sandbox rejected: %+v %v", a, e)
 	}
 	code, e := engine.WaitContainer(ctx, id)
