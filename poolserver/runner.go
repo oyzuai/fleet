@@ -78,18 +78,23 @@ func (s *Server) runner(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		m.Report = report
+		m.ReportedAt = s.now()
 		if s.persist(w, d) {
 			respond(w, 200, map[string]bool{"ok": true})
 		}
 	case "demand":
 		n := 0
 		for _, j := range d.Jobs {
-			if j.State == "queued" {
+			if j.State == "queued" && qualifiedManager(m, s.now()) {
 				n++
 			}
 		}
 		respond(w, 200, runnerclient.Demand{Eligible: n, Ready: n})
 	case "claim":
+		if !qualifiedManager(m, s.now()) {
+			w.WriteHeader(204)
+			return
+		}
 		jobs := []*jobRecord{}
 		for _, j := range d.Jobs {
 			if j.State == "queued" {
@@ -142,6 +147,16 @@ func (s *Server) runner(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "REQUEST_INVALID", "Route not found.")
 	}
 }
+
+// Managers report every ten seconds. Missing or stale qualification cannot
+// authorize untrusted work, even when their slots remain ready for trusted jobs.
+func qualifiedManager(m *managerRecord, now time.Time) bool {
+	return !m.ReportedAt.IsZero() && !now.Before(m.ReportedAt) && now.Sub(m.ReportedAt) < 30*time.Second &&
+		m.Report.Facts["oyzu.io/isolation"] == "container" &&
+		m.Report.Facts["oyzu.io/egress"] == "enforced" &&
+		m.Report.Facts["oyzu.io/untrusted"] == "accepted"
+}
+
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Token     string `json:"token"`

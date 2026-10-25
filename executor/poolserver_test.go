@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/oyzuai/fleet/assertion"
+	"github.com/oyzuai/fleet/manager"
 	"github.com/oyzuai/fleet/poolserver"
 	"github.com/oyzuai/fleet/runnerclient"
 )
@@ -92,6 +93,9 @@ func TestExecutorReportsRealPoolTerminalOutcomes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if err = client.Report(context.Background(), access.Token, runnerclient.Report{Facts: map[string]string{manager.FactIsolation: "container", manager.FactEgress: manager.EgressEnforced, manager.FactUntrusted: manager.UntrustedAccepted}}); err != nil {
+				t.Fatal(err)
+			}
 			claim, err := client.Claim(context.Background(), access.Token)
 			if err != nil || claim == nil {
 				t.Fatalf("claim %v", err)
@@ -109,6 +113,9 @@ func TestExecutorReportsRealPoolTerminalOutcomes(t *testing.T) {
 			t.Setenv("FAKE_GIT_LOG", filepath.Join(dir, "git-log"))
 			if mode == "verbose-success" {
 				t.Setenv("FAKE_OYZU_VERBOSE_TAIL", "1")
+			}
+			if mode == "missing-task" {
+				t.Setenv("FAKE_OYZU_MISSING_TASK", "1")
 			}
 			if err = Run(context.Background(), Config{Client: client, StartupTokenFile: token, WorkDir: filepath.Join(dir, "work"), Git: tools, Oyzu: tools, LogDrainTimeout: time.Second}); err != nil {
 				t.Fatal(err)
@@ -130,9 +137,16 @@ func TestExecutorReportsRealPoolTerminalOutcomes(t *testing.T) {
 					t.Fatalf("lost cancellation failure: %s", b)
 				}
 			case "missing-task":
-				if run.State != "failed" || run.Reason == nil || run.Reason.Code != "TASK_NOT_DEFINED" {
+				if run.State != "failed" || run.ExitCode == nil || *run.ExitCode != 1 {
 					t.Fatalf("lost missing-task disposition: %s", b)
 				}
+				req, _ = http.NewRequest("GET", server.URL+run.Links.Logs, nil)
+				req.Header.Set("Tailscale-User-Login", "test@example.com")
+				resp, err = server.Client().Do(req)
+				if err != nil { t.Fatal(err) }
+				logs, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode != 200 || !bytes.Contains(logs, []byte("TASK_NOT_FOUND")) { t.Fatalf("missing resolver diagnostics: %d %s", resp.StatusCode, logs) }
 			case "verbose-success":
 				if run.State != "succeeded" {
 					t.Fatalf("verbose success rejected: %s", b)

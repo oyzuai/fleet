@@ -68,6 +68,14 @@ func fakeGit() {
 }
 
 func fakeOyzu() {
+	if path := os.Getenv("FAKE_OYZU_TASK_ARGS"); path != "" {
+		b, _ := json.Marshal(os.Args[1:])
+		_ = os.WriteFile(path, b, 0600)
+	}
+	if os.Getenv("FAKE_OYZU_MISSING_TASK") != "" {
+		fmt.Fprintln(os.Stderr, "TASK_NOT_FOUND: requested task is not defined")
+		os.Exit(1)
+	}
 	if os.Getenv("FAKE_OYZU_VERBOSE_TAIL") != "" {
 		for i := 0; i < 60; i++ {
 			fmt.Println(strings.Repeat("v", 65535))
@@ -550,6 +558,9 @@ func TestRunCheckoutHistoryMatchesAdmissionWithoutChangingOrdinaryJobs(t *testin
 					{"checkout", "--quiet", "--detach", sha},
 					{"diff", "--numstat", base, sha},
 				}
+			} else if kind == "build" {
+				want[1] = append(want[1], base)
+				want[2] = []string{"checkout", "--quiet", "--detach", sha}
 			}
 			if !reflect.DeepEqual(calls, want) {
 				t.Fatalf("checkout calls = %q, want %q", calls, want)
@@ -582,15 +593,35 @@ func TestRunReportsFailure(t *testing.T) {
 	}
 }
 
-func TestRunSkipsAMissingTask(t *testing.T) {
-	job := buildJob("run", "oyzu", "run", "nope")
+func TestRunReportsResolverFailureForMissingTask(t *testing.T) {
+	job := buildJob("run", "oyzu", "run", "--isolated", "nope")
 	job.Task = "nope"
 	runs, cfg, _ := setup(t, job)
+	t.Setenv("FAKE_OYZU_MISSING_TASK", "1")
 	if err := Run(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if o := runs.finished; o == nil || o.State != "skipped" {
+	if o := runs.finished; o == nil || o.State != "failed" || o.ExitCode == nil || *o.ExitCode != 1 || !strings.Contains(o.Summary, "TASK_NOT_FOUND") {
 		t.Fatalf("outcome = %+v", o)
+	}
+}
+
+func TestRunDelegatesQualifiedAndNativeTasksToIsolatedResolver(t *testing.T) {
+	for _, task := range []string{"cli:test", "test"} {
+		t.Run(task, func(t *testing.T) {
+			job := buildJob("run", "oyzu", "run", "--isolated", task)
+			job.Task = task
+			runs, cfg, _ := setup(t, job)
+			path := filepath.Join(t.TempDir(), "args.json")
+			t.Setenv("FAKE_OYZU_TASK_ARGS", path)
+			if err := Run(context.Background(), cfg); err != nil { t.Fatal(err) }
+			if o := runs.finished; o == nil || o.State != "succeeded" { t.Fatalf("outcome=%+v", o) }
+			b, err := os.ReadFile(path)
+			if err != nil { t.Fatal(err) }
+			var args []string
+			if err := json.Unmarshal(b, &args); err != nil { t.Fatal(err) }
+			if !reflect.DeepEqual(args, []string{"run", "--isolated", task}) { t.Fatalf("resolver args=%q", args) }
+		})
 	}
 }
 

@@ -130,6 +130,19 @@ type loginIdentity struct {
 
 func (f *fixture) login(t *testing.T) loginIdentity {
 	t.Helper()
+	id := f.loginWithoutReport(t)
+	if err := f.c.Report(context.Background(), id.access, runnerclient.Report{Facts: qualifiedFacts()}); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func qualifiedFacts() map[string]string {
+	return map[string]string{manager.FactOS: "linux", manager.FactIsolation: "container", manager.FactEgress: manager.EgressEnforced, manager.FactUntrusted: manager.UntrustedAccepted}
+}
+
+func (f *fixture) loginWithoutReport(t *testing.T) loginIdentity {
+	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -173,7 +186,7 @@ func TestRunLifecycleRealRunnerClient(t *testing.T) {
 	if err != nil || demand.Ready != 1 {
 		t.Fatalf("demand: %#v %v", demand, err)
 	}
-	if err = f.c.Report(ctx, id.access, runnerclient.Report{Facts: map[string]string{"oyzu.io/os": "linux"}, Slots: runnerclient.Slots{Max: 2}}); err != nil {
+	if err = f.c.Report(ctx, id.access, runnerclient.Report{Facts: qualifiedFacts(), Slots: runnerclient.Slots{Max: 2}}); err != nil {
 		t.Fatal(err)
 	}
 	session, err := f.c.ReadinessSession(ctx, id.access, "boot")
@@ -616,7 +629,7 @@ type protocolDriver struct {
 }
 
 func (d *protocolDriver) Facts(context.Context) (manager.Facts, error) {
-	return manager.Facts{"oyzu.io/os": "linux"}, nil
+	return qualifiedFacts(), nil
 }
 func (d *protocolDriver) Capacity(context.Context) (manager.Capacity, error) {
 	d.mu.Lock()

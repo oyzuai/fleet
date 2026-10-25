@@ -241,6 +241,23 @@ including every submount. An echoed HostConfig is insufficient. The first
 qualification is bounded to Linux amd64 and Podman4.9; unsupported engines or
 control drift do not receive readiness authority.
 
+The pool admits claims only after the enrolled manager reports
+`oyzu.io/isolation=container`, `oyzu.io/egress=enforced` and
+`oyzu.io/untrusted=accepted`. Reports are refreshed every ten seconds; missing,
+negative or thirty-second-old qualification yields zero demand and no claim,
+even if slots are ready for trusted work. A failed local egress self-test cannot
+authorize these jobs. The server timestamps qualification on receipt.
+
+Affected builds fetch the exact requested head and baseline commits with depth
+one and complete trees/blobs, so the isolated CLI can compare the baseline
+without source credentials or silently falling back because its objects are
+absent. An unavailable requested baseline fails checkout.
+
+Task names are resolved by the checked-out Oyzu CLI, including qualified and
+native tasks, through the fixed `oyzu run --isolated <task>` command. Resolver
+or isolation errors finish as failed with the CLI diagnostics; the executor
+does not infer task availability from the root TOML or fall back to host execution.
+
 Keep the original config and App key root-owned 0600. For the service user,
 systemd can expose them using `LoadCredential=server.json:/etc/oyzu-pool/server.json`
 and `LoadCredential=github-app.pem:/etc/oyzu-pool/github-app.pem`. Start with the
