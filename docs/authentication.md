@@ -48,7 +48,7 @@ replace Oyzu enrollment.
 
 ## Execution decision reference
 
-The draft [runner-v1 startup contract](https://github.com/oyzuai/oyzu/pull/981)
+The [runner-v1 startup contract](https://github.com/oyzuai/oyzu/blob/main/docs/contracts/runner-v1/startup-decision.md)
 adds the server-issued opaque `execution_trust_decision` reference. A
 trust-governed build claim supplies a canonical lowercase, nonzero UUID. Fleet
 carries it through the driver to the executor and echoes it without constructing
