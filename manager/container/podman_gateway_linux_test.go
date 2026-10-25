@@ -97,25 +97,33 @@ func TestPodmanDriverJobRegistrationLifecycle(t *testing.T) {
 				readers.Add(1)
 				go func() {
 					defer readers.Done()
-					ticker := time.NewTicker(250*time.Millisecond)
+					ticker := time.NewTicker(250 * time.Millisecond)
 					defer ticker.Stop()
 					for {
 						_ = exec.CommandContext(pollCtx, "podman", "ps", "-a", "--no-trunc", "--filter", "label="+LabelManager+"="+d.managerLabel(), "--filter", "label="+LabelJob, "--format", "{{.ID}}").Run()
-						select { case <-pollCtx.Done(): return; case <-ticker.C: }
+						select {
+						case <-pollCtx.Done():
+							return
+						case <-ticker.C:
+						}
 					}
 				}()
 				defer func() { stop(); readers.Wait() }()
 				_ = exec.CommandContext(ctx, "podman", "inspect", "--format", "{{json .Id}} {{json .OCIConfigPath}}", d.gatewayName()).Run()
-				if err := d.gw.control.Health(ctx); err != nil { t.Fatalf("native CLI reads broke own gateway before Start: %v", err) }
+				if err := d.gw.control.Health(ctx); err != nil {
+					t.Fatalf("native CLI reads broke own gateway before Start: %v", err)
+				}
 			}
 			claim := runnerclient.Claim{JobID: 5, Attempt: 1, StartupToken: "test-only-never-spent", Egress: runnerclient.ClaimEgress{Allow: []runnerclient.EgressAllow{{Host: "example.invalid", Port: 443}}}}
 			h, err := d.Start(ctx, manager.SlotID("0"), claim)
 			tornDown := false
 			if h.Ref != "" {
 				defer func() {
-					if !tornDown { if err := d.Teardown(context.WithoutCancel(ctx), h); err != nil {
-						t.Error(err)
-					} }
+					if !tornDown {
+						if err := d.Teardown(context.WithoutCancel(ctx), h); err != nil {
+							t.Error(err)
+						}
+					}
 				}()
 			}
 			if err != nil {
