@@ -462,7 +462,8 @@ func verifyPodmanOCI(o ociSandbox, user string) error {
 			return fmt.Errorf("Podman %s namespace is not private", ns)
 		}
 	}
-	if !sameStrings(o.Linux.MaskedPaths, containerSandboxPolicy().MaskedPaths) || len(o.Linux.ReadonlyPaths) != 0 {
+	actualMasks:=slices.Clone(o.Linux.MaskedPaths);slices.Sort(actualMasks);actualMasks=slices.Compact(actualMasks)
+	if !sameStrings(actualMasks, containerSandboxPolicy().MaskedPaths) || len(o.Linux.ReadonlyPaths) != 0 {
 		return fmt.Errorf("Podman applied proc/sys path restrictions differ: masked=%v readonly=%v",o.Linux.MaskedPaths,o.Linux.ReadonlyPaths)
 	}
 	sysro := false

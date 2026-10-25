@@ -237,6 +237,9 @@ func TestPodmanAppliedOCIRejectsControlDrift(t *testing.T) {
 	if e := verifyPodmanOCI(o, "1000:1000"); e != nil {
 		t.Fatal(e)
 	}
+	// Podman4.9 adds powercap both as an OCI default and an explicit mask.
+	o.Linux.MaskedPaths=append(o.Linux.MaskedPaths,"/sys/devices/virtual/powercap")
+	if e:=verifyPodmanOCI(o,"1000:1000");e!=nil{t.Fatalf("same effective mask set refused: %v",e)}
 	for _, drift := range []string{"NNP", "caps", "proc", "namespace", "sys", "seccomp"} {
 		copy := o
 		data, _ := json.Marshal(o)
