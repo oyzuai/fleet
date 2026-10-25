@@ -23,25 +23,41 @@ type boundedGatewayEngine struct {
 }
 
 func matchingProofLabels(actual, requested map[string]string) bool {
-	for key, value := range requested { if actual[key] != value { return false } }
+	for key, value := range requested {
+		if actual[key] != value {
+			return false
+		}
+	}
 	return true
 }
 
 func (e *boundedGatewayEngine) ListContainers(ctx context.Context, labels map[string]string) ([]Summary, error) {
 	items, err := e.Engine.ListContainers(ctx, labels)
-	for _, item := range items { if !matchingProofLabels(item.Labels, labels) { return nil, fmt.Errorf("engine container filter returned foreign object %s", item.Name) } }
+	for _, item := range items {
+		if !matchingProofLabels(item.Labels, labels) {
+			return nil, fmt.Errorf("engine container filter returned foreign object %s", item.Name)
+		}
+	}
 	return items, err
 }
 
 func (e *boundedGatewayEngine) ListNetworks(ctx context.Context, labels map[string]string) ([]Network, error) {
 	items, err := e.Engine.ListNetworks(ctx, labels)
-	for _, item := range items { if !matchingProofLabels(item.Labels, labels) { return nil, fmt.Errorf("engine network filter returned foreign object %s", item.Name) } }
+	for _, item := range items {
+		if !matchingProofLabels(item.Labels, labels) {
+			return nil, fmt.Errorf("engine network filter returned foreign object %s", item.Name)
+		}
+	}
 	return items, err
 }
 
 func (e *boundedGatewayEngine) ListVolumes(ctx context.Context, labels map[string]string) ([]Volume, error) {
 	items, err := e.Engine.ListVolumes(ctx, labels)
-	for _, item := range items { if !matchingProofLabels(item.Labels, labels) { return nil, fmt.Errorf("engine volume filter returned foreign object %s", item.Name) } }
+	for _, item := range items {
+		if !matchingProofLabels(item.Labels, labels) {
+			return nil, fmt.Errorf("engine volume filter returned foreign object %s", item.Name)
+		}
+	}
 	return items, err
 }
 
@@ -87,7 +103,10 @@ func TestPodmanDriverGatewayProbeCleanup(t *testing.T) {
 			return
 		}
 		for _, network := range networks {
-			if network.Labels[LabelManager] != d.managerLabel() || network.Labels[LabelPool] != d.Pool { t.Errorf("refusing cleanup of foreign network %s", network.Name); continue }
+			if network.Labels[LabelManager] != d.managerLabel() || network.Labels[LabelPool] != d.Pool {
+				t.Errorf("refusing cleanup of foreign network %s", network.Name)
+				continue
+			}
 			if err := engine.RemoveNetwork(cleanup, network.Name); err != nil {
 				t.Error(err)
 			}
