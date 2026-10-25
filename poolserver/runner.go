@@ -338,14 +338,16 @@ func (s *Server) jobRoute(w http.ResponseWriter, r *http.Request, route, digest 
 			problem(w, 409, "CANCEL_REQUESTED", "Cancellation must be confirmed by the executor.")
 			return
 		}
-		if outcome.State=="skipped" {
-			outcome.State="failed"
-			outcome.ReasonCode="TASK_NOT_DEFINED"
+		if outcome.State == "skipped" {
+			outcome.State = "failed"
+			outcome.ReasonCode = "TASK_NOT_DEFINED"
 		}
-		if len(outcome.Summary)>64<<10 {
-			outcome.Summary=outcome.Summary[:64<<10]
-			for !utf8.ValidString(outcome.Summary) {outcome.Summary=outcome.Summary[:len(outcome.Summary)-1]}
-			outcome.Summary+="\n[summary truncated; see run logs]"
+		if len(outcome.Summary) > 64<<10 {
+			outcome.Summary = outcome.Summary[:64<<10]
+			for !utf8.ValidString(outcome.Summary) {
+				outcome.Summary = outcome.Summary[:len(outcome.Summary)-1]
+			}
+			outcome.Summary += "\n[summary truncated; see run logs]"
 		}
 		for _, o := range outcome.Outputs {
 			if !validOutput(o) {
