@@ -25,7 +25,7 @@ docker build --network=none -t "$image_tag" "$proof_dir"
 docker push "$image_tag"
 image_digest="$(docker image inspect "$image_tag" --format '{{index .RepoDigests 0}}')"
 docker run -d --name "$canary_name" --network bridge "$image_digest" /executor gateway readiness-canary --http :8080 --dns :8053 >/dev/null
-canary_ip="$(docker inspect "$canary_name" --format '{{.NetworkSettings.IPAddress}}')"
+canary_ip="$(docker inspect "$canary_name" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')"
 FLEET_READINESS_IMAGE="$image_digest" \
 FLEET_READINESS_CANARY_URL="http://$canary_ip:8080" \
 FLEET_READINESS_CANARY_DNS="$canary_ip:8053" \

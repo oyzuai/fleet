@@ -10,12 +10,14 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/oyzuai/fleet/manager"
+	"github.com/oyzuai/fleet/readiness"
 	"github.com/oyzuai/fleet/runnerclient"
 )
 
@@ -32,6 +34,11 @@ type fakeEngine struct {
 	networks   map[string]*fakeNetwork
 	// probeExit is the exit code the self-test's probe container ends with.
 	probeExit int
+	// ipv6Probe is what `gateway probe-ipv6` prints, "available" when empty,
+	// and ipv6ProbeExit how it exits. ipv6Probes counts its containers.
+	ipv6Probe     string
+	ipv6ProbeExit int
+	ipv6Probes    int
 }
 
 type fakeNetwork struct {
@@ -116,8 +123,14 @@ func matches(have, want map[string]string) bool {
 func (e *fakeEngine) CreateContainer(_ context.Context, name string, spec Spec) (string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.next++
-	id := fmt.Sprintf("c%d", e.next)
+	var id string
+	if len(spec.Cmd) > 2 && spec.Cmd[2] == "probe-ipv6" {
+		// Kept out of the c1, c2, ... numbering the other tests rely on.
+		id = fmt.Sprintf("ipv6-%d", e.ipv6Probes)
+	} else {
+		e.next++
+		id = fmt.Sprintf("c%d", e.next)
+	}
 	e.containers[id] = &fakeContainer{name: name, spec: spec, files: map[string]*tar.Header{},
 		content: map[string]string{}, exit: make(chan int, 1)}
 	return id, nil
@@ -163,6 +176,15 @@ func (e *fakeEngine) StartContainer(_ context.Context, id string) error {
 	c.started = true
 	if len(c.spec.Cmd) > 2 && c.spec.Cmd[1] == "gateway" && c.spec.Cmd[2] == "probe" {
 		c.exit <- e.probeExit
+	}
+	if len(c.spec.Cmd) > 2 && c.spec.Cmd[1] == "gateway" && c.spec.Cmd[2] == "probe-ipv6" {
+		e.ipv6Probes++
+		c.logs = e.ipv6Probe
+		if c.logs == "" {
+			c.logs = "available"
+		}
+		c.logs += "\n"
+		c.exit <- e.ipv6ProbeExit
 	}
 	e.mu.Unlock()
 	return nil
@@ -592,4 +614,90 @@ func TestCheckImageDigest(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestJobsKeepTheIPv6SysctlsUnlessTheEngineKernelHasNoIPv6(t *testing.T) {
+	ipv6Off := map[string]string{"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"}
+	start := func(t *testing.T, e *fakeEngine, d *Driver, job int64) Spec {
+		t.Helper()
+		h, err := d.Start(context.Background(), manager.SlotID(strconv.FormatInt(job%2, 10)), runnerclient.Claim{JobID: job, Attempt: 1, StartupToken: "st"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range e.containers {
+			if c.name == h.Ref {
+				return c.spec
+			}
+		}
+		t.Fatalf("no container %s", h.Ref)
+		return Spec{}
+	}
+	for _, c := range []struct {
+		name, probe string
+		exit        int
+		want        map[string]string
+		probes      int
+	}{
+		// IPv6 present is remembered; the sysctls stay.
+		{name: "kernel with IPv6", probe: "available", want: ipv6Off, probes: 1},
+		// Only the kernel's own answer drops them, and it is asked every time.
+		{name: "kernel booted without IPv6", probe: "disabled", want: nil, probes: 2},
+		// Anything else keeps them for that container only.
+		{name: "unexpected answer", probe: "disabled-ish", want: ipv6Off, probes: 2},
+		{name: "extra output", probe: "noise\ndisabled", want: ipv6Off, probes: 2},
+		{name: "probe fails", probe: "disabled", exit: 1, want: ipv6Off, probes: 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newFakeEngine()
+			e.present = true
+			e.ipv6Probe, e.ipv6ProbeExit = c.probe, c.exit
+			d := newDriver(e)
+			ready(t, d)
+			for job := int64(1); job <= 2; job++ {
+				if got := start(t, e, d, job).Sysctls; !maps.Equal(got, c.want) {
+					t.Fatalf("job %d sysctls = %v, want %v", job, got, c.want)
+				}
+			}
+			if e.ipv6Probes != c.probes {
+				t.Fatalf("%d probes, want %d", e.ipv6Probes, c.probes)
+			}
+			for id, ct := range e.containers {
+				if strings.HasPrefix(id, "ipv6-") {
+					t.Fatalf("probe %s was not removed", id)
+				}
+				if slices.Contains(ct.spec.Cmd, "probe-ipv6") {
+					t.Fatal("probe left behind")
+				}
+			}
+		})
+	}
+}
+
+func TestTheReadinessBoundarySaysWhenIPv6SysctlsAreLeftOut(t *testing.T) {
+	boundary := func(probe string) readiness.Boundary {
+		e := newFakeEngine()
+		e.present = true
+		e.ipv6Probe = probe
+		d := newDriver(e)
+		ready(t, d)
+		d.Engine = identifiedEngine{e}
+		b, err := d.ReadinessBoundary(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	if with, without := boundary("available"), boundary("disabled"); with.Runtime == without.Runtime {
+		t.Fatal("the boundary does not tell a kernel booted without IPv6 apart")
+	}
+}
+
+// identifiedEngine is a fake engine with the identity a readiness boundary
+// needs.
+type identifiedEngine struct{ *fakeEngine }
+
+func (e identifiedEngine) Info(ctx context.Context) (Info, error) {
+	info, err := e.fakeEngine.Info(ctx)
+	info.ID, info.ServerVersion = "engine-1", "29.0.0"
+	return info, err
 }

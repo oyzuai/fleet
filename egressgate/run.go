@@ -122,6 +122,7 @@ const gatewayUsage = `usage:
   oyzu-executor gateway [--mode enforce|report] [--pool NAME] [--proxy :3128] [--dns :53]
                         [--control 127.0.0.1:9091] [--control-token-env NAME]
   oyzu-executor gateway probe --proxy URL [--deny host:port] [--direct host:port,...]
+  oyzu-executor gateway probe-ipv6
 `
 
 // Command runs `oyzu-executor gateway`, args without the word gateway. The
@@ -139,6 +140,9 @@ func Command(args []string, log *slog.Logger) error {
 	}
 	if len(args) > 0 && args[0] == "readiness-canary" {
 		return canaryCommand(args[1:])
+	}
+	if len(args) > 0 && args[0] == "probe-ipv6" {
+		return ipv6Command(args[1:])
 	}
 	fs := flag.NewFlagSet("oyzu-executor gateway", flag.ContinueOnError)
 	mode := fs.String("mode", string(ModeEnforce), "enforce, or report to log what enforcing would block and allow it")
