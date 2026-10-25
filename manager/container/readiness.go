@@ -42,29 +42,32 @@ func (d *Driver) ApplyReadinessMode(ctx context.Context, mode string) (bool, err
 	if mode != "open" && mode != "report" && mode != "enforce" {
 		return false, errors.New("unsupported readiness mode")
 	}
+	d.gwMu.Lock()
+	defer d.gwMu.Unlock()
 	d.mu.Lock()
 	if string(d.modeLocked()) == mode {
 		d.mu.Unlock()
 		return true, nil
 	}
 	d.localBinding = nil
-	if len(d.inUse) > 0 || d.testing {
+	if len(d.inUse) > 0 || d.testing || d.activeProbes != 0 {
 		d.mu.Unlock()
 		return false, nil
 	}
-	d.activeMode = EgressMode(mode)
 	d.egressOK = false
 	d.tested = false
 	d.factsDirty = true
 	d.mu.Unlock()
-	d.gwMu.Lock()
-	defer d.gwMu.Unlock()
-	if d.gw != nil {
-		if err := d.Engine.RemoveContainer(ctx, d.gw.id); err != nil {
-			return false, err
-		}
-		d.gw = nil
+	if err := d.cleanupPairNetworksLocked(ctx); err != nil {
+		return false, err
 	}
+	if err := d.retirePairLocked(ctx); err != nil {
+		return false, err
+	}
+	d.mu.Lock()
+	d.activeMode = EgressMode(mode)
+	d.anchorInvalid = false
+	d.mu.Unlock()
 	return true, nil
 }
 func (d *Driver) SetReadiness(b *readiness.Binding) {
@@ -73,7 +76,7 @@ func (d *Driver) SetReadiness(b *readiness.Binding) {
 	if (d.localBinding == nil) != (b == nil) || (d.localBinding != nil && b != nil && *d.localBinding != *b) {
 		d.factsDirty = true
 	}
-	if b == nil {
+	if b == nil || d.anchorInvalid || d.closing {
 		d.localBinding = nil
 		return
 	}
@@ -116,24 +119,38 @@ func (d *Driver) ReadinessBoundary(ctx context.Context) (readiness.Boundary, err
 	if sysctls == nil {
 		ipv6 = "kernel-booted-without-ipv6"
 	}
+	var anchor *anchorIdentity
+	var gatewayID string
+	if mode != EgressOpen {
+		d.gwMu.Lock()
+		gw, err := d.ensureGatewayLocked(ctx)
+		if err != nil {
+			d.gwMu.Unlock()
+			return readiness.Boundary{}, err
+		}
+		gatewayID = gw.id
+		if d.anchor != nil {
+			identity := d.anchor.identity
+			anchor = &identity
+		}
+		d.gwMu.Unlock()
+	}
 	command, _ := json.Marshal(struct {
-		Command      []string
-		User         string
-		CPUs         float64
-		Memory       int64
-		Pids         int64
-		Sandbox      string
-		HostSecurity []string
-		IPv6         string `json:",omitempty"`
-	}{slices.Clone(d.Command), d.user(), d.CPUs, d.MemoryBytes, d.PidsLimit, sandboxPolicyFingerprint(), slices.Clone(info.SecurityOptions), ipv6})
+		Command         []string
+		User            string
+		CPUs            float64
+		Memory          int64
+		Pids            int64
+		Sandbox         string
+		HostSecurity    []string
+		IPv6            string          `json:",omitempty"`
+		Anchor          *anchorIdentity `json:",omitempty"`
+		JobRootReadOnly bool
+	}{slices.Clone(d.Command), d.user(), d.CPUs, d.MemoryBytes, d.PidsLimit, sandboxPolicyFingerprint(), slices.Clone(info.SecurityOptions), ipv6, anchor, false})
 	runtime := sha256.Sum256(append([]byte(info.ServerVersion), command...))
 	b := readiness.Boundary{Support: "supported", Driver: "container", Host: info.ID, Image: d.Image, Runtime: hex.EncodeToString(runtime[:]), Network: "internal-bridge-ipv4-gateway-dns-v1", Mode: string(mode)}
 	if mode != EgressOpen {
-		gw, err := d.ensureGateway(ctx)
-		if err != nil {
-			return b, err
-		}
-		b.Gateway = gw.id
+		b.Gateway = gatewayID
 	} else {
 		b.Network = d.Network
 		if b.Network == "" {
@@ -146,6 +163,9 @@ func (d *Driver) ReadinessBoundary(ctx context.Context) (readiness.Boundary, err
 	return b, nil
 }
 func (d *Driver) CheckReadiness(ctx context.Context, binding *readiness.Binding) error {
+	if err := d.checkPair(ctx); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	managed := d.managedReadiness
 	local := d.localBinding
@@ -180,6 +200,8 @@ type allocationInspector interface {
 	InspectReadinessAllocation(context.Context, string) (allocation, error)
 }
 type allocation struct {
+	PinnedImages   []string
+	ReadOnly       bool
 	NetworkIDs     []string
 	ImageReference string
 	ExpectedImage  string
@@ -194,7 +216,7 @@ type allocation struct {
 	SandboxApplied bool
 }
 
-func (d *Driver) checkAllocation(ctx context.Context, id string, expectedDNS []string, expectedNetwork string) error {
+func (d *Driver) checkAllocation(ctx context.Context, id string, expectedDNS []string, expectedNetwork string, expectedReadOnly bool) error {
 	inspector, ok := d.Engine.(allocationInspector)
 	if !ok {
 		return errors.New("engine cannot observe actual network allocation")
@@ -203,7 +225,7 @@ func (d *Driver) checkAllocation(ctx context.Context, id string, expectedDNS []s
 	if err != nil {
 		return err
 	}
-	if a.ImageReference != d.Image || a.ExpectedImage == "" || a.Image != a.ExpectedImage {
+	if (a.ImageReference != d.Image && !slices.Contains(a.PinnedImages, d.Image)) || a.ExpectedImage == "" || a.Image != a.ExpectedImage {
 		return fmt.Errorf("%w: actual allocation image differs from its pinned image", readiness.ErrBoundaryChanged)
 	}
 	if !slices.Equal(a.DNS, expectedDNS) {
@@ -215,7 +237,7 @@ func (d *Driver) checkAllocation(ctx context.Context, id string, expectedDNS []s
 	if a.Networks != 1 || a.IPv6 || a.Privileged || a.HostNetwork || a.ExtraMount {
 		return fmt.Errorf("%w: actual allocation exceeds the qualified container boundary", readiness.ErrBoundaryChanged)
 	}
-	if a.User != d.user() || !a.SandboxApplied {
+	if a.User != d.user() || !a.SandboxApplied || a.ReadOnly != expectedReadOnly {
 		return fmt.Errorf("%w: actual syscall/proc or non-root policy differs from the measured runtime", readiness.ErrBoundaryChanged)
 	}
 	return nil
@@ -236,6 +258,13 @@ func (d *Driver) ProbeReadiness(ctx context.Context, c readiness.Challenge) (res
 		}
 		result.Checks = append(result.Checks, readiness.Subcheck{Name: name, Outcome: outcome, Reason: reason})
 	}
+	ctx, release, err := d.beginProbe(ctx)
+	if err != nil {
+		add("control-reachability", "inconclusive", "DRIVER_STOPPING")
+		result.Aggregate()
+		return
+	}
+	defer release()
 	d.mu.Lock()
 	if d.testing {
 		d.mu.Unlock()
@@ -280,13 +309,13 @@ func (d *Driver) ProbeReadiness(ctx context.Context, c readiness.Challenge) (res
 		d.mu.Lock()
 		d.testing = false
 		d.tested = true
-		d.egressOK = result.Outcome == "passed"
+		d.egressOK = result.Outcome == "passed" && !d.anchorInvalid && !d.closing
 		if result.Outcome == "failed" {
 			d.localBinding = nil
 			d.readinessPoisoned = true
 			d.readinessPassedChallenge = ""
 		}
-		if result.Outcome == "passed" {
+		if result.Outcome == "passed" && !d.anchorInvalid && !d.closing {
 			d.readinessPassedChallenge = c.ID
 		}
 		d.factsDirty = true
@@ -354,7 +383,7 @@ func (d *Driver) ProbeReadiness(ctx context.Context, c readiness.Challenge) (res
 	if err = d.Engine.StartContainer(ctx, j.id); err != nil {
 		return
 	}
-	if err = d.checkAllocation(ctx, j.id, dns, j.networkID); err != nil {
+	if err = d.checkAllocation(ctx, j.id, dns, j.networkID, true); err != nil {
 		outcome := "inconclusive"
 		if errors.Is(err, readiness.ErrBoundaryChanged) {
 			outcome = "failed"
@@ -408,7 +437,7 @@ func (d *Driver) CheckReadinessAllocation(ctx context.Context, h manager.Handle,
 	id := j.id
 	dns := slices.Clone(j.dns)
 	d.mu.Unlock()
-	if err = d.checkAllocation(ctx, id, dns, j.networkID); err != nil && errors.Is(err, readiness.ErrBoundaryChanged) {
+	if err = d.checkAllocation(ctx, id, dns, j.networkID, false); err != nil && errors.Is(err, readiness.ErrBoundaryChanged) {
 		d.mu.Lock()
 		d.localBinding = nil
 		d.readinessPoisoned = true

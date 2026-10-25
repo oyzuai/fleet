@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -25,8 +24,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/pelletier/go-toml/v2"
 
 	"github.com/oyzuai/fleet/kindrunner"
 	"github.com/oyzuai/fleet/readiness"
@@ -246,8 +243,11 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	runnerclient.SetDrainPhase("post_finish")
 	// The server's log-only token window starts at job finish. Keep the
 	// original token and spool alive while the uploader drains that window.
-	if capture != nil && !capture.wait(drain) {
-		log.Warn("log drain window expired; log remains incomplete")
+	if capture != nil {
+		capture.beginPostFinishDrain()
+		if !capture.wait(drain) {
+			log.Warn("log drain window expired; log remains incomplete")
+		}
 	}
 	return nil
 }
@@ -368,15 +368,8 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		log.Warn("checkout failed", "error", msg)
 		return failedWith("SOURCE_UNAVAILABLE", "Could not check out "+job.HeadSHA+": "+msg), capture
 	}
-	if job.Operation == "run" {
-		declared, err := declaresTask(filepath.Join(cfg.WorkDir, "oyzu.toml"), job.Task)
-		if err != nil {
-			return failedWith("RUNNER_ERROR", "Could not read `oyzu.toml` at "+job.HeadSHA+": "+err.Error()), capture
-		}
-		if !declared {
-			return runnerclient.Outcome{State: "skipped", Summary: fmt.Sprintf("`oyzu.toml` at `%s` declares no task `%s`.", job.HeadSHA, job.Task)}, capture
-		}
-	}
+	// Oyzu's resolver owns task discovery, including qualified/native tasks.
+	// A root-TOML precheck cannot determine whether the assigned task exists.
 
 	// Build output goes into the masked tail and log spool, never to the runner's own
 	// stdout: that is the pool host's log, which is for admins and must not
@@ -537,9 +530,11 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	}
 	// A signal/WaitDelay-killed CLI is not proof that its native children
 	// cleaned up. Only a normal wait plus its fresh finalized native record
-	// can acknowledge stopping this build invocation.
+	// can acknowledge stopping this native invocation. Isolated tasks use the
+	// same finalized build-manifest contract as isolated builds.
 	stopWithinGrace := interruptedAt.Load() == 0 || time.Since(time.Unix(0, interruptedAt.Load())) < cmd.WaitDelay
-	if job.Operation == "build" && cmd.ProcessState != nil && cmd.ProcessState.Exited() && !forced.Load() && stopWithinGrace {
+	nativeOperation := job.Operation == "build" || (job.Operation == "run" && slices.Contains(job.Command, "--isolated"))
+	if nativeOperation && cmd.ProcessState != nil && cmd.ProcessState.Exited() && !forced.Load() && stopWithinGrace {
 		current := nativeCompletionRecord(cfg.WorkDir)
 		if retainedCompletion != nil {
 			current = retainedCompletion
@@ -617,7 +612,7 @@ func cancellationOutcome(previous runnerclient.Outcome, confirmed bool) runnercl
 			Summary: "Cancellation requested, but native termination was not confirmed by a fresh completed build record.\n\n" + previous.Summary}
 	}
 	return runnerclient.Outcome{State: "cancelled", ExitCode: previous.ExitCode,
-		Summary: "Native build stopped after cancellation was requested.\n\n" + previous.Summary}
+		Summary: "Native execution stopped after cancellation was requested.\n\n" + previous.Summary}
 }
 
 func nativeCompletionRecord(directory string) []byte {
@@ -675,7 +670,8 @@ func failedWith(code, summary string) runnerclient.Outcome {
 
 // checkout fetches exactly the job's commit. The token goes to git as an
 // HTTP header through the environment, so it is in neither the process
-// arguments nor the repository's config. Ordinary builds get the commit alone;
+// arguments nor the repository's config. Affected builds fetch exactly the two
+// requested commits with their complete trees and blobs, without ancestry;
 // plans and admitted slices get the same blobless history so native preparation
 // observes the same version context and affected-build merge base.
 func checkout(ctx context.Context, cfg Config, token string, job runnerclient.Job) error {
@@ -691,6 +687,10 @@ func checkout(ctx context.Context, cfg Config, token string, job runnerclient.Jo
 		{"init", "--quiet"},
 		{"fetch", "--quiet", "--depth", "1", "--no-tags", remote, job.HeadSHA},
 		{"checkout", "--quiet", "--detach", "FETCH_HEAD"},
+	}
+	if job.Kind == "build" && job.Operation == "build" && job.AffectedBase != "" && job.AffectedBase != job.HeadSHA {
+		steps[1] = append(steps[1], job.AffectedBase)
+		steps[2] = []string{"checkout", "--quiet", "--detach", job.HeadSHA}
 	}
 	if job.Kind == "plan" || job.Kind == "slice" {
 		fetch := []string{"fetch", "--quiet", "--filter=blob:none", "--no-tags", "origin", job.HeadSHA}
@@ -745,27 +745,6 @@ func (c *capped) Write(b []byte) (int, error) {
 		c.n -= k
 	}
 	return len(b), nil
-}
-
-// declaresTask reports whether oyzu.toml declares tasks.<task>. A missing file
-// declares nothing; a file that cannot be read or parsed is an error, so the
-// job fails instead of being skipped for the wrong reason.
-func declaresTask(path, task string) (bool, error) {
-	b, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	var doc struct {
-		Tasks map[string]any `toml:"tasks"`
-	}
-	if err := toml.Unmarshal(b, &doc); err != nil {
-		return false, err
-	}
-	_, ok := doc.Tasks[task]
-	return ok, nil
 }
 
 // tail keeps the last summaryLines lines written to it.

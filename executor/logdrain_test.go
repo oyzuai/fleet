@@ -17,15 +17,16 @@ import (
 )
 
 type logDeliveryServer struct {
-	runs        *fakeRuns
-	status      int
-	recover     bool
-	mu          sync.Mutex
-	calls       []string
-	finishedAt  time.Time
-	afterFinish int
-	wrongToken  bool
-	outcome     chan struct{}
+	runs            *fakeRuns
+	status          int
+	recover         bool
+	mu              sync.Mutex
+	calls           []string
+	finishedAt      time.Time
+	afterFinish     int
+	wrongToken      bool
+	outcome         chan struct{}
+	recoveryBarrier chan struct{}
 }
 
 func (s *logDeliveryServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -46,18 +47,28 @@ func (s *logDeliveryServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.calls = append(s.calls, path)
 	if r.Header.Get("Authorization") != "Bearer oyzu_job_ok" {
 		s.wrongToken = true
+		s.mu.Unlock()
 		w.WriteHeader(401)
 		return
 	}
 	status := s.status
+	var recoveryBarrier <-chan struct{}
 	if !s.finishedAt.IsZero() {
 		s.afterFinish++
 		if s.recover {
 			status = 0
+			recoveryBarrier = s.recoveryBarrier
+		}
+	}
+	s.mu.Unlock()
+	if recoveryBarrier != nil {
+		select {
+		case <-recoveryBarrier:
+		case <-r.Context().Done():
+			return
 		}
 	}
 	if status != 0 {
@@ -80,6 +91,9 @@ func setupLogDelivery(t *testing.T, status int, recover bool) (*logDeliveryServe
 	t.Helper()
 	runs, cfg, _ := setup(t, buildJob("build", "oyzu", "build", "cli"))
 	s := &logDeliveryServer{runs: runs, status: status, recover: recover, outcome: make(chan struct{})}
+	if recover {
+		s.recoveryBarrier = make(chan struct{})
+	}
 	server := httptest.NewServer(s)
 	t.Cleanup(server.Close)
 	cfg.Client = runnerclient.New(server.URL, server.Client())
@@ -129,6 +143,15 @@ func TestRunLogDrainAfterOutcome(t *testing.T) {
 					<-done
 				}
 			}()
+			var releaseOnce sync.Once
+			releaseRecovery := func() {
+				if s.recoveryBarrier != nil {
+					releaseOnce.Do(func() { close(s.recoveryBarrier) })
+				}
+			}
+			// A prompt retry can finish before this test resumes at outcome.
+			// Hold recovery until the in-progress spool assertions are complete.
+			defer releaseRecovery()
 			select {
 			case <-s.outcome:
 			case <-time.After(5 * time.Second):
@@ -153,6 +176,7 @@ func TestRunLogDrainAfterOutcome(t *testing.T) {
 				t.Fatalf("Run returned before draining after the outcome: %v", err)
 			default:
 			}
+			releaseRecovery()
 			select {
 			case err := <-done:
 				joined = true

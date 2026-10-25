@@ -2,8 +2,11 @@ package container
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+var errContainerNotFound = errors.New("container not found")
 
 // Engine is the subset of the Docker Engine API the driver uses. Podman
 // serves the same API, so one implementation covers both.

@@ -288,6 +288,89 @@ func TestLogChunkTriggersAndReplay(t *testing.T) {
 	}
 }
 
+func TestPostFinishDrainInterruptsBackoffOnce(t *testing.T) {
+	r := &logReceiver{}
+	seen := make(chan int, 8)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer func() { releaseOnce.Do(func() { close(release) }) }()
+	var mu sync.Mutex
+	attempts := 0
+	c := captureForTest(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if !strings.HasSuffix(req.URL.Path, "/finish") {
+			mu.Lock()
+			attempts++
+			attempt := attempts
+			mu.Unlock()
+			seen <- attempt
+			if attempt == 5 {
+				select {
+				case <-release:
+				case <-req.Context().Done():
+					return
+				}
+			}
+			if attempt <= 5 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+		}
+		r.serve(w, req)
+	}))
+	c.line("stdout", "retained through the outage\n", 0)
+	c.finish()
+	// Four failures leave an 800ms retry delay. Observe requests rather than
+	// changing the uploader's timer or assuming a scheduler interleaving.
+	for want := 1; want <= 4; want++ {
+		select {
+		case got := <-seen:
+			if got != want {
+				t.Fatalf("request %d, want %d", got, want)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("upload did not reach the retry backoff")
+		}
+	}
+	c.signal() // New entries must not turn an outage into a tight retry loop.
+	select {
+	case <-seen:
+		t.Fatal("ordinary entry notification interrupted retry backoff")
+	case <-time.After(100 * time.Millisecond):
+	}
+	c.beginPostFinishDrain()
+	select {
+	case got := <-seen:
+		if got != 5 {
+			t.Fatalf("post-finish request %d, want 5", got)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("post-finish drain did not interrupt the old backoff")
+	}
+	// Repeated transition notifications while that retry is in flight must
+	// neither panic nor interrupt its next ordinary backoff after a failure.
+	for i := 0; i < 10; i++ {
+		c.beginPostFinishDrain()
+	}
+	releasedAt := time.Now()
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case got := <-seen:
+		if got != 6 || time.Since(releasedAt) < 75*time.Millisecond {
+			t.Fatalf("transition repeatedly bypassed backoff: request %d after %s", got, time.Since(releasedAt))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("upload did not retry after the transition")
+	}
+	if !c.wait(2 * time.Second) {
+		t.Fatal("log did not finish after recovery")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.finish == nil || len(r.chunks) != 1 || r.finish.Hash != hexHash(r.raw) || r.finish.TotalEntries != 1 {
+		t.Fatalf("same-token spool delivery did not complete: %+v", r.finish)
+	}
+}
+
 func TestLogCapKeepsHeadAndTail(t *testing.T) {
 	r := &logReceiver{}
 	c := captureForTest(t, http.HandlerFunc(r.serve))

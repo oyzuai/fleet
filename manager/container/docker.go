@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,7 +31,12 @@ type Docker struct {
 	base   string
 	// callTimeout bounds every call but waiting for a container and
 	// pulling an image.
-	callTimeout time.Duration
+	callTimeout    time.Duration
+	unixPath       string
+	adapterMu      sync.Mutex
+	engineDetected bool
+	podman         bool
+	profile        *podmanProfile
 }
 
 var _ Engine = (*Docker)(nil)
@@ -85,7 +91,7 @@ func NewDocker(host string, opts DockerOptions) (*Docker, error) {
 		t := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return dialer.DialContext(ctx, "unix", path)
 		}}
-		return &Docker{client: &http.Client{Transport: t}, base: "http://engine/" + apiVersion, callTimeout: callTimeout}, nil
+		return &Docker{client: &http.Client{Transport: t}, base: "http://engine/" + apiVersion, callTimeout: callTimeout, unixPath: path}, nil
 	case "npipe":
 		path := pipePath(u)
 		t := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -259,6 +265,9 @@ func labelFilter(labels map[string]string) url.Values {
 
 // Info implements Engine.
 func (d *Docker) Info(ctx context.Context) (Info, error) {
+	if err := d.prepareSandbox(ctx); err != nil {
+		return Info{}, err
+	}
 	var i struct {
 		ID            string
 		ServerVersion string
@@ -269,6 +278,15 @@ func (d *Docker) Info(ctx context.Context) (Info, error) {
 	}
 	if err := d.do(ctx, http.MethodGet, "/info", nil, nil, &i); err != nil {
 		return Info{}, err
+	}
+	if d.podman {
+		// Podman4.9's compatibility /info generates a fresh UUID per call.
+		// Bind the opaque host identity to the qualified local daemon instead.
+		var err error
+		i.ID, err = d.profile.hostIdentity()
+		if err != nil {
+			return Info{}, err
+		}
 	}
 	return Info{ID: i.ID, ServerVersion: i.ServerVersion, OSType: i.OSType, Architecture: i.Architecture, NCPU: i.NCPU, MemTotal: i.MemTotal}, nil
 }
@@ -429,8 +447,18 @@ func createBody(spec Spec) containerConfig {
 
 // CreateContainer implements Engine.
 func (d *Docker) CreateContainer(ctx context.Context, name string, spec Spec) (string, error) {
+	if err := d.prepareSandbox(ctx); err != nil {
+		return "", err
+	}
+	body := createBody(spec)
+	if d.podman {
+		if err := d.profile.validate(); err != nil {
+			return "", err
+		}
+		body.HostConfig.SecurityOpt = podmanSecurityOptions(d.profile.path)
+	}
 	var out struct{ Id string }
-	if err := d.do(ctx, http.MethodPost, "/containers/create", url.Values{"name": {name}}, createBody(spec), &out); err != nil {
+	if err := d.do(ctx, http.MethodPost, "/containers/create", url.Values{"name": {name}}, body, &out); err != nil {
 		return "", err
 	}
 	return out.Id, nil
@@ -443,6 +471,14 @@ func (d *Docker) CopyFiles(ctx context.Context, id, path string, tar []byte) err
 
 // StartContainer implements Engine.
 func (d *Docker) StartContainer(ctx context.Context, id string) error {
+	if err := d.prepareSandbox(ctx); err != nil {
+		return err
+	}
+	if d.podman {
+		if err := d.profile.validate(); err != nil {
+			return err
+		}
+	}
 	return d.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/start", nil, nil, nil)
 }
 
@@ -675,6 +711,9 @@ func (d *Docker) PublishedPort(ctx context.Context, id string, port int) (int, e
 }
 
 func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (allocation, error) {
+	if err := d.prepareSandbox(ctx); err != nil {
+		return allocation{}, err
+	}
 	var out struct {
 		Image           string
 		Config          struct{ Image, User string }
@@ -683,24 +722,66 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 			Networks map[string]struct {
 				GlobalIPv6Address string
 				NetworkID         string
+				IPAddress         string
 			}
 		}
-		Mounts []struct{ Destination string }
+		Mounts        []struct{ Destination string }
+		OCIConfigPath string
 	}
 	if err := d.do(ctx, "GET", "/containers/"+url.PathEscape(id)+"/json", nil, nil, &out); err != nil {
 		return allocation{}, err
 	}
 	var image struct {
-		ID string `json:"Id"`
+		ID          string `json:"Id"`
+		RepoDigests []string
 	}
-	if err := d.do(ctx, "GET", "/images/"+url.PathEscape(out.Config.Image)+"/json", nil, nil, &image); err != nil {
+	imageLookup := out.Config.Image
+	if d.podman {
+		imageLookup = out.Image
+	}
+	if err := d.do(ctx, "GET", "/images/"+url.PathEscape(imageLookup)+"/json", nil, nil, &image); err != nil {
 		return allocation{}, err
 	}
 	a := allocation{ImageReference: out.Config.Image, ExpectedImage: image.ID, DNS: out.HostConfig.Dns, Image: out.Image, Networks: len(out.NetworkSettings.Networks), Privileged: out.HostConfig.Privileged, HostNetwork: out.HostConfig.NetworkMode == "host", User: out.Config.User,
-		SandboxApplied: out.HostConfig.sandbox().applied()}
+		SandboxApplied: out.HostConfig.sandbox().applied(), ReadOnly: out.HostConfig.ReadonlyRootfs}
+	if d.podman {
+		a.SandboxApplied = false
+		if err := d.profile.validate(); err != nil {
+			return a, err
+		}
+		if !podmanEchoedOptions(out.HostConfig.SecurityOpt, d.profile.path) {
+			return a, errors.New("Podman sandbox options changed")
+		}
+		native, err := d.podmanContainer(ctx, id)
+		if err != nil {
+			return a, err
+		}
+		actualRoot, err := d.profile.inspectAllocationOCI(native.OCIConfigPath, id, out.Config.User)
+		if err != nil {
+			return a, err
+		}
+		if actualRoot != a.ReadOnly {
+			return a, errors.New("Podman actual root mount differs from its allocation")
+		}
+		for _, ref := range image.RepoDigests {
+			_, digest, ok := strings.Cut(ref, "@")
+			if ok && digest == native.ImageDigest {
+				a.PinnedImages = append(a.PinnedImages, ref)
+			}
+		}
+		a.SandboxApplied = true
+	}
 	for _, n := range out.NetworkSettings.Networks {
 		a.IPv6 = a.IPv6 || n.GlobalIPv6Address != ""
-		a.NetworkIDs = append(a.NetworkIDs, n.NetworkID)
+		networkID := n.NetworkID
+		if d.podman {
+			measured, err := d.inspectPodmanNetwork(ctx, id, n.NetworkID, n.IPAddress)
+			if err != nil {
+				return a, err
+			}
+			networkID = measured.ID
+		}
+		a.NetworkIDs = append(a.NetworkIDs, networkID)
 	}
 	for _, m := range out.Mounts {
 		if m.Destination != WorkDir {
