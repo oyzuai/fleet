@@ -41,6 +41,16 @@ func TestPodmanNetworkNamesRequireActualEndpointIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestPodmanDefaultBridgeAddressIsNarrowlyResolved(t *testing.T) {
+	for _,test:=range []struct{top string;networks map[string]podmanEndpoint;ok bool}{
+		{"10.88.0.2",map[string]podmanEndpoint{"bridge":{NetworkID:"bridge"}},true},
+		{"",map[string]podmanEndpoint{"bridge":{NetworkID:"bridge",IPAddress:"10.88.0.2"}},true},
+		{"10.88.0.2",map[string]podmanEndpoint{"custom":{NetworkID:"custom"}},false},
+		{"10.88.0.2",map[string]podmanEndpoint{"bridge":{NetworkID:"bridge"},"other":{NetworkID:"other"}},false},
+		{"",map[string]podmanEndpoint{"bridge":{NetworkID:"bridge"}},false},
+	} {address,err:=podmanDefaultBridgeAddress(test.top,test.networks);if (err==nil)!=test.ok || test.ok&&address!="10.88.0.2" {t.Fatalf("default endpoint=%q err=%v",address,err)}}
+}
 func TestPodmanManagedProfileConcurrentAndTamper(t *testing.T) {
 	runtime := t.TempDir()
 	if e := os.Chmod(runtime, 0700); e != nil {

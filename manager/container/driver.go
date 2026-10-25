@@ -375,7 +375,7 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 	id, err := d.Engine.CreateContainer(ctx, name, Spec{
 		Image: d.Image, Cmd: cmd, User: d.user(), Labels: labels, Volume: j.volume, WorkDir: WorkDir,
 		NanoCPUs: int64(d.CPUs * 1e9), MemoryBytes: d.MemoryBytes, PidsLimit: pids, Network: network,
-		Env: env, DNS: dns, Sysctls: sysctls, ReadOnly: true,
+		Env: env, DNS: dns, Sysctls: sysctls,
 	})
 	if err != nil {
 		return h, fmt.Errorf("create the container: %w", err)
@@ -399,7 +399,7 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 		// Only the trusted executor bootstrap is running. It cannot spend a
 		// startup token until the actual namespace is observed and this archive's
 		// final ready marker is delivered. No job code or source runs beforehand.
-		if err = d.checkAllocation(ctx, id, dns, j.networkID); err != nil {
+		if err = d.checkAllocation(ctx, id, dns, j.networkID,false); err != nil {
 			return h, err
 		}
 		if err = d.CheckReadiness(ctx, c.Readiness); err != nil {

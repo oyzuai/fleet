@@ -27,6 +27,8 @@ type boundedGatewayEngine struct {
 	Engine
 	containers []string
 	volumes    []string
+	metadataTest *testing.T
+	metadataSaved bool
 }
 
 type harmlessGatewayEngine struct{ *boundedGatewayEngine }
@@ -35,6 +37,10 @@ func (e *boundedGatewayEngine) NamespaceAnchorRequired(ctx context.Context) (boo
 	return e.Engine.(namespaceAnchorEngine).NamespaceAnchorRequired(ctx)
 }
 func (e *boundedGatewayEngine) InspectNamespaceAnchor(ctx context.Context, id string, spec Spec) (anchorIdentity, error) {
+	if e.metadataTest!=nil && !e.metadataSaved {
+		e.metadataSaved=true
+		captureAnchorMetadata(e.metadataTest,ctx,e.Engine.(*Docker),id,spec)
+	}
 	return e.Engine.(namespaceAnchorEngine).InspectNamespaceAnchor(ctx, id, spec)
 }
 func (e *boundedGatewayEngine) InspectReadinessAllocation(ctx context.Context, id string) (allocation, error) {
@@ -73,9 +79,9 @@ func requireExclusiveGatewayStore(t *testing.T, ctx context.Context, engine *Doc
 
 func (e *harmlessGatewayEngine) CreateContainer(ctx context.Context, name string, spec Spec) (string, error) {
 	if spec.Volume != "" {
-		// Fixed proof-only command: verify the actual job root rejects writes
-		// while its ordinary workspace volume remains writable.
-		spec.Cmd = []string{"/bin/sh", "-c", "if touch /oyzu-readonly-root-proof 2>/dev/null; then exit 91; fi; touch /work/oyzu-writable-workspace-proof"}
+		// Fixed proof-only command verifies the original private writable job
+		// overlay and workspace; it is never the production executor command.
+		spec.Cmd = []string{"/bin/sh", "-c", "touch /oyzu-private-overlay-proof && touch /work/oyzu-writable-workspace-proof"}
 	}
 	return e.boundedGatewayEngine.CreateContainer(ctx, name, spec)
 }
@@ -463,7 +469,7 @@ func TestPodmanGatewayRegistrationAfterNetworkCleanup(t *testing.T) {
 				t.Fatal(err)
 			}
 			requireExclusiveGatewayStore(t, ctx, engine)
-			bounded := &boundedGatewayEngine{Engine: engine}
+			bounded := &boundedGatewayEngine{Engine: engine,metadataTest:t}
 			d := &Driver{Engine: &harmlessGatewayEngine{bounded}, Image: image, Command: []string{"oyzu-executor"}, Manager: time.Now().UnixNano(), Pool: "oyzu-pool-slice1-proof", Egress: EgressEnforce, Server: "https://example.invalid", pulled: true, Slots: 2}
 			t.Cleanup(func() {
 				cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
@@ -506,7 +512,7 @@ func TestPodmanGatewayRegistrationAfterNetworkCleanup(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := d.checkAllocation(ctx, j.id, j.dns, j.networkID); err != nil {
+				if err := d.checkAllocation(ctx, j.id, j.dns, j.networkID,false); err != nil {
 					t.Fatalf("actual job OCI allocation: %v", err)
 				}
 				exit, err := d.Wait(ctx, h)
@@ -599,4 +605,47 @@ func TestPodmanNamespaceAnchorInspection(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Log("actual anchor bridge/process/OCI security/resource identity qualified")
+}
+
+// Capture all safe allocation/control observations before validation, so a
+// failed private-store proof does not require another field-by-field retry.
+// Environments are represented only by key names; no control/source credential
+// or arbitrary image environment value is ever written to the receipt.
+func captureAnchorMetadata(t *testing.T,ctx context.Context,d *Docker,id string,spec Spec) {
+	t.Helper()
+	var c struct {
+		Image string
+		Config struct {Image,User,WorkingDir,Hostname string;Env,Cmd,Entrypoint []string;Labels map[string]string}
+		State struct {Running bool;Pid int}
+		HostConfig hostConfig
+		Mounts []struct{Destination string}
+		NetworkSettings struct {IPAddress,SandboxKey string;Networks map[string]podmanEndpoint}
+	}
+	if err:=d.do(ctx,"GET","/containers/"+id+"/json",nil,nil,&c);err!=nil {t.Fatal(err)}
+	if c.Config.Labels[LabelRole]!=roleAnchor || c.Config.Labels[LabelPool]!=spec.Labels[LabelPool] || c.Config.Labels[LabelManager]!=spec.Labels[LabelManager] {t.Fatal("metadata object does not belong to this proof")}
+	var native struct {Image,ImageDigest,OCIConfigPath string;NetworkSettings struct {IPAddress,SandboxKey string;Networks map[string]podmanEndpoint}}
+	api:=Docker{client:d.client,base:strings.TrimSuffix(d.base,apiVersion)+"v4.9.0/libpod",callTimeout:d.callTimeout}
+	if err:=api.do(ctx,"GET","/containers/"+id+"/json",nil,nil,&native);err!=nil {t.Fatal(err)}
+	var bridge podmanNetworkObservation
+	if err:=d.do(ctx,"GET","/networks/bridge",nil,nil,&bridge);err!=nil {t.Fatal(err)}
+	var image struct {ID string `json:"Id"`;RepoDigests []string;Config struct {Labels map[string]string}}
+	if err:=d.do(ctx,"GET","/images/"+url.PathEscape(spec.Image)+"/json",nil,nil,&image);err!=nil {t.Fatal(err)}
+	o,ociErr:=d.profile.readOCI(native.OCIConfigPath,id)
+	checks:=map[string]any{"root_readonly":o.Root.Readonly,"command_matches":sameStrings(o.Process.Args,spec.Cmd),"nonroot_user":o.Process.User.UID==1000&&o.Process.User.GID==1000,"nnp":o.Process.NoNewPrivileges,"seccomp_matches":sameResolvedSeccomp(o.Linux.Seccomp),"capabilities":o.Process.Capabilities,"masked_paths":o.Linux.MaskedPaths,"readonly_paths":o.Linux.ReadonlyPaths,"namespaces":o.Linux.Namespaces,"resources":o.Linux.Resources}
+	if ociErr!=nil {checks["oci_observation_error"]=ociErr.Error()}
+	if err:=verifyAnchorOCI(o,spec);err!=nil {checks["oci_validation_error"]=err.Error()}
+	var sysMounts []any
+	for _,m:=range o.Mounts {if m.Destination=="/sys"||strings.HasPrefix(m.Destination,"/sys/") {sysMounts=append(sysMounts,map[string]any{"destination":m.Destination,"type":m.Type,"options":m.Options})}}
+	checks["sys_mounts"]=sysMounts
+	status:=map[string]string{}
+	if raw,err:=os.ReadFile(fmt.Sprintf("/proc/%d/status",c.State.Pid));err==nil {
+		for _,line:=range strings.Split(string(raw),"\n") {key,value,_:=strings.Cut(line,":");switch key {case "Uid","Gid","CapInh","CapPrm","CapEff","CapBnd","CapAmb","NoNewPrivs","Seccomp":status[key]=strings.TrimSpace(value)}}
+	}else{status["observation_error"]=err.Error()}
+	var envKeys,labelKeys []string
+	for _,entry:=range c.Config.Env {key,_,_:=strings.Cut(entry,"=");envKeys=append(envKeys,key)}
+	for key:=range c.Config.Labels {labelKeys=append(labelKeys,key)}
+	receipt:=map[string]any{"container":id,"image_reference_echo":c.Config.Image,"actual_image":c.Image,"resolved_pinned_image":image.ID,"repo_digests":image.RepoDigests,"native_manifest":native.ImageDigest,"user":c.Config.User,"directory":c.Config.WorkingDir,"hostname_is_short_id":c.Config.Hostname==id[:12],"env_keys":envKeys,"label_keys":labelKeys,"running":c.State.Running,"pid":c.State.Pid,"host_config":c.HostConfig,"user_mounts":c.Mounts,"compat_network":c.NetworkSettings,"native_network":native.NetworkSettings,"bridge_identity":map[string]any{"id":bridge.ID,"name":bridge.Name,"driver":bridge.Driver,"internal":bridge.Internal,"own_endpoint":bridge.Containers[id]},"oci_controls":checks,"kernel_controls":status}
+	// HostConfig contains only fixed sandbox/resource settings and no Env.
+	raw,err:=json.Marshal(receipt);if err!=nil {t.Fatal(err)}
+	t.Logf("filtered anchor metadata: %s",raw)
 }

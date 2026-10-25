@@ -45,7 +45,8 @@ func (d *Docker) InspectNamespaceAnchor(ctx context.Context, id string, spec Spe
 		HostConfig      hostConfig
 		Mounts          []struct{ Destination string }
 		NetworkSettings struct {
-			Networks map[string]struct{ NetworkID, IPAddress string }
+			IPAddress string
+			Networks map[string]podmanEndpoint
 		}
 	}
 	if err := d.do(ctx, "GET", "/containers/"+url.PathEscape(id)+"/json", nil, nil, &out); err != nil {
@@ -107,15 +108,9 @@ func (d *Docker) InspectNamespaceAnchor(ctx context.Context, id string, spec Spe
 	if len(failed) > 0 {
 		return identity, errors.New("namespace anchor allocation differs from its fixed template: " + strings.Join(failed, ","))
 	}
-	var networkName, networkIP string
-	for _, n := range out.NetworkSettings.Networks {
-		if n.NetworkID != "" && n.IPAddress != "" {
-			networkName, networkIP = n.NetworkID, n.IPAddress
-		}
-	}
-	if networkName != defaultNetwork {
-		return identity, errors.New("namespace anchor has no actual default bridge allocation")
-	}
+	networkIP,err:=podmanDefaultBridgeAddress(out.NetworkSettings.IPAddress,out.NetworkSettings.Networks)
+	if err!=nil {return identity,err}
+	networkName:=defaultNetwork
 	bridge, err := d.inspectPodmanNetwork(ctx, id, networkName, networkIP)
 	if err != nil {
 		return identity, err
@@ -129,6 +124,18 @@ func (d *Docker) InspectNamespaceAnchor(ctx context.Context, id string, spec Spe
 	}
 	identity = anchorIdentity{Container: id, Image: out.Image, Network: bridge.ID, Namespace: namespace, Process: process, Configuration: configurationDigest(spec)}
 	return identity, nil
+}
+
+type podmanEndpoint struct {NetworkID,IPAddress string}
+func podmanDefaultBridgeAddress(topLevel string,networks map[string]podmanEndpoint) (string,error) {
+	n,ok:=networks[defaultNetwork]
+	if len(networks)!=1 || !ok || n.NetworkID!=defaultNetwork {return "",errors.New("namespace anchor has no actual default bridge allocation")}
+	address:=n.IPAddress
+	// Podman4.9's default-network branch keeps its address at the top level;
+	// custom network endpoints must never use this fallback.
+	if address=="" {address=topLevel}
+	if address=="" {return "",errors.New("namespace anchor default bridge has no address")}
+	return address,nil
 }
 
 func anchorEnvironment(image []string, id string) map[string]string {

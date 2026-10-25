@@ -359,20 +359,20 @@ type measuredAllocationEngine struct {
 func (e *measuredAllocationEngine) InspectReadinessAllocation(context.Context, string) (allocation, error) {
 	return e.actual, nil
 }
-func TestJobAllocationRequiresReadonlyAndVerifiedImmutableImage(t *testing.T) {
+func TestJobAllocationMeasuresOriginalRootPolicyAndVerifiedImmutableImage(t *testing.T) {
 	d := newDriver(newFakeEngine())
-	e := &measuredAllocationEngine{fakeEngine: newFakeEngine(), actual: allocation{ImageReference: "rewritten:local-tag", PinnedImages: []string{d.Image}, Image: "actual-image-id", ExpectedImage: "actual-image-id", NetworkIDs: []string{"job-network"}, Networks: 1, User: d.user(), SandboxApplied: true, ReadOnly: true}}
+	e := &measuredAllocationEngine{fakeEngine: newFakeEngine(), actual: allocation{ImageReference: "rewritten:local-tag", PinnedImages: []string{d.Image}, Image: "actual-image-id", ExpectedImage: "actual-image-id", NetworkIDs: []string{"job-network"}, Networks: 1, User: d.user(), SandboxApplied: true, ReadOnly: false}}
 	d.Engine = e
-	if err := d.checkAllocation(context.Background(), "job", nil, "job-network"); err != nil {
+	if err := d.checkAllocation(context.Background(), "job", nil, "job-network",false); err != nil {
 		t.Fatal(err)
 	}
-	e.actual.ReadOnly = false
-	if err := d.checkAllocation(context.Background(), "job", nil, "job-network"); !errors.Is(err, readiness.ErrBoundaryChanged) {
-		t.Fatal("writable actual job root accepted")
-	}
 	e.actual.ReadOnly = true
+	if err := d.checkAllocation(context.Background(), "job", nil, "job-network",false); !errors.Is(err, readiness.ErrBoundaryChanged) {
+		t.Fatal("unexpected actual job root policy accepted")
+	}
+	e.actual.ReadOnly = false
 	e.actual.PinnedImages = []string{"other@sha256:" + strings.Repeat("f", 64)}
-	if err := d.checkAllocation(context.Background(), "job", nil, "job-network"); !errors.Is(err, readiness.ErrBoundaryChanged) {
+	if err := d.checkAllocation(context.Background(), "job", nil, "job-network",false); !errors.Is(err, readiness.ErrBoundaryChanged) {
 		t.Fatal("mutable tag accepted without exact immutable pin")
 	}
 }

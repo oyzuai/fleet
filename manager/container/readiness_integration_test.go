@@ -204,7 +204,7 @@ func TestReadinessDockerBoundaryAndGatewayReplacement(t *testing.T) {
 	if _, err = engine.ConnectNetwork(ctx, "bridge", j.id); err != nil {
 		t.Fatal(err)
 	}
-	if err = d.checkAllocation(ctx, j.id, j.dns, j.networkID); err == nil {
+	if err = d.checkAllocation(ctx, j.id, j.dns, j.networkID,false); err == nil {
 		t.Fatal("actual extra network was accepted")
 	}
 	if err = engine.DisconnectNetwork(ctx, j.network, j.id); err != nil {

@@ -434,7 +434,7 @@ func TestStartRunsOneIsolatedContainerPerJob(t *testing.T) {
 		t.Fatalf("container %+v, handle %+v", c, h)
 	}
 	s := c.spec
-	if s.User != "1000:1000" || s.Network != "bridge" || s.PidsLimit != 4096 || s.NanoCPUs != 2e9 || s.MemoryBytes != 4<<30 || !s.ReadOnly {
+	if s.User != "1000:1000" || s.Network != "bridge" || s.PidsLimit != 4096 || s.NanoCPUs != 2e9 || s.MemoryBytes != 4<<30 || s.ReadOnly {
 		t.Fatalf("spec = %+v", s)
 	}
 	if s.Volume != h.Ref+"-work" || s.WorkDir != WorkDir {

@@ -405,14 +405,15 @@ type ociSandbox struct {
 }
 
 func (p *podmanProfile) inspectOCI(path, id, user string) error {
+	_,err:=p.inspectAllocationOCI(path,id,user)
+	return err
+}
+func (p *podmanProfile) inspectAllocationOCI(path,id,user string) (bool,error) {
 	o, err := p.readOCI(path, id)
 	if err != nil {
-		return err
+		return false,err
 	}
-	if !o.Root.Readonly {
-		return errors.New("Podman allocation root is writable")
-	}
-	return verifyPodmanOCI(o, user)
+	return o.Root.Readonly,verifyPodmanOCI(o, user)
 }
 func (p *podmanProfile) readOCI(path, id string) (o ociSandbox, err error) {
 	if len(id) != 64 || strings.Trim(id, "0123456789abcdef") != "" || !strings.HasSuffix(path, "/overlay-containers/"+id+"/userdata/config.json") {
