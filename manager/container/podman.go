@@ -3,6 +3,7 @@ package container
 import (
 	"context"
 	"errors"
+	"net"
 	"net/url"
 	"strings"
 )
@@ -75,4 +76,22 @@ func (d *Docker) prepareSandbox(ctx context.Context) error {
 	}
 	d.engineDetected = true
 	return nil
+}
+
+type podmanNetworkObservation struct {
+	ID,Name,Driver string
+	Internal bool
+	Containers map[string]struct {IPv4Address string}
+}
+// Podman4.9 inspect reports network names in the compatibility NetworkID
+// field. Resolve them through the same engine and verify the actual container
+// endpoint before using the network-definition ID in a measurement.
+func (d *Docker) inspectPodmanNetwork(ctx context.Context,id,name,address string) (podmanNetworkObservation,error) {
+	var n podmanNetworkObservation
+	if name==""||address=="" {return n,errors.New("missing Podman network endpoint")}
+	if err:=d.do(ctx,"GET","/networks/"+url.PathEscape(name),nil,nil,&n);err!=nil {return n,err}
+	endpoint,ok:=n.Containers[id]
+	ip,_,err:=net.ParseCIDR(endpoint.IPv4Address)
+	if n.ID==""||n.Name!=name||n.Driver!="bridge"||!ok||err!=nil||!ip.Equal(net.ParseIP(address)) {return n,errors.New("Podman actual network identity or endpoint differs")}
+	return n,nil
 }
