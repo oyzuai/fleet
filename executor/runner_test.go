@@ -614,13 +614,23 @@ func TestRunDelegatesQualifiedAndNativeTasksToIsolatedResolver(t *testing.T) {
 			runs, cfg, _ := setup(t, job)
 			path := filepath.Join(t.TempDir(), "args.json")
 			t.Setenv("FAKE_OYZU_TASK_ARGS", path)
-			if err := Run(context.Background(), cfg); err != nil { t.Fatal(err) }
-			if o := runs.finished; o == nil || o.State != "succeeded" { t.Fatalf("outcome=%+v", o) }
+			if err := Run(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			if o := runs.finished; o == nil || o.State != "succeeded" {
+				t.Fatalf("outcome=%+v", o)
+			}
 			b, err := os.ReadFile(path)
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			var args []string
-			if err := json.Unmarshal(b, &args); err != nil { t.Fatal(err) }
-			if !reflect.DeepEqual(args, []string{"run", "--isolated", task}) { t.Fatalf("resolver args=%q", args) }
+			if err := json.Unmarshal(b, &args); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(args, []string{"run", "--isolated", task}) {
+				t.Fatalf("resolver args=%q", args)
+			}
 		})
 	}
 }

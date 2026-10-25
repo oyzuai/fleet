@@ -143,10 +143,14 @@ func TestExecutorReportsRealPoolTerminalOutcomes(t *testing.T) {
 				req, _ = http.NewRequest("GET", server.URL+run.Links.Logs, nil)
 				req.Header.Set("Tailscale-User-Login", "test@example.com")
 				resp, err = server.Client().Do(req)
-				if err != nil { t.Fatal(err) }
+				if err != nil {
+					t.Fatal(err)
+				}
 				logs, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
-				if resp.StatusCode != 200 || !bytes.Contains(logs, []byte("TASK_NOT_FOUND")) { t.Fatalf("missing resolver diagnostics: %d %s", resp.StatusCode, logs) }
+				if resp.StatusCode != 200 || !bytes.Contains(logs, []byte("TASK_NOT_FOUND")) {
+					t.Fatalf("missing resolver diagnostics: %d %s", resp.StatusCode, logs)
+				}
 			case "verbose-success":
 				if run.State != "succeeded" {
 					t.Fatalf("verbose success rejected: %s", b)

@@ -43,11 +43,11 @@ type logRecord struct {
 	Finish  *runnerclient.LogFinish `json:"finish,omitempty"`
 }
 type managerRecord struct {
-	ID     int64                       `json:"id"`
-	Name   string                      `json:"name"`
-	Keys   map[int64]ed25519.PublicKey `json:"keys"`
-	Report runnerclient.Report         `json:"report"`
-	ReportedAt time.Time              `json:"reported_at"`
+	ID         int64                       `json:"id"`
+	Name       string                      `json:"name"`
+	Keys       map[int64]ed25519.PublicKey `json:"keys"`
+	Report     runnerclient.Report         `json:"report"`
+	ReportedAt time.Time                   `json:"reported_at"`
 }
 type accessRecord struct {
 	Manager int64     `json:"manager"`
