@@ -42,6 +42,15 @@ func TestPublicWireConformanceAndFingerprint(t *testing.T) {
 	if got := v.Fingerprint.Boundary.Fingerprint(); got != v.Fingerprint.SHA256 {
 		t.Fatalf("fingerprint differs from independent public vector: %s", got)
 	}
+	// Container runtime measurements may bind an inspected namespace anchor
+	// inside their opaque digest without adding fields or changing this wire
+	// version's independent fingerprint algorithm.
+	anchored := v.Fingerprint.Boundary
+	anchored.Runtime = strings.Repeat("b",64)
+	if !anchored.Valid() || anchored.Fingerprint()==v.Fingerprint.SHA256 {t.Fatal("opaque anchored runtime did not change the boundary")}
+	schema,err:=compiler.Compile(base+"#/$defs/Boundary");if err!=nil {t.Fatal(err)}
+	anchoredJSON,_:=json.Marshal(anchored);anchoredValue,err:=jsonschema.UnmarshalJSON(bytes.NewReader(anchoredJSON));if err!=nil {t.Fatal(err)}
+	if err:=schema.Validate(anchoredValue);err!=nil {t.Fatal(err)}
 	c := Challenge{ID: "11111111-1111-4111-8111-111111111111", Session: "22222222-2222-4222-8222-222222222222", Generation: 2, Fingerprint: v.Fingerprint.SHA256, Suite: Suite, Nonce: strings.Repeat("a", 32), Descriptor: Descriptor{URL: "http://192.0.2.1:8080", DNSAddress: "192.0.2.1:8053", DNSName: "readiness.oyzu.test"}, Dispatched: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC), Deadline: time.Date(2026, 10, 22, 12, 5, 0, 0, time.UTC)}
 	r := Result{Challenge: c.ID, Session: c.Session, Generation: c.Generation, Fingerprint: c.Fingerprint, Suite: c.Suite}
 	for _, name := range CheckNames() {
