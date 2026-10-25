@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -54,17 +53,7 @@ var hashRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // owned 0600; systemd LoadCredential exposes a service-owned 0400 mount.
 func LoadConfig(path string) (Config, error) {
 	var c Config
-	info, err := os.Stat(path)
-	if err != nil {
-		return c, err
-	}
-	if !info.Mode().IsRegular() || (info.Mode().Perm() != 0600 && info.Mode().Perm() != 0400) {
-		return c, errors.New("configuration must be a regular file with mode 0600 or 0400")
-	}
-	if err := checkRootOwner(info); err != nil {
-		return c, err
-	}
-	f, err := os.Open(path)
+	f, err := openPrivateFile(path)
 	if err != nil {
 		return c, err
 	}

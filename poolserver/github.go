@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -38,20 +37,11 @@ type GitHubApp struct {
 func newGitHubApp(c Config, o Options) (*GitHubApp, error) {
 	key := o.AppKey
 	if key == nil {
-		info, err := os.Stat(c.GitHubApp.PrivateKeyFile)
+		f, err := openPrivateFile(c.GitHubApp.PrivateKeyFile)
 		if err != nil {
 			return nil, errors.New("GitHub App private key unavailable")
 		}
-		if !info.Mode().IsRegular() || (info.Mode().Perm() != 0600 && info.Mode().Perm() != 0400) {
-			return nil, errors.New("GitHub App private key must be a regular 0600 or 0400 file")
-		}
-		if err = checkRootOwner(info); err != nil {
-			return nil, err
-		}
-		b, err := os.ReadFile(c.GitHubApp.PrivateKeyFile)
-		if err != nil {
-			return nil, errors.New("GitHub App private key unavailable")
-		}
+		b,err:=io.ReadAll(io.LimitReader(f,64<<10));_ =f.Close();if err!=nil{return nil,errors.New("GitHub App private key unavailable")}
 		block, _ := pem.Decode(b)
 		if block == nil {
 			return nil, errors.New("invalid GitHub App private key")

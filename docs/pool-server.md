@@ -219,7 +219,12 @@ systemd can expose them using `LoadCredential=server.json:/etc/oyzu-pool/server.
 and `LoadCredential=github-app.pem:/etc/oyzu-pool/github-app.pem`. Start with the
 credential-mounted config and set its `private_key_file` to the key's runtime
 credential path. The loader accepts regular 0400 or 0600 files owned by root
-or the service's effective user. It never logs key contents. Enroll the manager
+or the service's effective user. On Ubuntu's systemd255, a named service-user
+read ACL makes credential mode appear 0440: that is accepted only within the
+exact `CREDENTIALS_DIRECTORY=/run/credentials/oyzu-pool-server.service`, a
+protected read-only tmpfs mount, with the exact root-owner/service-user ACL and
+no owning-group, other-user or other-group access. Generic group-readable files
+and symlinks are rejected. It never logs key contents. Enroll the manager
 against the public HTTPS origin so its container executors can reach the runner
 API; container loopback does not reach the host listener.
 
