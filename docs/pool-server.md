@@ -1,12 +1,13 @@
-# Pool server (design, not implemented)
+# Standalone pool server
 
-Status: draft design, 2026-10-25. The client side and the public contract edits
+Status: slice 1 implemented, 2026-10-25; deployment and isolated build proof
+remain separate acceptance steps. The client side and the public contract edits
 are in oyzu's
 [standalone remote pool proposal](https://github.com/oyzuai/oyzu/blob/main/docs/proposals/OEP-draft-standalone-remote-pool/README.md),
 which owns the problem, scope, slices and first proof. This page owns the
 server.
 
-`fleet pool-server` is a single-tenant server that lets one machine run remote
+`pool-server` is a single-tenant server that lets one machine run remote
 builds without the platform. It serves two existing public contracts:
 
 - the [runs API](https://github.com/oyzuai/oyzu/blob/main/docs/contracts/runs-v1alpha1/openapi.yaml)
@@ -68,6 +69,21 @@ no TOML parser and takes no dependencies):
 The installation id is looked up per repository
 (`GET /repos/{owner}/{repo}/installation` with the app JWT) and cached.
 
+Build `./cmd/pool-server` and start `pool-server --config
+/etc/oyzu-pool/server.json`. The configured listener must be a numeric loopback
+address and `public_url` an HTTPS origin. `GET /healthz` answers 204 while
+state storage is available and discloses no pool metadata. An absent or invalid
+App key fails startup; the process never runs jobs or falls back to the host.
+The App ID is fixed to 5467712. Repository names that normalize to the same
+project identifier are rejected at startup.
+
+Run exactly one process per state directory. State files are private (0600),
+and directories 0700. A durable `transaction.json` is replayed after interrupted
+cross-file writes before requests are accepted; an I/O failure makes subsequent
+mutations fail closed until restart. Log bytes are synced before their metadata
+is committed; recovery trims any uncommitted suffix. Keep the state directory
+on a local filesystem supporting atomic rename and file/directory fsync.
+
 ## Runner API subset
 
 What the shipped manager and executor call, from `runnerclient`. Request and
@@ -92,6 +108,13 @@ exactly.
 | `job/id-token` | Slice 3: an Ed25519-signed JWT (`iss` = `public_url`, `aud` from the request, `sub` = `repo:<repository>:ref:<ref>`, plus `repository`, `sha`, `ref`, `run_id`, `source_kind`), 10 minutes. JWKS at `/.well-known/jwks.json`. Before slice 3 it answers 404. |
 | `job/egress` | 404 (no grants). |
 | `job/secrets`, `job/write-token`, `job/kind/*` | 404. Jobs from this server never name secrets and are never renovate, lock or kind jobs. |
+
+The new key's first successful login retires its predecessor; access bearers
+already issued by the predecessor retain their bounded lifetime. Expired startup
+assignments requeue without consuming an attempt. A one-second lease reaper runs
+alongside the HTTP server. Logs accept up to 1 MiB compressed and decompressed
+per chunk, 1,000 entries per chunk, and 512 MiB per attempt. Duplicate chunks
+with the same hash and duplicate identical log finishes are safe to retry.
 
 The `Job` the server builds:
 
@@ -130,6 +153,19 @@ output metadata only, so `--download` is a named follow-up (see the proposal).
 
 Anything else is 401 `UNAUTHENTICATED`. A known caller asking for an unlisted
 repository is 403 `FORBIDDEN`.
+
+An explicit bearer always has to authenticate itself, even when a tailnet login
+header is also present. Actions ownership is bound to the signed repository,
+run ID, run attempt and subject; a refreshed token for the same job can read
+its runs. Creation also requires the submitted ref to equal the signed ref.
+Ref allow patterns support `*` (including `/`), such as `refs/pull/*`.
+Idempotency is scoped to caller and account and retained with the run, including
+across restarts. Lists expose only the caller's runs.
+
+This server uses `FORBIDDEN` for a disallowed source and `OUTPUT_UNAVAILABLE`
+for output bytes, as specified here; these extend the public contract's current
+problem-code enumeration. Clients must handle unknown problem codes by HTTP
+status. Output metadata remains available in the result resource.
 
 ## Credentials and where they live
 
@@ -178,8 +214,20 @@ Configured in platform `deploy/ovh-farm` (Ansible), not in this repository:
 - The GitHub Actions runners on build01 stay as they are; the pool's two slots
   are in addition.
 
+Keep the original config and App key root-owned 0600. For the service user,
+systemd can expose them using `LoadCredential=server.json:/etc/oyzu-pool/server.json`
+and `LoadCredential=github-app.pem:/etc/oyzu-pool/github-app.pem`. Start with the
+credential-mounted config and set its `private_key_file` to the key's runtime
+credential path. The loader accepts regular 0400 or 0600 files owned by root
+or the service's effective user. It never logs key contents. Enroll the manager
+against the public HTTPS origin so its container executors can reach the runner
+API; container loopback does not reach the host listener.
+
 ## Verification
 
 Focused Go tests for each route, run through the real `runnerclient` and the
 real manager against an `httptest` server, plus the OIDC verifier with a local
-key. The real proof is the one the proposal names, run on build01.
+key. Tests inject only generated App signing keys and local GitHub responses;
+they need no live App credential. Run `oyzu exec -- go test -race ./poolserver
+./cmd/pool-server` and `oyzu exec -- go vet ./poolserver ./cmd/pool-server`.
+The real proof is the one the proposal names, run on build01.
