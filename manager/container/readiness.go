@@ -58,8 +58,12 @@ func (d *Driver) ApplyReadinessMode(ctx context.Context, mode string) (bool, err
 	d.tested = false
 	d.factsDirty = true
 	d.mu.Unlock()
-	if err := d.cleanupPairNetworksLocked(ctx); err != nil { return false, err }
-	if err := d.retirePairLocked(ctx); err != nil { return false, err }
+	if err := d.cleanupPairNetworksLocked(ctx); err != nil {
+		return false, err
+	}
+	if err := d.retirePairLocked(ctx); err != nil {
+		return false, err
+	}
 	d.mu.Lock()
 	d.activeMode = EgressMode(mode)
 	d.anchorInvalid = false
@@ -120,9 +124,15 @@ func (d *Driver) ReadinessBoundary(ctx context.Context) (readiness.Boundary, err
 	if mode != EgressOpen {
 		d.gwMu.Lock()
 		gw, err := d.ensureGatewayLocked(ctx)
-		if err != nil { d.gwMu.Unlock(); return readiness.Boundary{}, err }
+		if err != nil {
+			d.gwMu.Unlock()
+			return readiness.Boundary{}, err
+		}
 		gatewayID = gw.id
-		if d.anchor != nil { identity := d.anchor.identity; anchor = &identity }
+		if d.anchor != nil {
+			identity := d.anchor.identity
+			anchor = &identity
+		}
 		d.gwMu.Unlock()
 	}
 	command, _ := json.Marshal(struct {
@@ -133,7 +143,7 @@ func (d *Driver) ReadinessBoundary(ctx context.Context) (readiness.Boundary, err
 		Pids         int64
 		Sandbox      string
 		HostSecurity []string
-		IPv6         string `json:",omitempty"`
+		IPv6         string          `json:",omitempty"`
 		Anchor       *anchorIdentity `json:",omitempty"`
 	}{slices.Clone(d.Command), d.user(), d.CPUs, d.MemoryBytes, d.PidsLimit, sandboxPolicyFingerprint(), slices.Clone(info.SecurityOptions), ipv6, anchor})
 	runtime := sha256.Sum256(append([]byte(info.ServerVersion), command...))
@@ -152,7 +162,9 @@ func (d *Driver) ReadinessBoundary(ctx context.Context) (readiness.Boundary, err
 	return b, nil
 }
 func (d *Driver) CheckReadiness(ctx context.Context, binding *readiness.Binding) error {
-	if err := d.checkPair(ctx); err != nil { return err }
+	if err := d.checkPair(ctx); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	managed := d.managedReadiness
 	local := d.localBinding
@@ -244,7 +256,11 @@ func (d *Driver) ProbeReadiness(ctx context.Context, c readiness.Challenge) (res
 		result.Checks = append(result.Checks, readiness.Subcheck{Name: name, Outcome: outcome, Reason: reason})
 	}
 	ctx, release, err := d.beginProbe(ctx)
-	if err != nil { add("control-reachability", "inconclusive", "DRIVER_STOPPING"); result.Aggregate(); return }
+	if err != nil {
+		add("control-reachability", "inconclusive", "DRIVER_STOPPING")
+		result.Aggregate()
+		return
+	}
 	defer release()
 	d.mu.Lock()
 	if d.testing {

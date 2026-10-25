@@ -18,5 +18,9 @@ func (*podmanProfile) validate() error {
 func (*podmanProfile) inspectOCI(string, string, string) error {
 	return errors.New("Podman sandbox qualification requires Linux")
 }
-func (*podmanProfile) hostIdentity() (string, error) { return "", errors.New("Podman qualification requires Linux") }
-func (*podmanProfile) inspectAnchor(string, string, Spec, int) (string, string, error) { return "", "", errors.New("Podman qualification requires Linux") }
+func (*podmanProfile) hostIdentity() (string, error) {
+	return "", errors.New("Podman qualification requires Linux")
+}
+func (*podmanProfile) inspectAnchor(string, string, Spec, int) (string, string, error) {
+	return "", "", errors.New("Podman qualification requires Linux")
+}

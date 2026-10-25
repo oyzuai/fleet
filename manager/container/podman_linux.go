@@ -378,9 +378,9 @@ func validateSharedProfile(p *podmanProfile) error {
 }
 
 type ociSandbox struct {
-	Root struct { Readonly bool }
+	Root    struct{ Readonly bool }
 	Process struct {
-		Args []string
+		Args            []string
 		User            struct{ UID, GID uint32 }
 		NoNewPrivileges bool
 		Capabilities    map[string][]string
@@ -391,9 +391,12 @@ type ociSandbox struct {
 	}
 	Linux struct {
 		Resources struct {
-			Memory struct { Limit, Swap *int64 }
-			CPU struct { Quota *int64; Period *uint64 }
-			Pids struct { Limit int64 }
+			Memory struct{ Limit, Swap *int64 }
+			CPU    struct {
+				Quota  *int64
+				Period *uint64
+			}
+			Pids struct{ Limit int64 }
 		}
 		MaskedPaths, ReadonlyPaths []string
 		Namespaces                 []struct{ Type, Path string }
@@ -403,7 +406,9 @@ type ociSandbox struct {
 
 func (p *podmanProfile) inspectOCI(path, id, user string) error {
 	o, err := p.readOCI(path, id)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	return verifyPodmanOCI(o, user)
 }
 func (p *podmanProfile) readOCI(path, id string) (o ociSandbox, err error) {
@@ -452,31 +457,56 @@ func (p *podmanProfile) readOCI(path, id string) (o ociSandbox, err error) {
 }
 
 func (p *podmanProfile) hostIdentity() (string, error) {
-	if err := p.validate(); err != nil { return "", err }
-	return configurationDigest(struct { PID int32; Start string }{p.identity.pid, p.identity.start}), nil
+	if err := p.validate(); err != nil {
+		return "", err
+	}
+	return configurationDigest(struct {
+		PID   int32
+		Start string
+	}{p.identity.pid, p.identity.start}), nil
 }
 
 func (p *podmanProfile) inspectAnchor(path, id string, spec Spec, pid int) (string, string, error) {
 	before, err := processStart(int32(pid))
-	if err != nil { return "", "", err }
+	if err != nil {
+		return "", "", err
+	}
 	o, err := p.readOCI(path, id)
-	if err != nil { return "", "", err }
-	if err := verifyPodmanOCI(o, spec.User); err != nil { return "", "", err }
+	if err != nil {
+		return "", "", err
+	}
+	if err := verifyPodmanOCI(o, spec.User); err != nil {
+		return "", "", err
+	}
 	r := o.Linux.Resources
 	if !o.Root.Readonly || !slices.Equal(o.Process.Args, spec.Cmd) || r.Memory.Limit == nil || *r.Memory.Limit != spec.MemoryBytes ||
 		r.Memory.Swap == nil || *r.Memory.Swap != spec.MemoryBytes || r.Pids.Limit != spec.PidsLimit || r.CPU.Quota == nil || r.CPU.Period == nil ||
-		*r.CPU.Period == 0 || *r.CPU.Quota <= 0 || *r.CPU.Quota*1_000_000_000 / int64(*r.CPU.Period) != spec.NanoCPUs {
+		*r.CPU.Period == 0 || *r.CPU.Quota <= 0 || *r.CPU.Quota*1_000_000_000/int64(*r.CPU.Period) != spec.NanoCPUs {
 		return "", "", errors.New("namespace anchor effective OCI command/resources differ")
 	}
 	namespace := ""
-	for _, n := range o.Linux.Namespaces { if n.Type == "network" && n.Path != "" {
-		f, err := openNoSymlinks(n.Path, syscall.O_RDONLY); if err != nil { return "", "", err }
-		st, err := f.Stat(); f.Close(); if err != nil { return "", "", err }
-		stat, ok := st.Sys().(*syscall.Stat_t); if !ok { return "", "", errors.New("unobservable anchor network namespace") }
-		namespace = fmt.Sprintf("%d:%d", stat.Dev, stat.Ino)
-	} }
+	for _, n := range o.Linux.Namespaces {
+		if n.Type == "network" && n.Path != "" {
+			f, err := openNoSymlinks(n.Path, syscall.O_RDONLY)
+			if err != nil {
+				return "", "", err
+			}
+			st, err := f.Stat()
+			f.Close()
+			if err != nil {
+				return "", "", err
+			}
+			stat, ok := st.Sys().(*syscall.Stat_t)
+			if !ok {
+				return "", "", errors.New("unobservable anchor network namespace")
+			}
+			namespace = fmt.Sprintf("%d:%d", stat.Dev, stat.Ino)
+		}
+	}
 	after, err := processStart(int32(pid))
-	if err != nil || before != after || namespace == "" { return "", "", errors.New("namespace anchor process or namespace changed") }
+	if err != nil || before != after || namespace == "" {
+		return "", "", errors.New("namespace anchor process or namespace changed")
+	}
 	return namespace, fmt.Sprintf("%d:%s", pid, before), nil
 }
 func verifyPodmanOCI(o ociSandbox, user string) error {

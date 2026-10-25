@@ -105,7 +105,10 @@ func TestPodmanDriverJobRegistrationLifecycle(t *testing.T) {
 			t.Cleanup(func() {
 				cleanup, done := context.WithTimeout(context.Background(), 15*time.Second)
 				defer done()
-				if err := d.Finalize(cleanup); err != nil { t.Error(err); return }
+				if err := d.Finalize(cleanup); err != nil {
+					t.Error(err)
+					return
+				}
 				for _, id := range bounded.containers {
 					if err := engine.RemoveContainer(cleanup, id); err != nil {
 						t.Error(err)
@@ -267,7 +270,9 @@ func (e *boundedGatewayEngine) ListVolumes(ctx context.Context, labels map[strin
 func (e *boundedGatewayEngine) CreateContainer(ctx context.Context, name string, spec Spec) (string, error) {
 	if spec.Labels[LabelRole] != roleAnchor {
 		spec.MemoryBytes, spec.NanoCPUs = 64<<20, 500000000
-		if spec.Labels[LabelRole] == roleGateway { spec.MemoryBytes = 128 << 20 }
+		if spec.Labels[LabelRole] == roleGateway {
+			spec.MemoryBytes = 128 << 20
+		}
 	}
 	id, err := e.Engine.CreateContainer(ctx, name, spec)
 	if err == nil {
@@ -296,7 +301,10 @@ func TestPodmanDriverGatewayProbeCleanup(t *testing.T) {
 	t.Cleanup(func() {
 		cleanup, done := context.WithTimeout(context.Background(), 15*time.Second)
 		defer done()
-		if err := d.Finalize(cleanup); err != nil { t.Error(err); return }
+		if err := d.Finalize(cleanup); err != nil {
+			t.Error(err)
+			return
+		}
 		for _, id := range bounded.containers {
 			if err := engine.RemoveContainer(cleanup, id); err != nil {
 				t.Error(err)
@@ -337,7 +345,9 @@ func TestPodmanDriverGatewayProbeCleanup(t *testing.T) {
 // This opt-in proof uses only a dedicated gateway and two temporary internal
 // networks, never a job or the production manager's gateway/token.
 func TestPodmanUnanchoredGatewayRegistrationBaseline(t *testing.T) {
-	if os.Getenv("FLEET_PODMAN_UNANCHORED_BASELINE") != "1" { t.Skip("explicit unsafe-lifecycle baseline only; not the managed anchor proof") }
+	if os.Getenv("FLEET_PODMAN_UNANCHORED_BASELINE") != "1" {
+		t.Skip("explicit unsafe-lifecycle baseline only; not the managed anchor proof")
+	}
 	socket, image := os.Getenv("FLEET_PODMAN_PROOF_SOCKET"), os.Getenv("FLEET_PODMAN_GATEWAY_IMAGE")
 	if socket == "" || image == "" {
 		t.Skip("dedicated Podman gateway proof needs explicit socket and immutable local image")
@@ -433,38 +443,95 @@ func TestPodmanUnanchoredGatewayRegistrationBaseline(t *testing.T) {
 
 func TestPodmanGatewayRegistrationAfterNetworkCleanup(t *testing.T) {
 	socket, image := os.Getenv("FLEET_PODMAN_PROOF_SOCKET"), os.Getenv("FLEET_PODMAN_GATEWAY_IMAGE")
-	if socket == "" || image == "" { t.Skip("dedicated sole-store anchor proof needs explicit socket and immutable image") }
-	if os.Geteuid()!=1002 || !strings.HasPrefix(socket,"/run/user/1002/") || !strings.HasPrefix(image,"localhost/oyzu-pool-executor@sha256:") { t.Fatal("proof restricted to dedicated uid1002 and immutable local image") }
-	for cycle:=0;cycle<2;cycle++ { t.Run(strconv.Itoa(cycle),func(t *testing.T){
-		ctx,cancel:=context.WithTimeout(context.Background(),180*time.Second);defer cancel()
-		engine,err:=NewDocker("unix://"+socket,DockerOptions{});if err!=nil {t.Fatal(err)}
-		requireExclusiveGatewayStore(t,ctx,engine)
-		bounded:=&boundedGatewayEngine{Engine:engine}
-		d:=&Driver{Engine:&harmlessGatewayEngine{bounded},Image:image,Command:[]string{"oyzu-executor"},Manager:time.Now().UnixNano(),Pool:"oyzu-pool-slice1-proof",Egress:EgressEnforce,Server:"https://example.invalid",pulled:true,Slots:2}
-		t.Cleanup(func(){ cleanup,stop:=context.WithTimeout(context.Background(),30*time.Second);defer stop();if err:=d.Finalize(cleanup);err!=nil {t.Error(err)} })
-		if err:=d.probe(ctx);err!=nil {t.Fatalf("startup self-test: %v",err)}
-		if d.anchor==nil {t.Fatal("qualified Podman did not create anchor")}
-		anchorID:=d.anchor.id
-		before,err:=d.ReadinessBoundary(ctx);if err!=nil {t.Fatal(err)}
-		var handles []manager.Handle
-		defer func(){for _,h:=range handles {if err:=d.Teardown(context.WithoutCancel(ctx),h);err!=nil {t.Error(err)}}}()
-		for slot:=0;slot<2;slot++ {
-			h,err:=d.Start(ctx,manager.SlotID(strconv.Itoa(slot)),runnerclient.Claim{JobID:int64(slot+1),Attempt:1,StartupToken:"generated-test-only-never-spent"})
-			if h.Ref!="" {handles=append(handles,h)}
-			if err!=nil {t.Fatalf("overlapping Start slot%d: %v",slot,err)}
-		}
-		for len(handles)>0 {
-			h:=handles[0];exit,err:=d.Wait(ctx,h);if err!=nil || exit.Code!=0 {t.Fatalf("harmless job wait: %+v %v",exit,err)}
-			if err:=d.Teardown(ctx,h);err!=nil {t.Fatal(err)};handles=handles[1:]
-			if err:=d.gw.control.Health(ctx);err!=nil {t.Fatalf("post-detach health: %v",err)}
-		}
-		if err:=d.Reap(ctx,nil);err!=nil {t.Fatal(err)}
-		after,err:=d.ReadinessBoundary(ctx);if err!=nil || before.Fingerprint()!=after.Fingerprint() || d.anchor.id!=anchorID {t.Fatalf("pair boundary changed: %v",err)}
-		port,err:=engine.PublishedPort(ctx,d.gw.id,gatewayControlPort);if err!=nil {t.Fatal(err)}
-		var status *egressgate.StatusError
-		if err:=egressgate.NewClient("http://"+net.JoinHostPort("127.0.0.1",strconv.Itoa(port)),"wrong-generated-token").Health(ctx);!errors.As(err,&status)||status.Status!=http.StatusUnauthorized {t.Fatalf("control authentication changed: %v",err)}
-		if err:=d.Finalize(ctx);err!=nil {t.Fatal(err)}
-		remaining,err:=engine.ListContainers(ctx,nil);if err!=nil || len(remaining)!=0 {t.Fatalf("sole-store cycle leaked containers: %d %v",len(remaining),err)}
-		t.Logf("cycle%d: actual OCI-qualified anchor retained startup probe, two overlapping slots, authenticated control, stable fingerprint and ordered empty-store finalization",cycle)
-	}) }
+	if socket == "" || image == "" {
+		t.Skip("dedicated sole-store anchor proof needs explicit socket and immutable image")
+	}
+	if os.Geteuid() != 1002 || !strings.HasPrefix(socket, "/run/user/1002/") || !strings.HasPrefix(image, "localhost/oyzu-pool-executor@sha256:") {
+		t.Fatal("proof restricted to dedicated uid1002 and immutable local image")
+	}
+	for cycle := 0; cycle < 2; cycle++ {
+		t.Run(strconv.Itoa(cycle), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+			defer cancel()
+			engine, err := NewDocker("unix://"+socket, DockerOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireExclusiveGatewayStore(t, ctx, engine)
+			bounded := &boundedGatewayEngine{Engine: engine}
+			d := &Driver{Engine: &harmlessGatewayEngine{bounded}, Image: image, Command: []string{"oyzu-executor"}, Manager: time.Now().UnixNano(), Pool: "oyzu-pool-slice1-proof", Egress: EgressEnforce, Server: "https://example.invalid", pulled: true, Slots: 2}
+			t.Cleanup(func() {
+				cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
+				defer stop()
+				if err := d.Finalize(cleanup); err != nil {
+					t.Error(err)
+				}
+			})
+			if err := d.probe(ctx); err != nil {
+				t.Fatalf("startup self-test: %v", err)
+			}
+			if d.anchor == nil {
+				t.Fatal("qualified Podman did not create anchor")
+			}
+			anchorID := d.anchor.id
+			before, err := d.ReadinessBoundary(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var handles []manager.Handle
+			defer func() {
+				for _, h := range handles {
+					if err := d.Teardown(context.WithoutCancel(ctx), h); err != nil {
+						t.Error(err)
+					}
+				}
+			}()
+			for slot := 0; slot < 2; slot++ {
+				h, err := d.Start(ctx, manager.SlotID(strconv.Itoa(slot)), runnerclient.Claim{JobID: int64(slot + 1), Attempt: 1, StartupToken: "generated-test-only-never-spent"})
+				if h.Ref != "" {
+					handles = append(handles, h)
+				}
+				if err != nil {
+					t.Fatalf("overlapping Start slot%d: %v", slot, err)
+				}
+			}
+			for len(handles) > 0 {
+				h := handles[0]
+				exit, err := d.Wait(ctx, h)
+				if err != nil || exit.Code != 0 {
+					t.Fatalf("harmless job wait: %+v %v", exit, err)
+				}
+				if err := d.Teardown(ctx, h); err != nil {
+					t.Fatal(err)
+				}
+				handles = handles[1:]
+				if err := d.gw.control.Health(ctx); err != nil {
+					t.Fatalf("post-detach health: %v", err)
+				}
+			}
+			if err := d.Reap(ctx, nil); err != nil {
+				t.Fatal(err)
+			}
+			after, err := d.ReadinessBoundary(ctx)
+			if err != nil || before.Fingerprint() != after.Fingerprint() || d.anchor.id != anchorID {
+				t.Fatalf("pair boundary changed: %v", err)
+			}
+			port, err := engine.PublishedPort(ctx, d.gw.id, gatewayControlPort)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var status *egressgate.StatusError
+			if err := egressgate.NewClient("http://"+net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), "wrong-generated-token").Health(ctx); !errors.As(err, &status) || status.Status != http.StatusUnauthorized {
+				t.Fatalf("control authentication changed: %v", err)
+			}
+			if err := d.Finalize(ctx); err != nil {
+				t.Fatal(err)
+			}
+			remaining, err := engine.ListContainers(ctx, nil)
+			if err != nil || len(remaining) != 0 {
+				t.Fatalf("sole-store cycle leaked containers: %d %v", len(remaining), err)
+			}
+			t.Logf("cycle%d: actual OCI-qualified anchor retained startup probe, two overlapping slots, authenticated control, stable fingerprint and ordered empty-store finalization", cycle)
+		})
+	}
 }

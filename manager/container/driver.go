@@ -120,8 +120,8 @@ type Driver struct {
 	gwMu                     sync.Mutex
 	gw                       *gateway
 	anchor                   *namespaceAnchor // guarded by gwMu
-	pairFault                error // guarded by gwMu
-	anchorInvalid            bool // guarded by mu
+	pairFault                error            // guarded by gwMu
+	anchorInvalid            bool             // guarded by mu
 	closing                  bool
 	probeCtx                 context.Context
 	stopProbes               context.CancelFunc
@@ -243,11 +243,15 @@ func (d *Driver) Facts(ctx context.Context) (manager.Facts, error) {
 // slot is ready and all of them count as provisioning; the first call
 // starts the pull.
 func (d *Driver) Capacity(ctx context.Context) (manager.Capacity, error) {
-	if err := d.checkPair(ctx); err != nil { return manager.Capacity{Max: d.slots()}, err }
+	if err := d.checkPair(ctx); err != nil {
+		return manager.Capacity{Max: d.slots()}, err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	c := manager.Capacity{Max: d.slots(), Running: len(d.inUse)}
-	if d.closing || d.anchorInvalid { return c, errors.New("container boundary is unavailable") }
+	if d.closing || d.anchorInvalid {
+		return c, errors.New("container boundary is unavailable")
+	}
 	if !d.pulled {
 		if !d.pulling && (d.lastPull.IsZero() || d.now().Sub(d.lastPull) >= pullRetry) {
 			d.pulling, d.lastPull = true, d.now()
@@ -315,7 +319,10 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 	name := fmt.Sprintf("oyzu-%d-job-%d-%d-%s", d.Manager, c.JobID, c.Attempt, hex.EncodeToString(suffix))
 	j := &job{name: name, volume: name + "-work", token: c.StartupToken}
 	d.mu.Lock()
-	if d.closing || d.anchorInvalid { d.mu.Unlock(); return manager.Handle{}, errors.New("container boundary is unavailable") }
+	if d.closing || d.anchorInvalid {
+		d.mu.Unlock()
+		return manager.Handle{}, errors.New("container boundary is unavailable")
+	}
 	if !d.pulled {
 		d.mu.Unlock()
 		return manager.Handle{}, errors.New("the executor image is not present yet")
@@ -565,7 +572,9 @@ func (d *Driver) Reap(ctx context.Context, live []manager.JobID) error {
 		gwID = d.gw.id
 	}
 	anchorID := ""
-	if d.anchor != nil { anchorID = d.anchor.id }
+	if d.anchor != nil {
+		anchorID = d.anchor.id
+	}
 	var staleAnchors []Summary
 	for _, c := range containers {
 		d.mu.Lock()
@@ -579,7 +588,10 @@ func (d *Driver) Reap(ctx context.Context, live []manager.JobID) error {
 				(c.Labels[LabelRole] == roleAnchor && c.Name != d.anchorName()) || (c.Labels[LabelRole] == roleGateway && c.Name != d.gatewayName()) {
 				return errors.New("unrecognized stale gateway pair; refusing cleanup")
 			}
-			if c.Labels[LabelRole] == roleAnchor { staleAnchors = append(staleAnchors, c); continue }
+			if c.Labels[LabelRole] == roleAnchor {
+				staleAnchors = append(staleAnchors, c)
+				continue
+			}
 		}
 		if err := d.removeConfirmed(ctx, c.ID); err != nil {
 			errs = append(errs, err)
@@ -605,7 +617,11 @@ func (d *Driver) Reap(ctx context.Context, live []manager.JobID) error {
 	// A stale anchor is the last shared namespace holder. Never release it
 	// if any earlier gateway/network removal was uncertain.
 	if len(errs) == 0 {
-		for _, c := range staleAnchors { if err := d.removeConfirmed(ctx, c.ID); err != nil { errs = append(errs, err) } }
+		for _, c := range staleAnchors {
+			if err := d.removeConfirmed(ctx, c.ID); err != nil {
+				errs = append(errs, err)
+			}
+		}
 	}
 	volumes, err := d.Engine.ListVolumes(ctx, mine)
 	if err != nil {
