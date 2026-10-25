@@ -31,12 +31,12 @@ type Docker struct {
 	base   string
 	// callTimeout bounds every call but waiting for a container and
 	// pulling an image.
-	callTimeout time.Duration
-	unixPath string
-	adapterMu sync.Mutex
+	callTimeout    time.Duration
+	unixPath       string
+	adapterMu      sync.Mutex
 	engineDetected bool
-	podman bool
-	profile *podmanProfile
+	podman         bool
+	profile        *podmanProfile
 }
 
 var _ Engine = (*Docker)(nil)
@@ -91,7 +91,7 @@ func NewDocker(host string, opts DockerOptions) (*Docker, error) {
 		t := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return dialer.DialContext(ctx, "unix", path)
 		}}
-		return &Docker{client: &http.Client{Transport: t}, base: "http://engine/" + apiVersion, callTimeout: callTimeout,unixPath:path}, nil
+		return &Docker{client: &http.Client{Transport: t}, base: "http://engine/" + apiVersion, callTimeout: callTimeout, unixPath: path}, nil
 	case "npipe":
 		path := pipePath(u)
 		t := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -435,9 +435,16 @@ func createBody(spec Spec) containerConfig {
 
 // CreateContainer implements Engine.
 func (d *Docker) CreateContainer(ctx context.Context, name string, spec Spec) (string, error) {
-	if err:=d.prepareSandbox(ctx);err!=nil{return "",err}
-	body:=createBody(spec)
-	if d.podman {if err:=d.profile.validate();err!=nil{return "",err};body.HostConfig.SecurityOpt=podmanSecurityOptions(d.profile.path)}
+	if err := d.prepareSandbox(ctx); err != nil {
+		return "", err
+	}
+	body := createBody(spec)
+	if d.podman {
+		if err := d.profile.validate(); err != nil {
+			return "", err
+		}
+		body.HostConfig.SecurityOpt = podmanSecurityOptions(d.profile.path)
+	}
 	var out struct{ Id string }
 	if err := d.do(ctx, http.MethodPost, "/containers/create", url.Values{"name": {name}}, body, &out); err != nil {
 		return "", err
@@ -452,7 +459,14 @@ func (d *Docker) CopyFiles(ctx context.Context, id, path string, tar []byte) err
 
 // StartContainer implements Engine.
 func (d *Docker) StartContainer(ctx context.Context, id string) error {
-	if err:=d.prepareSandbox(ctx);err!=nil{return err};if d.podman{if err:=d.profile.validate();err!=nil{return err}}
+	if err := d.prepareSandbox(ctx); err != nil {
+		return err
+	}
+	if d.podman {
+		if err := d.profile.validate(); err != nil {
+			return err
+		}
+	}
 	return d.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/start", nil, nil, nil)
 }
 
@@ -685,7 +699,9 @@ func (d *Docker) PublishedPort(ctx context.Context, id string, port int) (int, e
 }
 
 func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (allocation, error) {
-	if err:=d.prepareSandbox(ctx);err!=nil{return allocation{},err}
+	if err := d.prepareSandbox(ctx); err != nil {
+		return allocation{}, err
+	}
 	var out struct {
 		Image           string
 		Config          struct{ Image, User string }
@@ -696,7 +712,7 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 				NetworkID         string
 			}
 		}
-		Mounts []struct{ Destination string }
+		Mounts        []struct{ Destination string }
 		OCIConfigPath string
 	}
 	if err := d.do(ctx, "GET", "/containers/"+url.PathEscape(id)+"/json", nil, nil, &out); err != nil {
@@ -711,11 +727,17 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 	a := allocation{ImageReference: out.Config.Image, ExpectedImage: image.ID, DNS: out.HostConfig.Dns, Image: out.Image, Networks: len(out.NetworkSettings.Networks), Privileged: out.HostConfig.Privileged, HostNetwork: out.HostConfig.NetworkMode == "host", User: out.Config.User,
 		SandboxApplied: out.HostConfig.sandbox().applied()}
 	if d.podman {
-		a.SandboxApplied=false
-		if err:=d.profile.validate();err!=nil{return a,err}
-		if !sameStrings(out.HostConfig.SecurityOpt,podmanSecurityOptions(d.profile.path)){return a,errors.New("Podman sandbox options changed")}
-		if err:=d.profile.inspectOCI(out.OCIConfigPath,id,out.Config.User);err!=nil{return a,err}
-		a.SandboxApplied=true
+		a.SandboxApplied = false
+		if err := d.profile.validate(); err != nil {
+			return a, err
+		}
+		if !sameStrings(out.HostConfig.SecurityOpt, podmanSecurityOptions(d.profile.path)) {
+			return a, errors.New("Podman sandbox options changed")
+		}
+		if err := d.profile.inspectOCI(out.OCIConfigPath, id, out.Config.User); err != nil {
+			return a, err
+		}
+		a.SandboxApplied = true
 	}
 	for _, n := range out.NetworkSettings.Networks {
 		a.IPv6 = a.IPv6 || n.GlobalIPv6Address != ""
