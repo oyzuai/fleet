@@ -243,8 +243,11 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	runnerclient.SetDrainPhase("post_finish")
 	// The server's log-only token window starts at job finish. Keep the
 	// original token and spool alive while the uploader drains that window.
-	if capture != nil && !capture.wait(drain) {
-		log.Warn("log drain window expired; log remains incomplete")
+	if capture != nil {
+		capture.beginPostFinishDrain()
+		if !capture.wait(drain) {
+			log.Warn("log drain window expired; log remains incomplete")
+		}
 	}
 	return nil
 }
