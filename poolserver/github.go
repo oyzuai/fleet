@@ -41,7 +41,11 @@ func newGitHubApp(c Config, o Options) (*GitHubApp, error) {
 		if err != nil {
 			return nil, errors.New("GitHub App private key unavailable")
 		}
-		b,err:=io.ReadAll(io.LimitReader(f,64<<10));_ =f.Close();if err!=nil{return nil,errors.New("GitHub App private key unavailable")}
+		b, err := io.ReadAll(io.LimitReader(f, 64<<10))
+		_ = f.Close()
+		if err != nil {
+			return nil, errors.New("GitHub App private key unavailable")
+		}
 		block, _ := pem.Decode(b)
 		if block == nil {
 			return nil, errors.New("invalid GitHub App private key")
