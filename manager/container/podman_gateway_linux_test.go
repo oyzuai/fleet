@@ -22,52 +22,92 @@ import (
 type boundedGatewayEngine struct {
 	Engine
 	containers []string
-	volumes []string
+	volumes    []string
 }
 
-type harmlessGatewayEngine struct { *boundedGatewayEngine }
+type harmlessGatewayEngine struct{ *boundedGatewayEngine }
 
 func (e *harmlessGatewayEngine) CreateContainer(ctx context.Context, name string, spec Spec) (string, error) {
-	if spec.Volume != "" { spec.Cmd = []string{"/bin/true"} }
+	if spec.Volume != "" {
+		spec.Cmd = []string{"/bin/true"}
+	}
 	return e.boundedGatewayEngine.CreateContainer(ctx, name, spec)
 }
 
 func (e *boundedGatewayEngine) CreateVolume(ctx context.Context, name string, labels map[string]string) error {
 	err := e.Engine.CreateVolume(ctx, name, labels)
-	if err == nil { e.volumes = append(e.volumes, name) }
+	if err == nil {
+		e.volumes = append(e.volumes, name)
+	}
 	return err
 }
 
 func TestPodmanDriverJobRegistrationLifecycle(t *testing.T) {
 	socket, image := os.Getenv("FLEET_PODMAN_PROOF_SOCKET"), os.Getenv("FLEET_PODMAN_GATEWAY_IMAGE")
-	if socket == "" || image == "" { t.Skip("dedicated Podman job-start proof needs explicit socket and immutable local image") }
-	if os.Geteuid() != 1002 || !strings.HasPrefix(socket, "/run/user/1002/") || !strings.HasPrefix(image, "localhost/oyzu-pool-executor@sha256:") { t.Fatal("proof restricted to dedicated uid1002 and immutable local executor image") }
+	if socket == "" || image == "" {
+		t.Skip("dedicated Podman job-start proof needs explicit socket and immutable local image")
+	}
+	if os.Geteuid() != 1002 || !strings.HasPrefix(socket, "/run/user/1002/") || !strings.HasPrefix(image, "localhost/oyzu-pool-executor@sha256:") {
+		t.Fatal("proof restricted to dedicated uid1002 and immutable local executor image")
+	}
 	for i := 0; i < 2; i++ {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 			defer cancel()
 			engine, err := NewDocker("unix://"+socket, DockerOptions{})
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			bounded := &boundedGatewayEngine{Engine: engine}
 			d := &Driver{Engine: &harmlessGatewayEngine{bounded}, Image: image, Command: []string{"oyzu-executor"}, Manager: time.Now().UnixNano(), Pool: "oyzu-pool-slice1-proof", Egress: EgressEnforce, Server: "https://example.invalid", pulled: true}
 			t.Cleanup(func() {
 				cleanup, done := context.WithTimeout(context.Background(), 15*time.Second)
 				defer done()
-				for _, id := range bounded.containers { if err := engine.RemoveContainer(cleanup, id); err != nil { t.Error(err) } }
+				for _, id := range bounded.containers {
+					if err := engine.RemoveContainer(cleanup, id); err != nil {
+						t.Error(err)
+					}
+				}
 				networks, err := bounded.ListNetworks(cleanup, map[string]string{LabelManager: d.managerLabel()})
-				if err != nil { t.Error(err) }
-				for _, network := range networks { if err := engine.RemoveNetwork(cleanup, network.Name); err != nil { t.Error(err) } }
-				for _, volume := range bounded.volumes { if err := engine.RemoveVolume(cleanup, volume); err != nil { t.Error(err) } }
+				if err != nil {
+					t.Error(err)
+				}
+				for _, network := range networks {
+					if err := engine.RemoveNetwork(cleanup, network.Name); err != nil {
+						t.Error(err)
+					}
+				}
+				for _, volume := range bounded.volumes {
+					if err := engine.RemoveVolume(cleanup, volume); err != nil {
+						t.Error(err)
+					}
+				}
 			})
-			if err := d.probe(ctx); err != nil { t.Fatal(err) }
+			if err := d.probe(ctx); err != nil {
+				t.Fatal(err)
+			}
 			claim := runnerclient.Claim{JobID: 5, Attempt: 1, StartupToken: "test-only-never-spent", Egress: runnerclient.ClaimEgress{Allow: []runnerclient.EgressAllow{{Host: "example.invalid", Port: 443}}}}
 			h, err := d.Start(ctx, manager.SlotID("0"), claim)
-			if h.Ref != "" { defer func() { if err := d.Teardown(context.WithoutCancel(ctx), h); err != nil { t.Error(err) } }() }
-			if err != nil { t.Fatalf("actual Start registration: %v", err) }
+			if h.Ref != "" {
+				defer func() {
+					if err := d.Teardown(context.WithoutCancel(ctx), h); err != nil {
+						t.Error(err)
+					}
+				}()
+			}
+			if err != nil {
+				t.Fatalf("actual Start registration: %v", err)
+			}
 			exit, err := d.Wait(ctx, h)
-			if err != nil || exit.Code != 0 { t.Fatalf("harmless job wait: %+v %v", exit, err) }
-			if err := d.Teardown(ctx, h); err != nil { t.Fatal(err) }
-			if err := d.gw.control.Health(ctx); err != nil { t.Fatalf("management transport lost after actual job teardown: %v", err) }
+			if err != nil || exit.Code != 0 {
+				t.Fatalf("harmless job wait: %+v %v", exit, err)
+			}
+			if err := d.Teardown(ctx, h); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.gw.control.Health(ctx); err != nil {
+				t.Fatalf("management transport lost after actual job teardown: %v", err)
+			}
 			t.Log("actual workspace-volume/Start/Wait/Teardown retained authenticated gateway registration")
 		})
 	}
