@@ -265,6 +265,7 @@ func labelFilter(labels map[string]string) url.Values {
 
 // Info implements Engine.
 func (d *Docker) Info(ctx context.Context) (Info, error) {
+	if err := d.prepareSandbox(ctx); err != nil { return Info{}, err }
 	var i struct {
 		ID            string
 		ServerVersion string
@@ -275,6 +276,13 @@ func (d *Docker) Info(ctx context.Context) (Info, error) {
 	}
 	if err := d.do(ctx, http.MethodGet, "/info", nil, nil, &i); err != nil {
 		return Info{}, err
+	}
+	if d.podman {
+		// Podman4.9's compatibility /info generates a fresh UUID per call.
+		// Bind the opaque host identity to the qualified local daemon instead.
+		var err error
+		i.ID, err = d.profile.hostIdentity()
+		if err != nil { return Info{}, err }
 	}
 	return Info{ID: i.ID, ServerVersion: i.ServerVersion, OSType: i.OSType, Architecture: i.Architecture, NCPU: i.NCPU, MemTotal: i.MemTotal}, nil
 }

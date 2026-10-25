@@ -141,7 +141,7 @@ func (e *fakeEngine) container(id string) (*fakeContainer, error) {
 	defer e.mu.Unlock()
 	c, ok := e.containers[id]
 	if !ok {
-		return nil, errors.New("no such container")
+		return nil, errContainerNotFound
 	}
 	return c, nil
 }

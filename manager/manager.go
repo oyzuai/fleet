@@ -310,9 +310,16 @@ func (m *Manager) Rotate(ctx context.Context) (err error) {
 // up to DrainTimeout before tearing them down. Executors start off the claim
 // loop, so a stalled engine never keeps the manager from noticing a stop;
 // a start still running when the drain ends is cut short.
-func (m *Manager) Run(ctx context.Context) error {
+func (m *Manager) Run(ctx context.Context) (runErr error) {
 	log := m.cfg.Log.With("manager", m.st.ManagerID, "pool", m.st.Pool)
 	d := m.cfg.Driver
+	defer func() {
+		if f, ok := d.(Finalizer); ok {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.cfg.TeardownTimeout)
+			defer cancel()
+			runErr = errors.Join(runErr, f.Finalize(cleanup))
+		}
+	}()
 	if err := m.beginReadiness(ctx); err != nil {
 		return err
 	}

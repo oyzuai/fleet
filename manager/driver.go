@@ -7,6 +7,10 @@ import (
 	"github.com/oyzuai/fleet/runnerclient"
 )
 
+// Finalizer releases shared driver resources after all claimed jobs drain.
+// The manager supplies a bounded context independent of its cancelled loop.
+type Finalizer interface { Finalize(context.Context) error }
+
 // Driver provisions, starts, watches and cleans up executors in one kind of
 // environment: local processes, containers, Kubernetes pods or cloud VMs. A
 // pool has exactly one driver. The manager loop owns claiming and decides

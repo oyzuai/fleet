@@ -214,14 +214,15 @@ Configured in platform `deploy/ovh-farm` (Ansible), not in this repository:
   directory, reads the config and key).
 - `tailscale serve --service=svc:pool --https=443 http://127.0.0.1:8480`, so
   callers reach `https://pool.taild79a0f.ts.net` with tailnet identity headers.
-  The tailnet policy grants `tag:ci` and the listed users access to the service.
+  Access follows the canonical [platform tailnet policy](https://github.com/oyzuai/platform/blob/main/deploy/tailnet/policy.hujson),
+  including its service and node-tag rules; do not add an independent pool ACL.
 - One Fleet manager (`--driver container`, rootless Podman socket as the
   engine, `--egress enforce`, `--concurrency 2`, `--image` pinned by digest),
   enrolled against the public HTTPS origin with the enrollment token.
-- The executor image: `ghcr.io/oyzuai/oyzu-execution/base:1` plus the released
-  `oyzu` CLI and `oyzu-executor`. Isolated builds inside a rootless Podman
-  container on build01 are unproven; prove that first and report what it
-  needs (user namespaces, `/dev/fuse`, seccomp) before building more.
+- The executor image uses the execution base plus a released or source-bootstrapped
+  `oyzu` CLI and `oyzu-executor`, pinned together by image digest. The current
+  candidate's full isolated Go build and terminal/Actions acceptance remain
+  pending. Earlier sandbox or Node prerequisites do not establish that result.
 - The GitHub Actions runners on build01 stay as they are; the pool's two slots
   are in addition.
 
@@ -243,6 +244,23 @@ empty capabilities, NNP, private namespaces, exact masks and read-only `/sys`
 including every submount. An echoed HostConfig is insufficient. The first
 qualification is bounded to Linux amd64 and Podman4.9; unsupported engines or
 control drift do not receive readiness authority.
+
+Qualified Podman4.9 also needs a managed namespace anchor: its rootless network
+cleanup can destroy the shared bridge namespace when a gateway detaches its
+last job network as the sole remaining bridge container. Fleet starts one
+nonroot `/bin/sleep infinity` anchor from the same pinned image before the
+gateway, with a read-only root, fixed sandbox, no mounts, ports or credentials,
+32 MiB memory, 0.1 CPU and 16 processes. Actual bridge allocation, OCI controls,
+process and network-namespace identity are inspected and included in the opaque
+runtime readiness fingerprint. Missing, stopped, replaced or unobservable
+anchors revoke local authority and block admission and network disconnects;
+Fleet does not silently replace them under an accepted proof. Restart the
+drained manager to establish a new pair and repeat qualification.
+
+After job/probe drain, bounded shutdown removes job networks, confirms gateway
+removal, then removes the anchor. An uncertain gateway removal retains the
+anchor and reports failure. Reaping preserves the current pair and removes
+only owned stale pairs in that order. Docker uses its ordinary gateway path.
 
 The pool admits claims only after the enrolled manager reports
 `oyzu.io/isolation=container`, `oyzu.io/egress=enforced` and
