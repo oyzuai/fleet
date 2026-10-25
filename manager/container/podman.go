@@ -25,11 +25,13 @@ func podmanEchoedOptions(options []string, path string) bool {
 	return sameStrings(options, []string{"no-new-privileges", "seccomp=" + path}) || sameStrings(options, []string{"no-new-privileges:true", "seccomp=" + path})
 }
 func (d *Docker) podmanOCIPath(ctx context.Context, id string) (string, error) {
-	out,err:=d.podmanContainer(ctx,id)
-	return out.OCIConfigPath,err
+	out, err := d.podmanContainer(ctx, id)
+	return out.OCIConfigPath, err
 }
-type podmanContainerObservation struct {OCIConfigPath,ImageDigest string}
-func (d *Docker) podmanContainer(ctx context.Context,id string) (podmanContainerObservation,error) {
+
+type podmanContainerObservation struct{ OCIConfigPath, ImageDigest string }
+
+func (d *Docker) podmanContainer(ctx context.Context, id string) (podmanContainerObservation, error) {
 	// Compat inspect omits OCIConfigPath and native mask/unmask options. Obtain
 	// the actual engine-generated runtime spec from native inspect instead.
 	native := Docker{client: d.client, base: strings.TrimSuffix(d.base, apiVersion) + "v4.9.0/libpod", callTimeout: d.callTimeout}

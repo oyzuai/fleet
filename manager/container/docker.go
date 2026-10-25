@@ -731,16 +731,18 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 		return allocation{}, err
 	}
 	var image struct {
-		ID string `json:"Id"`
+		ID          string `json:"Id"`
 		RepoDigests []string
 	}
-	imageLookup:=out.Config.Image
-	if d.podman {imageLookup=out.Image}
+	imageLookup := out.Config.Image
+	if d.podman {
+		imageLookup = out.Image
+	}
 	if err := d.do(ctx, "GET", "/images/"+url.PathEscape(imageLookup)+"/json", nil, nil, &image); err != nil {
 		return allocation{}, err
 	}
 	a := allocation{ImageReference: out.Config.Image, ExpectedImage: image.ID, DNS: out.HostConfig.Dns, Image: out.Image, Networks: len(out.NetworkSettings.Networks), Privileged: out.HostConfig.Privileged, HostNetwork: out.HostConfig.NetworkMode == "host", User: out.Config.User,
-		SandboxApplied: out.HostConfig.sandbox().applied(),ReadOnly:out.HostConfig.ReadonlyRootfs}
+		SandboxApplied: out.HostConfig.sandbox().applied(), ReadOnly: out.HostConfig.ReadonlyRootfs}
 	if d.podman {
 		a.SandboxApplied = false
 		if err := d.profile.validate(); err != nil {
@@ -756,7 +758,12 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 		if err := d.profile.inspectOCI(native.OCIConfigPath, id, out.Config.User); err != nil {
 			return a, err
 		}
-		for _,ref:=range image.RepoDigests {_,digest,ok:=strings.Cut(ref,"@");if ok && digest==native.ImageDigest {a.PinnedImages=append(a.PinnedImages,ref)}}
+		for _, ref := range image.RepoDigests {
+			_, digest, ok := strings.Cut(ref, "@")
+			if ok && digest == native.ImageDigest {
+				a.PinnedImages = append(a.PinnedImages, ref)
+			}
+		}
 		a.SandboxApplied = true
 	}
 	for _, n := range out.NetworkSettings.Networks {

@@ -199,8 +199,8 @@ type allocationInspector interface {
 	InspectReadinessAllocation(context.Context, string) (allocation, error)
 }
 type allocation struct {
-	PinnedImages []string
-	ReadOnly bool
+	PinnedImages   []string
+	ReadOnly       bool
 	NetworkIDs     []string
 	ImageReference string
 	ExpectedImage  string
@@ -224,7 +224,7 @@ func (d *Driver) checkAllocation(ctx context.Context, id string, expectedDNS []s
 	if err != nil {
 		return err
 	}
-	if (a.ImageReference != d.Image && !slices.Contains(a.PinnedImages,d.Image)) || a.ExpectedImage == "" || a.Image != a.ExpectedImage {
+	if (a.ImageReference != d.Image && !slices.Contains(a.PinnedImages, d.Image)) || a.ExpectedImage == "" || a.Image != a.ExpectedImage {
 		return fmt.Errorf("%w: actual allocation image differs from its pinned image", readiness.ErrBoundaryChanged)
 	}
 	if !slices.Equal(a.DNS, expectedDNS) {
