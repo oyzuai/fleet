@@ -527,9 +527,11 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	}
 	// A signal/WaitDelay-killed CLI is not proof that its native children
 	// cleaned up. Only a normal wait plus its fresh finalized native record
-	// can acknowledge stopping this build invocation.
+	// can acknowledge stopping this native invocation. Isolated tasks use the
+	// same finalized build-manifest contract as isolated builds.
 	stopWithinGrace := interruptedAt.Load() == 0 || time.Since(time.Unix(0, interruptedAt.Load())) < cmd.WaitDelay
-	if job.Operation == "build" && cmd.ProcessState != nil && cmd.ProcessState.Exited() && !forced.Load() && stopWithinGrace {
+	nativeOperation := job.Operation == "build" || (job.Operation == "run" && slices.Contains(job.Command, "--isolated"))
+	if nativeOperation && cmd.ProcessState != nil && cmd.ProcessState.Exited() && !forced.Load() && stopWithinGrace {
 		current := nativeCompletionRecord(cfg.WorkDir)
 		if retainedCompletion != nil {
 			current = retainedCompletion
@@ -607,7 +609,7 @@ func cancellationOutcome(previous runnerclient.Outcome, confirmed bool) runnercl
 			Summary: "Cancellation requested, but native termination was not confirmed by a fresh completed build record.\n\n" + previous.Summary}
 	}
 	return runnerclient.Outcome{State: "cancelled", ExitCode: previous.ExitCode,
-		Summary: "Native build stopped after cancellation was requested.\n\n" + previous.Summary}
+		Summary: "Native execution stopped after cancellation was requested.\n\n" + previous.Summary}
 }
 
 func nativeCompletionRecord(directory string) []byte {

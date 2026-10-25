@@ -119,6 +119,9 @@ with the same hash and duplicate identical log finishes are safe to retry.
 An executor's honest failure or timeout after cancellation stays a failure or
 timeout with `cancel_requested_at` and diagnostics retained. Only confirmed
 cancellation becomes `cancelled`; success cannot override a pending cancel.
+Isolated task cancellation uses the same fresh finalized native manifest and
+normal process-wait checks as builds. Missing, stale or incomplete records and
+forced termination remain failures; delivery of a signal alone proves no cleanup.
 An absent task reported as `skipped` by the executor becomes
 `failed`/`TASK_NOT_DEFINED` for a manual run. Verbose outcomes accept the
 executor's bounded tail while retaining a short display summary; full output

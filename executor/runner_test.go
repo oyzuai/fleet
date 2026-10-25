@@ -58,6 +58,10 @@ func fakeGit() {
 	switch verb {
 	case "checkout":
 		_ = os.WriteFile("oyzu.toml", []byte("[tasks.policy-check]\nargv = [\"true\"]\n"), 0o600)
+		if record := os.Getenv("FAKE_GIT_COMPLETION"); record != "" {
+			_ = os.MkdirAll("dist", 0700)
+			_ = os.WriteFile(ManifestPath, []byte(record), 0600)
+		}
 	case "status":
 		// No environment holds a NUL, so the tests write it as \0.
 		fmt.Print(strings.ReplaceAll(os.Getenv("FAKE_GIT_STATUS"), `\0`, "\x00"))
@@ -130,9 +134,15 @@ func fakeOyzu() {
 			_ = process.Kill()
 			select {}
 		}
-		if mode == "graceful" {
+		if mode == "graceful" || mode == "reused" || mode == "incomplete" || mode == "malformed" {
+			record := `{"schemaVersion":"v1alpha1","kind":"build-manifest","runId":"current-native","status":"interrupted","artifacts":[]}`
+			if mode == "incomplete" {
+				record = `{"schemaVersion":"v1alpha1","kind":"build-manifest","runId":"current-native","status":"running","artifacts":[]}`
+			} else if mode == "malformed" {
+				record = `{"status":"interrupted"}`
+			}
 			_ = os.MkdirAll("dist", 0o700)
-			_ = os.WriteFile(ManifestPath, []byte(`{"schemaVersion":"v1alpha1","kind":"build-manifest","runId":"current-native","status":"interrupted","artifacts":[]}`), 0o600)
+			_ = os.WriteFile(ManifestPath, []byte(record), 0o600)
 		}
 		_ = os.WriteFile(os.Getenv("FAKE_OYZU_CANCEL_STOPPED"), []byte("stopped"), 0o600)
 		os.Exit(1)
@@ -699,14 +709,49 @@ func TestRunAcknowledgesRequestedCancellationOnlyAfterNativeCompletion(t *testin
 }
 
 func TestRunAcknowledgesCancellationThatWinsFinishRace(t *testing.T) {
-	runs, cfg, _ := setup(t, buildJob("build", "oyzu", "build"))
-	runs.cancelOnFinish = true
-	t.Setenv("FAKE_OYZU_MANIFEST", `{"schemaVersion":"v1alpha1","kind":"build-manifest","runId":"current-native","status":"succeeded","artifacts":[]}`)
-	if err := Run(context.Background(), cfg); err != nil {
-		t.Fatal(err)
+	for _, operation := range []string{"build", "run"} {
+		t.Run(operation, func(t *testing.T) {
+			runs, cfg, _ := setup(t, buildJob(operation, "oyzu", operation, "--isolated", "policy-check"))
+			runs.cancelOnFinish = true
+			t.Setenv("FAKE_OYZU_MANIFEST", `{"schemaVersion":"v1alpha1","kind":"build-manifest","runId":"current-native","status":"succeeded","artifacts":[]}`)
+			if err := Run(context.Background(), cfg); err != nil { t.Fatal(err) }
+			if !runs.cancelRequested || runs.finished == nil || runs.finished.State != "cancelled" || len(runs.finished.Outputs) != 0 {
+				t.Fatalf("finish race did not acknowledge current completed native invocation: %+v", runs.finished)
+			}
+		})
 	}
-	if !runs.cancelRequested || runs.finished == nil || runs.finished.State != "cancelled" || len(runs.finished.Outputs) != 0 {
-		t.Fatalf("finish race did not acknowledge current completed native invocation: %+v", runs.finished)
+}
+
+func TestIsolatedTaskCancellationRequiresFreshNativeCompletion(t *testing.T) {
+	if runtime.GOOS == "windows" { t.Skip("graceful SIGINT subprocess contract is qualified on POSIX") }
+	for _, mode := range []string{"graceful", "missing", "stale", "reused", "incomplete", "malformed", "forced", "nonisolated"} {
+		t.Run(mode, func(t *testing.T) {
+			command := []string{"oyzu", "run", "--isolated", "cli:test"}
+			if mode == "nonisolated" { command = []string{"oyzu", "run", "cli:test"} }
+			job := buildJob("run", command...)
+			job.Task = "cli:test"
+			runs, cfg, _ := setup(t, job)
+			ready := filepath.Join(t.TempDir(), "native-running")
+			stopped := filepath.Join(t.TempDir(), "native-stopped")
+			runs.cancelReady = ready
+			if mode != "forced" { runs.stoppedPath = stopped }
+			priorID := "previous-native"
+			if mode == "stale" || mode == "reused" { priorID = "current-native" }
+			if mode != "missing" { t.Setenv("FAKE_GIT_COMPLETION", fmt.Sprintf(`{"schemaVersion":"v1alpha1","kind":"build-manifest","runId":%q,"status":"succeeded","artifacts":[]}`, priorID)) }
+			t.Setenv("FAKE_OYZU_CANCEL_READY", ready)
+			t.Setenv("FAKE_OYZU_CANCEL_STOPPED", stopped)
+			cliMode := mode
+			if mode == "nonisolated" { cliMode = "graceful" }
+			t.Setenv("FAKE_OYZU_CANCEL_MODE", cliMode)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := Run(ctx, cfg); err != nil { t.Fatal(err) }
+			want := "failed"
+			if mode == "graceful" { want = "cancelled" }
+			if runs.finishBeforeStop || runs.finished == nil || runs.finished.State != want || len(runs.finished.Outputs) != 0 || (want == "failed" && runs.finished.ReasonCode != "RUNNER_ERROR") {
+				t.Fatalf("%s task stop outcome: %+v beforeStop=%v", mode, runs.finished, runs.finishBeforeStop)
+			}
+		})
 	}
 }
 

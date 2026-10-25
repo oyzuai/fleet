@@ -31,7 +31,7 @@ func (poolTestSource) Source(_ context.Context, repo string) (runnerclient.Sourc
 	return runnerclient.Source{Token: "test-source-only", Repository: repo, Expires: time.Now().Add(time.Hour)}, nil
 }
 func TestExecutorReportsRealPoolTerminalOutcomes(t *testing.T) {
-	for _, mode := range []string{"cancel-without-completion", "missing-task", "verbose-success"} {
+	for _, mode := range []string{"cancel-without-completion", "task-cancel-confirmed", "task-cancel-without-completion", "missing-task", "verbose-success"} {
 		t.Run(mode, func(t *testing.T) {
 			var cfg poolserver.Config
 			cfg.Account = "test"
@@ -50,7 +50,7 @@ func TestExecutorReportsRealPoolTerminalOutcomes(t *testing.T) {
 			var run poolserver.Run
 			var cancelled atomic.Bool
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if mode == "cancel-without-completion" && r.URL.Path == "/runner/v1/job/finish" && cancelled.CompareAndSwap(false, true) {
+				if (mode == "cancel-without-completion" || strings.HasPrefix(mode, "task-cancel-")) && r.URL.Path == "/runner/v1/job/finish" && cancelled.CompareAndSwap(false, true) {
 					req := httptest.NewRequest("POST", run.Links.Self+"/cancel", nil)
 					req.RemoteAddr = "127.0.0.1:1234"
 					req.Header.Set("Tailscale-User-Login", "test@example.com")
@@ -67,6 +67,8 @@ func TestExecutorReportsRealPoolTerminalOutcomes(t *testing.T) {
 			op := poolserver.Operation{Kind: "build"}
 			if mode == "missing-task" {
 				op = poolserver.Operation{Kind: "run", Task: "not-defined"}
+			} else if strings.HasPrefix(mode, "task-cancel-") {
+				op = poolserver.Operation{Kind: "run", Task: "cli:test"}
 			}
 			body, _ := json.Marshal(poolserver.RunCreate{Repository: poolserver.Repository{Provider: "github", Name: "oyzuai/fleet"}, Commit: "0123456789abcdef0123456789abcdef01234567", Ref: "refs/heads/main", Operation: op})
 			req, _ := http.NewRequest("POST", server.URL+path, bytes.NewReader(body))
@@ -117,6 +119,9 @@ func TestExecutorReportsRealPoolTerminalOutcomes(t *testing.T) {
 			if mode == "missing-task" {
 				t.Setenv("FAKE_OYZU_MISSING_TASK", "1")
 			}
+			if mode == "task-cancel-confirmed" {
+				t.Setenv("FAKE_OYZU_MANIFEST", `{"schemaVersion":"v1alpha1","kind":"build-manifest","runId":"current-native","status":"succeeded","artifacts":[]}`)
+			}
 			if err = Run(context.Background(), Config{Client: client, StartupTokenFile: token, WorkDir: filepath.Join(dir, "work"), Git: tools, Oyzu: tools, LogDrainTimeout: time.Second}); err != nil {
 				t.Fatal(err)
 			}
@@ -132,9 +137,13 @@ func TestExecutorReportsRealPoolTerminalOutcomes(t *testing.T) {
 				t.Fatal(err)
 			}
 			switch mode {
-			case "cancel-without-completion":
+			case "cancel-without-completion", "task-cancel-without-completion":
 				if run.State != "failed" || run.CancelRequestedAt == nil || run.Reason == nil || run.Reason.Code != "RUNNER_ERROR" || !strings.Contains(run.Reason.Message, "not confirmed") {
 					t.Fatalf("lost cancellation failure: %s", b)
+				}
+			case "task-cancel-confirmed":
+				if run.State != "cancelled" || run.CancelRequestedAt == nil || run.Reason == nil || run.Reason.Code != "CANCELLED_BY_USER" {
+					t.Fatalf("lost confirmed task cancellation: %s", b)
 				}
 			case "missing-task":
 				if run.State != "failed" || run.ExitCode == nil || *run.ExitCode != 1 {
