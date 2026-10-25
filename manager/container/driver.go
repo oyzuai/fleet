@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"encoding/json"
@@ -118,6 +119,9 @@ type Driver struct {
 	localBinding             *readiness.Binding
 	gwMu                     sync.Mutex
 	gw                       *gateway
+	// ipv6Kept is set once a probe has shown the engine's kernel is not
+	// booted without IPv6; see ipv6Sysctls.
+	ipv6Kept atomic.Bool
 }
 
 // job is one job's container.
@@ -338,10 +342,14 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 		raw, _ := json.Marshal(c.Readiness)
 		cmd = append(cmd, "--readiness-binding", string(raw), "--wait-for-startup-token")
 	}
+	sysctls, err := d.ipv6Sysctls(ctx, labels)
+	if err != nil {
+		return h, err
+	}
 	id, err := d.Engine.CreateContainer(ctx, name, Spec{
 		Image: d.Image, Cmd: cmd, User: d.user(), Labels: labels, Volume: j.volume, WorkDir: WorkDir,
 		NanoCPUs: int64(d.CPUs * 1e9), MemoryBytes: d.MemoryBytes, PidsLimit: pids, Network: network,
-		Env: env, DNS: dns, Sysctls: map[string]string{"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"},
+		Env: env, DNS: dns, Sysctls: sysctls,
 	})
 	if err != nil {
 		return h, fmt.Errorf("create the container: %w", err)

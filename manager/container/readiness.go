@@ -105,17 +105,16 @@ func (d *Driver) ReadinessBoundary(ctx context.Context) (readiness.Boundary, err
 	if mode == "" {
 		mode = EgressOpen
 	}
-	// A kernel without IPv6 runs containers without the disable_ipv6
-	// sysctls; measurements made either way are not interchangeable.
-	ipv6 := "disable-sysctls"
-	if p, ok := d.Engine.(ipv6Prober); ok {
-		absent, err := p.ipv6SysctlsAbsent(ctx, d.Image, map[string]string{LabelPool: d.Pool, LabelManager: d.managerLabel()})
-		if err != nil {
-			return readiness.Boundary{}, err
-		}
-		if absent {
-			ipv6 = "kernel-without-ipv6"
-		}
+	// Containers on a kernel booted without IPv6 run without the sysctls
+	// that turn it off, so measurements made either way never qualify the
+	// other. The field is empty, as before, wherever the sysctls apply.
+	ipv6 := ""
+	sysctls, err := d.ipv6Sysctls(ctx, map[string]string{LabelPool: d.Pool, LabelManager: d.managerLabel()})
+	if err != nil {
+		return readiness.Boundary{}, err
+	}
+	if sysctls == nil {
+		ipv6 = "kernel-booted-without-ipv6"
 	}
 	command, _ := json.Marshal(struct {
 		Command      []string
@@ -125,7 +124,7 @@ func (d *Driver) ReadinessBoundary(ctx context.Context) (readiness.Boundary, err
 		Pids         int64
 		Sandbox      string
 		HostSecurity []string
-		IPv6         string
+		IPv6         string `json:",omitempty"`
 	}{slices.Clone(d.Command), d.user(), d.CPUs, d.MemoryBytes, d.PidsLimit, sandboxPolicyFingerprint(), slices.Clone(info.SecurityOptions), ipv6})
 	runtime := sha256.Sum256(append([]byte(info.ServerVersion), command...))
 	b := readiness.Boundary{Support: "supported", Driver: "container", Host: info.ID, Image: d.Image, Runtime: hex.EncodeToString(runtime[:]), Network: "internal-bridge-ipv4-gateway-dns-v1", Mode: string(mode)}
@@ -177,11 +176,6 @@ func (d *Driver) CheckReadiness(ctx context.Context, binding *readiness.Binding)
 
 // allocationInspector reads the actual engine allocation, independently of the
 // requested template. Engines without this observation cannot qualify.
-// ipv6Prober is an engine that can tell whether its own kernel lacks IPv6.
-type ipv6Prober interface {
-	ipv6SysctlsAbsent(ctx context.Context, image string, labels map[string]string) (bool, error)
-}
-
 type allocationInspector interface {
 	InspectReadinessAllocation(context.Context, string) (allocation, error)
 }
@@ -349,7 +343,11 @@ func (d *Driver) ProbeReadiness(ctx context.Context, c readiness.Challenge) (res
 		return
 	}
 	cmd := []string{d.Command[0], "gateway", "probe-readiness", "--challenge", string(raw), "--proxy", proxy, "--control", net.JoinHostPort(u.Hostname(), fmt.Sprint(gatewayControlPort))}
-	j.id, err = d.Engine.CreateContainer(ctx, name, Spec{Image: d.Image, Cmd: cmd, User: d.user(), Network: j.network, Env: env, DNS: dns, Labels: labels, ReadOnly: true, PidsLimit: 256, Sysctls: map[string]string{"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"}})
+	sysctls, err := d.ipv6Sysctls(ctx, labels)
+	if err != nil {
+		return
+	}
+	j.id, err = d.Engine.CreateContainer(ctx, name, Spec{Image: d.Image, Cmd: cmd, User: d.user(), Network: j.network, Env: env, DNS: dns, Labels: labels, ReadOnly: true, PidsLimit: 256, Sysctls: sysctls})
 	if err != nil {
 		return
 	}

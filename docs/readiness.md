@@ -35,12 +35,16 @@ embedded resolver may translate upstream REFUSED to SERVFAIL; a timeout never
 counts as that observation, and a direct gateway REFUSED answer is also required.
 Job and diagnostic containers disable IPv6, link-local included, through the
 `disable_ipv6` sysctls. A kernel booted with `ipv6.disable=1` has no such
-sysctls and no IPv6 at all. Fleet asks the engine's own kernel, not the
-manager's: it starts one network-less probe container with those sysctls, and
-only when the engine refuses because their files are missing does it create
-containers without them. Any other probe outcome keeps the sysctls, and a probe
-that cannot run fails the container. The readiness boundary records which mode
-applies, so a measurement taken in one mode never qualifies the other.
+sysctls and no IPv6 for any container, and asking for them stops every
+container from starting. Before each such container, Fleet runs
+`oyzu-executor gateway probe-ipv6` in a network-less container on the engine,
+so it reads the engine's own kernel (or the VM guest's), never the manager's.
+Only when that kernel's `ipv6.disable` setting reads 1 are the sysctls left
+out. A kernel whose IPv6 module is not loaded yet, a sandboxed runtime that
+hides the setting, or a probe that fails keeps the sysctls; that answer lasts
+until the manager restarts, while the answer that drops them is checked again
+every time. The readiness boundary records when the sysctls are left out, so a
+measurement taken in one mode never qualifies the other.
 
 The server-selected assignment binding accompanies startup. Fleet checks its
 current boundary, starts the trusted executor bootstrap without a startup token,

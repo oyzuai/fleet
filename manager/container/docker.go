@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,7 +16,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -33,11 +31,6 @@ type Docker struct {
 	// callTimeout bounds every call but waiting for a container and
 	// pulling an image.
 	callTimeout time.Duration
-
-	// ipv6Mu guards ipv6Absent, which is set once the engine's own kernel has
-	// shown whether it has the IPv6 sysctls (see ipv6SysctlsAbsent).
-	ipv6Mu     sync.Mutex
-	ipv6Absent *bool
 }
 
 var _ Engine = (*Docker)(nil)
@@ -436,111 +429,11 @@ func createBody(spec Spec) containerConfig {
 
 // CreateContainer implements Engine.
 func (d *Docker) CreateContainer(ctx context.Context, name string, spec Spec) (string, error) {
-	if asksIPv6Disable(spec.Sysctls) {
-		absent, err := d.ipv6SysctlsAbsent(ctx, spec.Image, spec.Labels)
-		if err != nil {
-			return "", err
-		}
-		if absent {
-			spec.Sysctls = withoutIPv6Disable(spec.Sysctls)
-		}
-	}
 	var out struct{ Id string }
 	if err := d.do(ctx, http.MethodPost, "/containers/create", url.Values{"name": {name}}, createBody(spec), &out); err != nil {
 		return "", err
 	}
 	return out.Id, nil
-}
-
-// ipv6DisableSysctls are the settings every job and readiness container asks
-// for so it has no IPv6 address, link-local included.
-var ipv6DisableSysctls = []string{"net.ipv6.conf.all.disable_ipv6", "net.ipv6.conf.default.disable_ipv6"}
-
-// ipv6ProbeCommand does not exist in any image: the probe container's start
-// gets past applying its sysctls only to fail at exec.
-const ipv6ProbeCommand = "/oyzu-ipv6-sysctl-probe"
-
-func asksIPv6Disable(sysctls map[string]string) bool {
-	for _, key := range ipv6DisableSysctls {
-		if sysctls[key] == "1" {
-			return true
-		}
-	}
-	return false
-}
-
-// withoutIPv6Disable drops only the IPv6-disabling sysctls. Every other
-// setting is kept, and the caller's map is not changed.
-func withoutIPv6Disable(sysctls map[string]string) map[string]string {
-	out := maps.Clone(sysctls)
-	for _, key := range ipv6DisableSysctls {
-		if out[key] == "1" {
-			delete(out, key)
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// ipv6SysctlsAbsent asks the engine's own kernel, never the manager's,
-// whether it has IPv6. A kernel booted with ipv6.disable=1 has no
-// net.ipv6 sysctls, so no container on it can have an IPv6 address and
-// asking for disable_ipv6 only stops every container from starting. The
-// engine shows this by refusing to start a network-less probe container
-// because that sysctl's file is missing. Any other outcome, including a
-// probe that cannot run, keeps the sysctls; only a definite answer is
-// remembered.
-func (d *Docker) ipv6SysctlsAbsent(ctx context.Context, image string, labels map[string]string) (bool, error) {
-	d.ipv6Mu.Lock()
-	defer d.ipv6Mu.Unlock()
-	if d.ipv6Absent != nil {
-		return *d.ipv6Absent, nil
-	}
-	probe := Spec{Image: image, Cmd: []string{ipv6ProbeCommand}, Network: "none", Labels: labels, ReadOnly: true, PidsLimit: 8,
-		Sysctls: map[string]string{ipv6DisableSysctls[0]: "1", ipv6DisableSysctls[1]: "1"}}
-	var out struct{ Id string }
-	if err := d.do(ctx, http.MethodPost, "/containers/create", nil, createBody(probe), &out); err != nil {
-		return false, fmt.Errorf("probe the engine's IPv6 sysctls: %w", err)
-	}
-	defer func() {
-		cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer stop()
-		_ = d.RemoveContainer(cleanup, out.Id)
-	}()
-	err := d.StartContainer(ctx, out.Id)
-	var ae *apiError
-	switch {
-	case err == nil:
-		// Started at all: the sysctls applied. Keep them.
-	case errors.As(err, &ae) && missingIPv6Sysctl(ae.Message):
-		absent := true
-		d.ipv6Absent = &absent
-		return true, nil
-	case errors.As(err, &ae) && strings.Contains(ae.Message, ipv6ProbeCommand):
-		// Failed at exec, after the sysctls applied.
-	default:
-		return false, fmt.Errorf("probe the engine's IPv6 sysctls: %w", err)
-	}
-	present := false
-	d.ipv6Absent = &present
-	return false, nil
-}
-
-// missingIPv6Sysctl matches runc's and crun's refusal to set a disable_ipv6
-// sysctl whose /proc file does not exist.
-func missingIPv6Sysctl(message string) bool {
-	m := strings.ToLower(message)
-	if !strings.Contains(m, "no such file or directory") {
-		return false
-	}
-	for _, key := range ipv6DisableSysctls {
-		if strings.Contains(m, key) || strings.Contains(m, strings.ReplaceAll(key, ".", "/")) {
-			return true
-		}
-	}
-	return false
 }
 
 // CopyFiles implements Engine.

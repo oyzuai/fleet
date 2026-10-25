@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"io"
-	"maps"
 	"math/big"
 	"net"
 	"net/http"
@@ -393,72 +392,5 @@ func TestDockerNetworks(t *testing.T) {
 	}
 	if err := d.RemoveNetwork(ctx, "missing"); err != nil {
 		t.Fatalf("RemoveNetwork on a missing network = %v", err)
-	}
-}
-
-func TestDockerAsksTheEngineKernelBeforeOmittingIPv6Sysctls(t *testing.T) {
-	ctx := context.Background()
-	spec := Spec{Image: "img", Network: "bridge", Sysctls: map[string]string{
-		"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1", "net.ipv4.ip_unprivileged_port_start": "53",
-	}}
-	missing := `{"message":"failed to create task for container: OCI runtime create failed: runc create failed: unable to start container process: error during container init: open sysctl net.ipv6.conf.all.disable_ipv6 file: unsafe procfs detected: openat2 fsmount:fscontext:proc/./sys/net/ipv6/conf/all/disable_ipv6: no such file or directory"}`
-	execFailed := `{"message":"failed to create task for container: OCI runtime create failed: runc create failed: unable to start container process: exec: \"/oyzu-ipv6-sysctl-probe\": stat /oyzu-ipv6-sysctl-probe: no such file or directory"}`
-	for _, c := range []struct {
-		name, start string
-		want        map[string]string
-		fails       bool
-	}{
-		{"kernel without IPv6", missing, map[string]string{"net.ipv4.ip_unprivileged_port_start": "53"}, false},
-		{"kernel with IPv6", execFailed, spec.Sysctls, false},
-		{"probe cannot run", `{"message":"no such image: img"}`, nil, true},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			var creates int
-			d, s := newStub(t, map[string]func(http.ResponseWriter, *http.Request){
-				"POST /containers/create": func(w http.ResponseWriter, _ *http.Request) {
-					creates++
-					reply(201, `{"Id":"abc"}`)(w, nil)
-				},
-				"POST /containers/abc/start": reply(400, c.start),
-				"DELETE /containers/abc":     reply(204, ``),
-			})
-			for range 2 {
-				_, err := d.CreateContainer(ctx, "oyzu-1", spec)
-				if c.fails {
-					if err == nil {
-						t.Fatal("a probe that cannot run must fail the create, not drop the sysctls")
-					}
-					continue
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-				var sent containerConfig
-				if err := json.Unmarshal(s.body["POST /containers/create"], &sent); err != nil {
-					t.Fatal(err)
-				}
-				if !maps.Equal(sent.HostConfig.Sysctls, c.want) {
-					t.Fatalf("sysctls = %v, want %v", sent.HostConfig.Sysctls, c.want)
-				}
-			}
-			switch {
-			case c.fails && creates != 2:
-				t.Fatalf("an unanswered probe must be retried, creates = %d", creates)
-			case !c.fails && creates != 3:
-				t.Fatalf("a definite answer is probed once, creates = %d", creates)
-			}
-		})
-	}
-	if len(spec.Sysctls) != 3 {
-		t.Fatal("the caller's spec must not be changed")
-	}
-	d, s := newStub(t, map[string]func(http.ResponseWriter, *http.Request){
-		"POST /containers/create": reply(201, `{"Id":"abc"}`),
-	})
-	if _, err := d.CreateContainer(ctx, "oyzu-gateway", Spec{Image: "img", Sysctls: map[string]string{"net.ipv4.ip_unprivileged_port_start": "53"}}); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(strings.Join(s.seen, " "), "/start") {
-		t.Fatal("a container that does not ask to disable IPv6 needs no probe")
 	}
 }
