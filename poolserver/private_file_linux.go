@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -88,11 +89,12 @@ func protectedCredential(f *os.File, path string) bool {
 		return false
 	}
 	defer mount.Close()
+	fdmeta,e:=os.ReadFile("/proc/self/fdinfo/"+strconv.FormatUint(uint64(f.Fd()),10));if e!=nil{return false};mountID:="";for _,line:=range strings.Split(string(fdmeta),"\n"){fields:=strings.Fields(line);if len(fields)==2&&fields[0]=="mnt_id:"{mountID=fields[1]}};if mountID==""{return false}
 	scan := bufio.NewScanner(mount)
 	qualified := false
 	for scan.Scan() {
 		parts := strings.Fields(scan.Text())
-		if len(parts) < 10 || parts[4] != systemdCredentials {
+		if len(parts) < 10 || parts[4] != systemdCredentials || parts[0]!=mountID {
 			continue
 		}
 		sep := -1

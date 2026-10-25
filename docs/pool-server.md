@@ -215,8 +215,11 @@ Configured in platform `deploy/ovh-farm` (Ansible), not in this repository:
 
 Podman4.9's compatibility API needs an engine-side file for Fleet's fixed
 seccomp policy and native mask/unmask options. The adapter qualifies only a
-directly-bound, same-UID Linux Podman process sharing the manager's mount/user/PID
-namespaces and root filesystem. Remote, forwarded and ambiguous socket-activated
+directly-bound Linux Podman process with the manager's host UID, a verified
+rootless UID mapping, host PID namespace and root filesystem. Different mount
+or user namespaces require a kernel-backed check that the daemon sees the same
+private profile directory/file inodes and fixed bytes. The trusted executable
+and process start time are checked as well. Remote, forwarded and ambiguous socket-activated
 endpoints fail closed. `XDG_RUNTIME_DIR` must be private 0700; the fixed
 content-addressed profile remains in its `oyzu-fleet-sandbox` child through the
 runtime-directory lifetime so concurrent containers keep their policy file.
