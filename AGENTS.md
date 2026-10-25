@@ -26,15 +26,6 @@ server is configured in the platform repository's `deploy/ovh-farm`.
 
 ## Be practical
 
-Maintainer decision (2026-10-25): do the task, run the tests that matter, and say
-plainly whether they passed or failed; the command and pass/fail is enough. Keep
-user-facing documentation up to date: whenever a change alters what users see or
-do, update the existing user-facing docs in the same change. Don't write other
-docs (status or qualification files, proof files, internal write-ups) or new
-scripts unless the change needs them or the task asks. Keep PR descriptions short.
-Clean up builds, workspaces, containers and images you created (never other
-people's data) and say how much disk you used. Never skip signing, provenance,
-access-control or compliance checks, and never hide a failure. Open PRs as drafts;
-once the work is done and checked, mark the PR ready for review, and only then ask
-Micah to look at it. Never ask him to review or check a draft. Where another rule
-here asks for more, this one wins.
+Follow the shared [finite acceptance contract](https://github.com/oyzuai/agent-workflows/blob/main/policy/working-agreements.md#finite-acceptance-contract): agree the outcome, required evidence and non-goals; advance the next failing user scenario or binding safeguard; ask before expanding scope. Keep first-proof inputs stable, rerun only invalidated evidence, and give milestone/blocker updates with no more than an hour of silence during active work. Format and run applicable lightweight checks before meaningful commits.
+
+Keep permanent docs about supported behavior, limitations and reproducible configuration; put run-specific receipts, temporary paths and chronology in PR evidence. Preserve required isolation, enforced egress, access control, secret handling, signing, provenance, compliance and repository checks. Clean only task-owned disposable output. Use draft PRs, complete independent review and required checks before marking ready, and never merge or approve your own change. This delivery order does not waive the tool, schema, CI or security rules below.
