@@ -36,15 +36,17 @@ counts as that observation, and a direct gateway REFUSED answer is also required
 Job and diagnostic containers disable IPv6, link-local included, through the
 `disable_ipv6` sysctls. A kernel booted with `ipv6.disable=1` has no such
 sysctls and no IPv6 for any container, and asking for them stops every
-container from starting. Before each such container, Fleet runs
-`oyzu-executor gateway probe-ipv6` in a network-less container on the engine,
-so it reads the engine's own kernel (or the VM guest's), never the manager's.
-Only when that kernel's `ipv6.disable` setting reads 1 are the sysctls left
-out. A kernel whose IPv6 module is not loaded yet, a sandboxed runtime that
-hides the setting, or a probe that fails keeps the sysctls; that answer lasts
-until the manager restarts, while the answer that drops them is checked again
-every time. The readiness boundary records when the sysctls are left out, so a
-measurement taken in one mode never qualifies the other.
+container from starting. Fleet runs `oyzu-executor gateway probe-ipv6` in a
+network-less container on the engine, so it reads the engine's own kernel (or
+the VM guest's), never the manager's. Only when that kernel's `ipv6.disable`
+setting reads 1 are the sysctls left out, and that answer is checked again
+before every container, so a reboot with IPv6 back on is noticed. A kernel
+with IPv6, an IPv6 module that is not loaded yet, or a sandboxed runtime that
+hides the setting counts as having IPv6 and keeps the sysctls until the
+manager restarts; a probe that fails keeps them for that container. The
+probe and the container must land on the same kernel, which holds for one
+engine host. The readiness boundary records when the sysctls are left out, so
+a measurement taken in one mode never qualifies the other.
 
 The server-selected assignment binding accompanies startup. Fleet checks its
 current boundary, starts the trusted executor bootstrap without a startup token,

@@ -34,10 +34,11 @@ type fakeEngine struct {
 	networks   map[string]*fakeNetwork
 	// probeExit is the exit code the self-test's probe container ends with.
 	probeExit int
-	// ipv6Probe is what `gateway probe-ipv6` prints; "available" when empty.
-	// ipv6Probes counts its containers.
-	ipv6Probe  string
-	ipv6Probes int
+	// ipv6Probe is what `gateway probe-ipv6` prints, "available" when empty,
+	// and ipv6ProbeExit how it exits. ipv6Probes counts its containers.
+	ipv6Probe     string
+	ipv6ProbeExit int
+	ipv6Probes    int
 }
 
 type fakeNetwork struct {
@@ -183,7 +184,7 @@ func (e *fakeEngine) StartContainer(_ context.Context, id string) error {
 			c.logs = "available"
 		}
 		c.logs += "\n"
-		c.exit <- 0
+		c.exit <- e.ipv6ProbeExit
 	}
 	e.mu.Unlock()
 	return nil
@@ -632,6 +633,7 @@ func TestJobsKeepTheIPv6SysctlsUnlessTheEngineKernelHasNoIPv6(t *testing.T) {
 	}
 	for _, c := range []struct {
 		name, probe string
+		exit        int
 		want        map[string]string
 		probes      int
 	}{
@@ -639,13 +641,15 @@ func TestJobsKeepTheIPv6SysctlsUnlessTheEngineKernelHasNoIPv6(t *testing.T) {
 		{name: "kernel with IPv6", probe: "available", want: ipv6Off, probes: 1},
 		// Only the kernel's own answer drops them, and it is asked every time.
 		{name: "kernel booted without IPv6", probe: "disabled", want: nil, probes: 2},
-		// Anything else keeps them.
-		{name: "unexpected answer", probe: "disabled-ish", want: ipv6Off, probes: 1},
+		// Anything else keeps them for that container only.
+		{name: "unexpected answer", probe: "disabled-ish", want: ipv6Off, probes: 2},
+		{name: "extra output", probe: "noise\ndisabled", want: ipv6Off, probes: 2},
+		{name: "probe fails", probe: "disabled", exit: 1, want: ipv6Off, probes: 2},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e := newFakeEngine()
 			e.present = true
-			e.ipv6Probe = c.probe
+			e.ipv6Probe, e.ipv6ProbeExit = c.probe, c.exit
 			d := newDriver(e)
 			ready(t, d)
 			for job := int64(1); job <= 2; job++ {

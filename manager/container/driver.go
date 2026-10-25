@@ -119,9 +119,11 @@ type Driver struct {
 	localBinding             *readiness.Binding
 	gwMu                     sync.Mutex
 	gw                       *gateway
-	// ipv6Kept is set once a probe has shown the engine's kernel is not
-	// booted without IPv6; see ipv6Sysctls.
-	ipv6Kept atomic.Bool
+	// ipv6Available is set once a probe has shown the engine's kernel has
+	// IPv6; ipv6Probing names the probes running now. See ipv6Sysctls.
+	ipv6Available atomic.Bool
+	ipv6Seq       atomic.Int64
+	ipv6Probing   map[string]bool
 }
 
 // job is one job's container.
@@ -546,7 +548,10 @@ func (d *Driver) Reap(ctx context.Context, live []manager.JobID) error {
 	}
 	d.gwMu.Unlock()
 	for _, c := range containers {
-		if keep[c.Name] || isLive(c.Labels[LabelJob]) || c.ID == gwID {
+		d.mu.Lock()
+		probing := d.ipv6Probing[c.Name]
+		d.mu.Unlock()
+		if keep[c.Name] || isLive(c.Labels[LabelJob]) || c.ID == gwID || probing {
 			continue
 		}
 		if err := d.Engine.RemoveContainer(ctx, c.ID); err != nil {
