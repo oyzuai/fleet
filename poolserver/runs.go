@@ -124,16 +124,14 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 				problem(w, 409, "RUN_NOT_FINISHED", "The run has not finished.")
 				return
 			}
-			outputs := j.Outputs
-			if outputs == nil {
-				outputs = []runnerclient.Output{}
-			}
+			outputs := make([]Output,0,len(j.Outputs))
+			for _, o := range j.Outputs {outputs=append(outputs,Output{Path:o.Path,Kind:o.Kind,MediaType:o.MediaType,Digest:o.Digest,Size:o.Size})}
 			respond(w, 200, struct {
 				Run      string                `json:"run"`
 				State    string                `json:"state"`
 				ExitCode *int                  `json:"exit_code,omitempty"`
 				Reason   *Reason               `json:"reason,omitempty"`
-				Outputs  []runnerclient.Output `json:"outputs"`
+				Outputs  []Output `json:"outputs"`
 			}{rr.Run.ID, rr.Run.State, rr.Run.ExitCode, rr.Run.Reason, outputs})
 			return
 		case "outputs":

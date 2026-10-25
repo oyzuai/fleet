@@ -68,6 +68,10 @@ func fakeGit() {
 }
 
 func fakeOyzu() {
+	if os.Getenv("FAKE_OYZU_VERBOSE_TAIL")!="" {
+		for i:=0;i<60;i++ {fmt.Println(strings.Repeat("v",65535))}
+		os.Exit(0)
+	}
 	if mode := os.Getenv("FAKE_OYZU_HANDOFF"); mode != "" {
 		input, _ := io.ReadAll(os.Stdin)
 		calls, _ := os.OpenFile(os.Getenv("FAKE_OYZU_HANDOFF_CALLS"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)

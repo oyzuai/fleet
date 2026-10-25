@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/oyzuai/fleet/assertion"
 	"github.com/oyzuai/fleet/runnerclient"
@@ -323,16 +324,28 @@ func (s *Server) jobRoute(w http.ResponseWriter, r *http.Request, route, digest 
 		respond(w, 200, source)
 	case "job/finish":
 		var outcome runnerclient.Outcome
-		if !parseBody(w, r, &outcome) {
+		// The unchanged executor includes a 60-line tail, each line up to
+		// 64 KiB, plus outcome metadata. Keep a finite bound without rejecting
+		// its honest terminal result solely for verbose output.
+		if !parseBodyLimit(w, r, &outcome, 8<<20) {
 			return
 		}
-		if !contains([]string{"succeeded", "failed", "cancelled", "timed_out"}, outcome.State) || len(outcome.Plan) > 0 || len(outcome.Outputs) > 1000 || len(outcome.Summary) > 64<<10 {
+		if !contains([]string{"succeeded", "failed", "cancelled", "timed_out", "skipped"}, outcome.State) || len(outcome.Plan) > 0 || len(outcome.Outputs) > 1000 {
 			problem(w, 400, "REQUEST_INVALID", "Invalid job outcome.")
 			return
 		}
-		if rr.Run.CancelRequestedAt != nil && outcome.State != "cancelled" {
+		if rr.Run.CancelRequestedAt != nil && outcome.State == "succeeded" {
 			problem(w, 409, "CANCEL_REQUESTED", "Cancellation must be confirmed by the executor.")
 			return
+		}
+		if outcome.State=="skipped" {
+			outcome.State="failed"
+			outcome.ReasonCode="TASK_NOT_DEFINED"
+		}
+		if len(outcome.Summary)>64<<10 {
+			outcome.Summary=outcome.Summary[:64<<10]
+			for !utf8.ValidString(outcome.Summary) {outcome.Summary=outcome.Summary[:len(outcome.Summary)-1]}
+			outcome.Summary+="\n[summary truncated; see run logs]"
 		}
 		for _, o := range outcome.Outputs {
 			if !validOutput(o) {

@@ -180,6 +180,15 @@ type Links struct {
 	Logs   string `json:"logs"`
 	Result string `json:"result"`
 }
+// Output is the public runs contract's deliberately smaller metadata shape.
+// The runner's target, version and OCI correlation fields stay internal.
+type Output struct {
+ Path string `json:"path"`
+ Kind string `json:"kind"`
+ MediaType string `json:"media_type"`
+ Digest string `json:"digest"`
+ Size int64 `json:"size"`
+}
 type Run struct {
 	ID                string     `json:"id"`
 	Account           string     `json:"account"`

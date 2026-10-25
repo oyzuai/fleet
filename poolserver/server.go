@@ -107,7 +107,10 @@ func problem(w http.ResponseWriter, status int, code, detail string) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"type": "urn:oyzu:problem:" + strings.ToLower(strings.ReplaceAll(code, "_", "-")), "title": http.StatusText(status), "status": status, "code": code, "detail": detail, "request_id": w.Header().Get("X-Request-Id")})
 }
 func parseBody(w http.ResponseWriter, r *http.Request, v any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
+	return parseBodyLimit(w,r,v,2<<20)
+}
+func parseBodyLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	if err := decodeJSON(r.Body, v); err != nil {
 		problem(w, 400, "REQUEST_INVALID", "Expected a bounded JSON request with known fields.")
 		return false

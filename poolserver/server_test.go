@@ -193,7 +193,7 @@ func TestRunLifecycleRealRunnerClient(t *testing.T) {
 		t.Fatalf("heartbeat %v %v %v", expires, cancel, err)
 	}
 	zero := 0
-	output := runnerclient.Output{Path: "dist/report.xml", Kind: "report", Digest: "sha256:" + strings.Repeat("a", 64), MediaType: "application/xml", Size: 10}
+	output := runnerclient.Output{Path: "dist/report.xml", Kind: "report", Digest: "sha256:" + strings.Repeat("a", 64), MediaType: "application/xml", Size: 10,Target:"cli",Name:"report",Version:"1.0",OCIDigest:"sha256:"+strings.Repeat("b",64)}
 	if err = f.c.Finish(ctx, st.JobToken, runnerclient.Outcome{State: "succeeded", ExitCode: &zero, Outputs: []runnerclient.Output{output}}); err != nil {
 		t.Fatal(err)
 	}
@@ -204,6 +204,7 @@ func TestRunLifecycleRealRunnerClient(t *testing.T) {
 	if status != 200 || !bytes.Contains(b, []byte(`"state":"succeeded"`)) || !bytes.Contains(b, []byte(output.Digest)) {
 		t.Fatalf("result %d %s", status, b)
 	}
+	for _, extra:=range []string{`"target":`,`"name":`,`"version":`,`"oci_digest":`}{if bytes.Contains(b,[]byte(extra)){t.Fatalf("runner-only output field leaked: %s",b)}}
 	status, b, _ = f.request(t, "GET", run.Links.Self+"/outputs/"+output.Digest, "micah@example.com", nil, nil)
 	if status != 404 || !bytes.Contains(b, []byte("OUTPUT_UNAVAILABLE")) {
 		t.Fatalf("output %d %s", status, b)
