@@ -185,7 +185,11 @@ func TestReadinessDockerBoundaryAndGatewayReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	j.dns = dns
-	j.id, err = engine.CreateContainer(ctx, j.name, Spec{Image: d.Image, Cmd: []string{"/executor", "gateway", "readiness-canary", "--http", ":8081", "--dns", ":8054"}, User: d.user(), Network: j.network, Env: env, DNS: dns, Labels: labels, ReadOnly: true, PidsLimit: 64, Sysctls: map[string]string{"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"}})
+	sysctls, err := d.ipv6Sysctls(ctx, labels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.id, err = engine.CreateContainer(ctx, j.name, Spec{Image: d.Image, Cmd: []string{"/executor", "gateway", "readiness-canary", "--http", ":8081", "--dns", ":8054"}, User: d.user(), Network: j.network, Env: env, DNS: dns, Labels: labels, ReadOnly: true, PidsLimit: 64, Sysctls: sysctls})
 	if err != nil {
 		t.Fatal(err)
 	}

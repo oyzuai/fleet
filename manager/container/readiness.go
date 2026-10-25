@@ -105,6 +105,17 @@ func (d *Driver) ReadinessBoundary(ctx context.Context) (readiness.Boundary, err
 	if mode == "" {
 		mode = EgressOpen
 	}
+	// Containers on a kernel booted without IPv6 run without the sysctls
+	// that turn it off, so measurements made either way never qualify the
+	// other. The field is empty, as before, wherever the sysctls apply.
+	ipv6 := ""
+	sysctls, err := d.ipv6Sysctls(ctx, map[string]string{LabelPool: d.Pool, LabelManager: d.managerLabel()})
+	if err != nil {
+		return readiness.Boundary{}, err
+	}
+	if sysctls == nil {
+		ipv6 = "kernel-booted-without-ipv6"
+	}
 	command, _ := json.Marshal(struct {
 		Command      []string
 		User         string
@@ -113,7 +124,8 @@ func (d *Driver) ReadinessBoundary(ctx context.Context) (readiness.Boundary, err
 		Pids         int64
 		Sandbox      string
 		HostSecurity []string
-	}{slices.Clone(d.Command), d.user(), d.CPUs, d.MemoryBytes, d.PidsLimit, sandboxPolicyFingerprint(), slices.Clone(info.SecurityOptions)})
+		IPv6         string `json:",omitempty"`
+	}{slices.Clone(d.Command), d.user(), d.CPUs, d.MemoryBytes, d.PidsLimit, sandboxPolicyFingerprint(), slices.Clone(info.SecurityOptions), ipv6})
 	runtime := sha256.Sum256(append([]byte(info.ServerVersion), command...))
 	b := readiness.Boundary{Support: "supported", Driver: "container", Host: info.ID, Image: d.Image, Runtime: hex.EncodeToString(runtime[:]), Network: "internal-bridge-ipv4-gateway-dns-v1", Mode: string(mode)}
 	if mode != EgressOpen {
@@ -331,7 +343,11 @@ func (d *Driver) ProbeReadiness(ctx context.Context, c readiness.Challenge) (res
 		return
 	}
 	cmd := []string{d.Command[0], "gateway", "probe-readiness", "--challenge", string(raw), "--proxy", proxy, "--control", net.JoinHostPort(u.Hostname(), fmt.Sprint(gatewayControlPort))}
-	j.id, err = d.Engine.CreateContainer(ctx, name, Spec{Image: d.Image, Cmd: cmd, User: d.user(), Network: j.network, Env: env, DNS: dns, Labels: labels, ReadOnly: true, PidsLimit: 256, Sysctls: map[string]string{"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1"}})
+	sysctls, err := d.ipv6Sysctls(ctx, labels)
+	if err != nil {
+		return
+	}
+	j.id, err = d.Engine.CreateContainer(ctx, name, Spec{Image: d.Image, Cmd: cmd, User: d.user(), Network: j.network, Env: env, DNS: dns, Labels: labels, ReadOnly: true, PidsLimit: 256, Sysctls: sysctls})
 	if err != nil {
 		return
 	}
