@@ -9,8 +9,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -86,13 +88,34 @@ func TestPodmanDriverJobRegistrationLifecycle(t *testing.T) {
 			if err := d.probe(ctx); err != nil {
 				t.Fatal(err)
 			}
+			if i == 1 {
+				// Native CLI reads can synchronize runtime state separately from
+				// the long-lived API service. Reproduce the observer's interleaving
+				// only against this proof's own objects and test manager identity.
+				pollCtx, stop := context.WithCancel(ctx)
+				var readers sync.WaitGroup
+				readers.Add(1)
+				go func() {
+					defer readers.Done()
+					ticker := time.NewTicker(250*time.Millisecond)
+					defer ticker.Stop()
+					for {
+						_ = exec.CommandContext(pollCtx, "podman", "ps", "-a", "--no-trunc", "--filter", "label="+LabelManager+"="+d.managerLabel(), "--filter", "label="+LabelJob, "--format", "{{.ID}}").Run()
+						select { case <-pollCtx.Done(): return; case <-ticker.C: }
+					}
+				}()
+				defer func() { stop(); readers.Wait() }()
+				_ = exec.CommandContext(ctx, "podman", "inspect", "--format", "{{json .Id}} {{json .OCIConfigPath}}", d.gatewayName()).Run()
+				if err := d.gw.control.Health(ctx); err != nil { t.Fatalf("native CLI reads broke own gateway before Start: %v", err) }
+			}
 			claim := runnerclient.Claim{JobID: 5, Attempt: 1, StartupToken: "test-only-never-spent", Egress: runnerclient.ClaimEgress{Allow: []runnerclient.EgressAllow{{Host: "example.invalid", Port: 443}}}}
 			h, err := d.Start(ctx, manager.SlotID("0"), claim)
+			tornDown := false
 			if h.Ref != "" {
 				defer func() {
-					if err := d.Teardown(context.WithoutCancel(ctx), h); err != nil {
+					if !tornDown { if err := d.Teardown(context.WithoutCancel(ctx), h); err != nil {
 						t.Error(err)
-					}
+					} }
 				}()
 			}
 			if err != nil {
@@ -105,6 +128,7 @@ func TestPodmanDriverJobRegistrationLifecycle(t *testing.T) {
 			if err := d.Teardown(ctx, h); err != nil {
 				t.Fatal(err)
 			}
+			tornDown = true
 			if err := d.gw.control.Health(ctx); err != nil {
 				t.Fatalf("management transport lost after actual job teardown: %v", err)
 			}
