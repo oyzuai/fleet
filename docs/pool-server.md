@@ -116,6 +116,15 @@ alongside the HTTP server. Logs accept up to 1 MiB compressed and decompressed
 per chunk, 1,000 entries per chunk, and 512 MiB per attempt. Duplicate chunks
 with the same hash and duplicate identical log finishes are safe to retry.
 
+An executor's honest failure or timeout after cancellation stays a failure or
+timeout with `cancel_requested_at` and diagnostics retained. Only confirmed
+cancellation becomes `cancelled`; success cannot override a pending cancel.
+An absent task reported as `skipped` by the executor becomes
+`failed`/`TASK_NOT_DEFINED` for a manual run. Verbose outcomes accept the
+executor's bounded tail while retaining a short display summary; full output
+stays in the log resource. Public output metadata includes only the five fields
+in the runs contract.
+
 The `Job` the server builds:
 
 - `kind` `build`, `operation` `build` or `run`, `repository`, `head_sha`,
@@ -254,3 +263,12 @@ key. Tests inject only generated App signing keys and local GitHub responses;
 they need no live App credential. Run `oyzu exec -- go test -race ./poolserver
 ./cmd/pool-server` and `oyzu exec -- go vet ./poolserver ./cmd/pool-server`.
 The real proof is the one the proposal names, run on build01.
+
+For the dedicated UID1002 Podman4.9 prerequisite, a compiled
+`manager/container` test binary runs `-test.run=^TestPodmanEffectiveSandbox$
+-test.v` with `XDG_RUNTIME_DIR=/run/user/1002`,
+`FLEET_PODMAN_PROOF_SOCKET` naming that user's direct service and
+`FLEET_PODMAN_PROOF_IMAGE` naming the fully qualified immutable base-image
+RepoDigest. It creates and removes only its named proof containers, checks the
+actual OCI and effective kernel controls, and rejects an added proc mask.
+This qualifies the sandbox adapter; it does not prove an isolated Oyzu build.

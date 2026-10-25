@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,6 +166,15 @@ func TestPodmanEffectiveSandbox(t *testing.T) {
 	if !sysSeen {
 		t.Fatal("effective sys mount missing")
 	}
+	// A real, stricter proc mask still violates the fixed namespace setup
+	// contract. Compat inspect omits mask options, so only actual OCI inspection
+	// can catch this change; the negative case must reach that exact gate.
+	body:=createBody(Spec{Image:image,Cmd:[]string{"/bin/sh","-c","sleep 2"},User:"1000:1000",WorkDir:"/work",Network:"none",PidsLimit:64,MemoryBytes:128<<20,Labels:map[string]string{LabelPool:"oyzu-pool-slice1-proof",LabelManager:"sandbox-adapter"}})
+	body.HostConfig.SecurityOpt=append(podmanSecurityOptions(engine.profile.path),"mask=/proc/keys")
+	var drift struct{ID string};if e=engine.do(ctx,"POST","/containers/create",url.Values{"name":{name+"-mask-drift"}},body,&drift);e!=nil{t.Fatal(e)}
+	defer engine.RemoveContainer(context.Background(),drift.ID)
+	if e=engine.StartContainer(ctx,drift.ID);e!=nil{t.Fatal(e)}
+	changed,err:=engine.InspectReadinessAllocation(ctx,drift.ID);if err==nil||changed.SandboxApplied||!strings.Contains(err.Error(),"proc/sys path restrictions differ"){t.Fatalf("real changed mask did not fail actual OCI gate: %+v %v",changed,err)}
 	t.Logf("Podman4.9 actual OCI and effective kernel sandbox passed; container%s fixedprofile%s", id, filepath.Base(engine.profile.path))
 }
 func TestPodmanRejectsForwardedAndRemoteEngine(t *testing.T) {
