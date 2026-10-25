@@ -9,11 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +34,11 @@ type Docker struct {
 	// callTimeout bounds every call but waiting for a container and
 	// pulling an image.
 	callTimeout time.Duration
+	// noIPv6 is set for a local engine whose shared kernel was booted
+	// without IPv6 (ipv6.disable=1). No container can have an IPv6 address
+	// there, and the kernel has no disable_ipv6 sysctls to set, so asking for
+	// them only makes every job and readiness container fail to start.
+	noIPv6 bool
 }
 
 var _ Engine = (*Docker)(nil)
@@ -85,7 +93,7 @@ func NewDocker(host string, opts DockerOptions) (*Docker, error) {
 		t := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return dialer.DialContext(ctx, "unix", path)
 		}}
-		return &Docker{client: &http.Client{Transport: t}, base: "http://engine/" + apiVersion, callTimeout: callTimeout}, nil
+		return &Docker{client: &http.Client{Transport: t}, base: "http://engine/" + apiVersion, callTimeout: callTimeout, noIPv6: kernelWithoutIPv6()}, nil
 	case "npipe":
 		path := pipePath(u)
 		t := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -429,11 +437,47 @@ func createBody(spec Spec) containerConfig {
 
 // CreateContainer implements Engine.
 func (d *Docker) CreateContainer(ctx context.Context, name string, spec Spec) (string, error) {
+	if d.noIPv6 {
+		spec.Sysctls = withoutIPv6Disable(spec.Sysctls)
+	}
 	var out struct{ Id string }
 	if err := d.do(ctx, http.MethodPost, "/containers/create", url.Values{"name": {name}}, createBody(spec), &out); err != nil {
 		return "", err
 	}
 	return out.Id, nil
+}
+
+// ipv6DisableSysctls are the settings every job and readiness container asks
+// for so it has no IPv6 address, link-local included.
+var ipv6DisableSysctls = []string{"net.ipv6.conf.all.disable_ipv6", "net.ipv6.conf.default.disable_ipv6"}
+
+// kernelWithoutIPv6 reports whether this Linux kernel has no IPv6 stack: its
+// network sysctls exist but net.ipv6 does not. Anything it cannot tell, such
+// as another OS or an unreadable /proc, keeps the sysctls.
+var kernelWithoutIPv6 = func() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	if _, err := os.Stat("/proc/sys/net/ipv4"); err != nil {
+		return false
+	}
+	_, err := os.Stat("/proc/sys/net/ipv6")
+	return errors.Is(err, fs.ErrNotExist)
+}
+
+// withoutIPv6Disable drops only the IPv6-disabling sysctls, which an
+// IPv6-less kernel already satisfies. Every other setting is kept.
+func withoutIPv6Disable(sysctls map[string]string) map[string]string {
+	out := maps.Clone(sysctls)
+	for _, key := range ipv6DisableSysctls {
+		if out[key] == "1" {
+			delete(out, key)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // CopyFiles implements Engine.

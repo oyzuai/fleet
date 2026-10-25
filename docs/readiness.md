@@ -33,6 +33,10 @@ Actual allocation inspection rejects extra networks, IPv6, host networking,
 privilege, extra mounts or a DNS upstream different from the gateway. Docker's
 embedded resolver may translate upstream REFUSED to SERVFAIL; a timeout never
 counts as that observation, and a direct gateway REFUSED answer is also required.
+Job and diagnostic containers disable IPv6 through its sysctls. On a local
+Linux engine whose kernel was booted without IPv6 (`ipv6.disable=1`), those
+sysctls do not exist and no container can have an IPv6 address, so Fleet omits
+them; allocation inspection still rejects any IPv6 address.
 
 The server-selected assignment binding accompanies startup. Fleet checks its
 current boundary, starts the trusted executor bootstrap without a startup token,

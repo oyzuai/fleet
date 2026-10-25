@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"io"
+	"maps"
 	"math/big"
 	"net"
 	"net/http"
@@ -392,5 +393,38 @@ func TestDockerNetworks(t *testing.T) {
 	}
 	if err := d.RemoveNetwork(ctx, "missing"); err != nil {
 		t.Fatalf("RemoveNetwork on a missing network = %v", err)
+	}
+}
+
+func TestDockerOmitsIPv6SysctlsOnlyOnAnIPv6LessKernel(t *testing.T) {
+	ctx := context.Background()
+	spec := Spec{Image: "img", Network: "bridge", Sysctls: map[string]string{
+		"net.ipv6.conf.all.disable_ipv6": "1", "net.ipv6.conf.default.disable_ipv6": "1", "net.ipv4.ip_unprivileged_port_start": "53",
+	}}
+	for _, noIPv6 := range []bool{false, true} {
+		d, s := newStub(t, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /containers/create": reply(201, `{"Id":"abc"}`),
+		})
+		d.noIPv6 = noIPv6
+		if _, err := d.CreateContainer(ctx, "oyzu-1", spec); err != nil {
+			t.Fatal(err)
+		}
+		var sent containerConfig
+		if err := json.Unmarshal(s.body["POST /containers/create"], &sent); err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]string{"net.ipv4.ip_unprivileged_port_start": "53"}
+		if !noIPv6 {
+			want = spec.Sysctls
+		}
+		if !maps.Equal(sent.HostConfig.Sysctls, want) {
+			t.Fatalf("noIPv6=%v: sysctls = %v, want %v", noIPv6, sent.HostConfig.Sysctls, want)
+		}
+	}
+	if len(spec.Sysctls) != 3 {
+		t.Fatal("the caller's spec must not be changed")
+	}
+	if got := withoutIPv6Disable(map[string]string{"net.ipv6.conf.all.disable_ipv6": "1"}); got != nil {
+		t.Fatalf("only IPv6 settings leave no sysctls, got %v", got)
 	}
 }
