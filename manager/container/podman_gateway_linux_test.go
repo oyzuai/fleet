@@ -37,17 +37,27 @@ type harmlessGatewayEngine struct{ *boundedGatewayEngine }
 // to establish this prerequisite; the runtime owner sequences their removal.
 func requireExclusiveGatewayStore(t *testing.T, ctx context.Context, engine *Docker) {
 	t.Helper()
-	if err := engine.prepareSandbox(ctx); err != nil { t.Fatal(err) }
-	if !engine.podman { t.Fatal("gateway proof requires qualified Podman4.9") }
+	if err := engine.prepareSandbox(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !engine.podman {
+		t.Fatal("gateway proof requires qualified Podman4.9")
+	}
 	containers, err := engine.ListContainers(ctx, nil)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, container := range containers {
 		var network struct {
-			NetworkSettings struct { SandboxKey string }
-			HostConfig struct { NetworkMode string }
+			NetworkSettings struct{ SandboxKey string }
+			HostConfig      struct{ NetworkMode string }
 		}
-		if err := engine.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(container.ID)+"/json", nil, nil, &network); err != nil { t.Fatal(err) }
-		if network.NetworkSettings.SandboxKey != "" && network.HostConfig.NetworkMode != "none" { t.Fatalf("last-container proof requires no preexisting active network namespace; runtime owner must sequence %s", container.Name) }
+		if err := engine.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(container.ID)+"/json", nil, nil, &network); err != nil {
+			t.Fatal(err)
+		}
+		if network.NetworkSettings.SandboxKey != "" && network.HostConfig.NetworkMode != "none" {
+			t.Fatalf("last-container proof requires no preexisting active network namespace; runtime owner must sequence %s", container.Name)
+		}
 	}
 }
 
