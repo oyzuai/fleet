@@ -4,6 +4,7 @@ package container
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -92,7 +93,18 @@ func TestPodmanDriverJobRegistrationLifecycle(t *testing.T) {
 				// Native CLI reads can synchronize runtime state separately from
 				// the long-lived API service. Reproduce the observer's interleaving
 				// only against this proof's own objects and test manager identity.
+				// First prove native inspection uses the same object/store as the
+				// API. A missing binary, wrong store or unrelated template error
+				// must not pass as evidence of CLI/API interleaving.
+				inspected, err := exec.CommandContext(ctx, "podman", "inspect", "--format", "{{json .ID}}", d.gatewayName()).CombinedOutput()
+				var nativeID string
+				if err != nil || json.Unmarshal(inspected, &nativeID) != nil || nativeID != d.gw.id { t.Fatalf("native inspection did not find own API object: id=%q err=%v output=%s", nativeID, err, inspected) }
+				invalid, err := exec.CommandContext(ctx, "podman", "inspect", "--format", "{{json .Id}} {{json .OCIConfigPath}}", d.gatewayName()).CombinedOutput()
+				var templateExit *exec.ExitError
+				if !errors.As(err, &templateExit) || !strings.Contains(string(invalid), "<.Id>") || !strings.Contains(string(invalid), "can't evaluate field Id") { t.Fatalf("expected specific invalid .Id template failure: %v %s", err, invalid) }
 				pollCtx, stop := context.WithCancel(ctx)
+				observed := make(chan struct{}, 1)
+				readErrors := make(chan error, 1)
 				var readers sync.WaitGroup
 				readers.Add(1)
 				go func() {
@@ -100,7 +112,12 @@ func TestPodmanDriverJobRegistrationLifecycle(t *testing.T) {
 					ticker := time.NewTicker(250 * time.Millisecond)
 					defer ticker.Stop()
 					for {
-						_ = exec.CommandContext(pollCtx, "podman", "ps", "-a", "--no-trunc", "--filter", "label="+LabelManager+"="+d.managerLabel(), "--filter", "label="+LabelJob, "--format", "{{.ID}}").Run()
+						output, err := exec.CommandContext(pollCtx, "podman", "ps", "-a", "--no-trunc", "--filter", "label="+LabelManager+"="+d.managerLabel(), "--filter", "label="+LabelJob, "--format", "{{.ID}}").CombinedOutput()
+						if err != nil {
+							if pollCtx.Err() == nil { readErrors <- fmt.Errorf("native filtered ps failed: %w: %s", err, output) }
+							return
+						}
+						select { case observed <- struct{}{}: default: }
 						select {
 						case <-pollCtx.Done():
 							return
@@ -108,8 +125,12 @@ func TestPodmanDriverJobRegistrationLifecycle(t *testing.T) {
 						}
 					}
 				}()
-				defer func() { stop(); readers.Wait() }()
-				_ = exec.CommandContext(ctx, "podman", "inspect", "--format", "{{json .Id}} {{json .OCIConfigPath}}", d.gatewayName()).Run()
+				defer func() { stop(); readers.Wait(); select { case err := <-readErrors: t.Error(err); default: } }()
+				select {
+				case <-observed:
+				case err := <-readErrors: t.Fatal(err)
+				case <-ctx.Done(): t.Fatal("native filtered ps never completed successfully")
+				}
 				if err := d.gw.control.Health(ctx); err != nil {
 					t.Fatalf("native CLI reads broke own gateway before Start: %v", err)
 				}
