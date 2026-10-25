@@ -210,7 +210,7 @@ func TestRunLifecycleRealRunnerClient(t *testing.T) {
 		}
 	}
 	status, b, _ = f.request(t, "GET", run.Links.Self+"/outputs/"+output.Digest, "micah@example.com", nil, nil)
-	if status != 404 || !bytes.Contains(b, []byte("OUTPUT_UNAVAILABLE")) {
+	if status != 404 || !bytes.Contains(b, []byte("OUTPUT_NOT_FOUND")) {
 		t.Fatalf("output %d %s", status, b)
 	}
 	for _, route := range []string{"job/id-token", "job/secrets", "job/write-token", "job/kind/start", "readiness/work"} {
@@ -277,7 +277,7 @@ func TestAccessValidationAndIdempotency(t *testing.T) {
 	unknown := body
 	unknown.Repository.Name = "oyzuai/other"
 	status, b, _ = f.request(t, "POST", runsPath, "micah@example.com", unknown, nil)
-	if status != 403 || !bytes.Contains(b, []byte("FORBIDDEN")) {
+	if status != 403 || !bytes.Contains(b, []byte("PERMISSION_DENIED")) {
 		t.Fatalf("unlisted repo %d %s", status, b)
 	}
 	f.s.source = testSource{exists: false}

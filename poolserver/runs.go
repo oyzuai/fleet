@@ -137,7 +137,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 			}{rr.Run.ID, rr.Run.State, rr.Run.ExitCode, rr.Run.Reason, outputs})
 			return
 		case "outputs":
-			problem(w, 404, "OUTPUT_UNAVAILABLE", "Output bytes are not stored by this pool.")
+			problem(w, 404, "OUTPUT_NOT_FOUND", "Output bytes are not stored by this pool.")
 			return
 		case "logs":
 			cursor, ok := parseCursor(w, r.URL.Query().Get("cursor"))
@@ -332,11 +332,11 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, c caller) {
 		return
 	}
 	if !contains(s.cfg.Repositories, in.Repository.Name) {
-		problem(w, 403, "FORBIDDEN", "Repository is not allowed by this pool.")
+		problem(w, 403, "PERMISSION_DENIED", "Repository is not allowed by this pool.")
 		return
 	}
 	if c.Claims != nil && (c.Claims.Repository != in.Repository.Name || c.Claims.SHA != in.Commit || c.Claims.Ref != in.Ref) {
-		problem(w, 403, "FORBIDDEN", "Run source must equal the Actions token claims.")
+		problem(w, 403, "PERMISSION_DENIED", "Run source must equal the Actions token claims.")
 		return
 	}
 	key := r.Header.Get("Idempotency-Key")

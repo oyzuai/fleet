@@ -141,7 +141,7 @@ with an installation token; 404 → `COMMIT_NOT_FOUND`), then queues the run and
 its job. `Idempotency-Key` behaves as the contract says (same key and body →
 200 with the first run).
 
-`getRunOutput` answers 404 `OUTPUT_UNAVAILABLE` for now. The executor reports
+`getRunOutput` answers 404 `OUTPUT_NOT_FOUND` for now. The executor reports
 output metadata only, so `--download` is a named follow-up (see the proposal).
 
 ## Callers
@@ -152,7 +152,7 @@ output metadata only, so `--download` is a named follow-up (see the proposal).
 | A GitHub Actions job | `Authorization: Bearer <GitHub OIDC ID token>`. Verify RS256 against `https://token.actions.githubusercontent.com/.well-known/jwks` (cache keys, refetch on unknown `kid`), `iss`, `aud` = `public_url`, `exp`/`nbf`. Reuse the verifier in platform `deploy/ovh-farm/cache-gate/oidc.go`. | Create a run only when `repository` and `sha` equal the token's claims and `ref` matches a listed pattern for that repository; read and cancel only runs it created. |
 
 Anything else is 401 `UNAUTHENTICATED`. A known caller asking for an unlisted
-repository is 403 `FORBIDDEN`.
+repository is 403 `PERMISSION_DENIED`.
 
 An explicit bearer always has to authenticate itself, even when a tailnet login
 header is also present. Actions ownership is bound to the signed repository,
@@ -162,10 +162,9 @@ Ref allow patterns support `*` (including `/`), such as `refs/pull/*`.
 Idempotency is scoped to caller and account and retained with the run, including
 across restarts. Lists expose only the caller's runs.
 
-This server uses `FORBIDDEN` for a disallowed source and `OUTPUT_UNAVAILABLE`
-for output bytes, as specified here; these extend the public contract's current
-problem-code enumeration. Clients must handle unknown problem codes by HTTP
-status. Output metadata remains available in the result resource.
+The server uses the public contract's `PERMISSION_DENIED` for a disallowed
+source and `OUTPUT_NOT_FOUND` for unavailable output bytes. Output metadata
+remains available in the result resource; downloading bytes is a follow-up.
 
 ## Credentials and where they live
 
@@ -206,13 +205,29 @@ Configured in platform `deploy/ovh-farm` (Ansible), not in this repository:
   The tailnet policy grants `tag:ci` and the listed users access to the service.
 - One Fleet manager (`--driver container`, rootless Podman socket as the
   engine, `--egress enforce`, `--concurrency 2`, `--image` pinned by digest),
-  enrolled against `http://127.0.0.1:8480` with the enrollment token.
+  enrolled against the public HTTPS origin with the enrollment token.
 - The executor image: `ghcr.io/oyzuai/oyzu-execution/base:1` plus the released
   `oyzu` CLI and `oyzu-executor`. Isolated builds inside a rootless Podman
   container on build01 are unproven; prove that first and report what it
   needs (user namespaces, `/dev/fuse`, seccomp) before building more.
 - The GitHub Actions runners on build01 stay as they are; the pool's two slots
   are in addition.
+
+Podman4.9's compatibility API needs an engine-side file for Fleet's fixed
+seccomp policy and native mask/unmask options. The adapter qualifies only a
+directly-bound, same-UID Linux Podman process sharing the manager's mount/user/PID
+namespaces and root filesystem. Remote, forwarded and ambiguous socket-activated
+endpoints fail closed. `XDG_RUNTIME_DIR` must be private 0700; the fixed
+content-addressed profile remains in its `oyzu-fleet-sandbox` child through the
+runtime-directory lifetime so concurrent containers keep their policy file.
+Do not delete it while managers or their containers may still use it.
+
+Docker retains inline policy requests. Podman readiness inspects its real OCI
+configuration and compares the resolved fixed syscall policy, nonroot user,
+empty capabilities, NNP, private namespaces, exact masks and read-only `/sys`
+including every submount. An echoed HostConfig is insufficient. The first
+qualification is bounded to Linux amd64 and Podman4.9; unsupported engines or
+control drift do not receive readiness authority.
 
 Keep the original config and App key root-owned 0600. For the service user,
 systemd can expose them using `LoadCredential=server.json:/etc/oyzu-pool/server.json`
