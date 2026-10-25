@@ -37,7 +37,7 @@ func TestPodmanGatewayRegistrationAfterNetworkCleanup(t *testing.T) {
 	labels := map[string]string{LabelPool: "oyzu-pool-slice1-proof", LabelManager: "gateway-registration"}
 	// This token belongs solely to the disposable test gateway.
 	token := fmt.Sprintf("test-only-%d", time.Now().UnixNano())
-	id, err := engine.CreateContainer(ctx, name, Spec{Image: image, Cmd: []string{"oyzu-executor", "gateway", "--mode", "enforce", "--pool", "proof", "--proxy", ":3128", "--control", ":9091", "--control-interface", "eth0"}, User: "1000:1000", WorkDir: "/work", Network: defaultNetwork, PidsLimit: 64, MemoryBytes: 128 << 20, NanoCPUs: 500000000, ReadOnly: true, Labels: labels, Env: []string{egressgate.TokenEnv + "=" + token}, Publish: []int{gatewayControlPort}})
+	id, err := engine.CreateContainer(ctx, name, Spec{Image: image, Cmd: []string{"oyzu-executor", "gateway", "--mode", "enforce", "--pool", "proof", "--proxy", ":3128", "--control", ":9091", "--control-interface", "eth0"}, User: "1000:1000", WorkDir: "/work", Network: defaultNetwork, PidsLimit: 64, MemoryBytes: 128 << 20, NanoCPUs: 500000000, ReadOnly: true, Labels: labels, Env: []string{egressgate.TokenEnv + "=" + token}, Publish: []int{gatewayControlPort}, Sysctls: map[string]string{"net.ipv4.ip_unprivileged_port_start": "53"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,14 +57,15 @@ func TestPodmanGatewayRegistrationAfterNetworkCleanup(t *testing.T) {
 	}
 	base := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	client := egressgate.NewClient(base, token)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(gatewayReadyWait)
 	for {
 		err = client.Health(ctx)
 		if err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal(err)
+			logs, _ := engine.ContainerLogs(ctx, id, 10)
+			t.Fatalf("gateway startup: %v %s", err, logs)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
