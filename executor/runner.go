@@ -43,8 +43,9 @@ const (
 
 // Config configures one run.
 type Config struct {
-	Readiness *readiness.Binding
-	Client    *runnerclient.Client
+	ExecutionTrustDecision string
+	Readiness              *readiness.Binding
+	Client                 *runnerclient.Client
 	// StartupTokenFile is read once and deleted.
 	StartupTokenFile string
 	// WaitForStartupToken waits for a final ready marker from the manager,
@@ -103,6 +104,10 @@ type Config struct {
 // Run reports the outcome, then drains any pending logs before returning.
 // It also returns when runs says the job is no longer this runner's.
 func Run(ctx context.Context, cfg Config) (runErr error) {
+	assignment := runnerclient.StartupAssignment{Readiness: cfg.Readiness, ExecutionTrustDecision: cfg.ExecutionTrustDecision}
+	if err := assignment.Validate(); err != nil {
+		return err
+	}
 	if cfg.GitURL == "" {
 		cfg.GitURL = "https://github.com"
 	}
@@ -160,7 +165,7 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 			span.End(o, reason)
 		}
 	}()
-	st, err := cfg.Client.StartWithReadiness(ctx, startup, cfg.Readiness)
+	st, err := cfg.Client.Start(ctx, startup, assignment)
 	if err != nil {
 		return fmt.Errorf("start the job: %w", err)
 	}

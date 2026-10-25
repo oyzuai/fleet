@@ -340,6 +340,9 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 	}
 	cmd := append(append([]string{}, d.Command...),
 		"--server", d.Server, "--startup-token-file", TokenDir+"/"+tokenFile, "--work-dir", WorkDir)
+	if c.ExecutionTrustDecision != "" {
+		cmd = append(cmd, "--execution-trust-decision", c.ExecutionTrustDecision)
+	}
 	if c.Readiness != nil {
 		raw, _ := json.Marshal(c.Readiness)
 		cmd = append(cmd, "--readiness-binding", string(raw), "--wait-for-startup-token")

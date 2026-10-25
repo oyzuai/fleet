@@ -413,12 +413,13 @@ func TestNoSlotIsReadyUntilTheImageIsPulled(t *testing.T) {
 }
 
 func TestStartRunsOneIsolatedContainerPerJob(t *testing.T) {
+	const decision = "11111111-2222-4333-8444-555555555555"
 	e := newFakeEngine()
 	e.present = true
 	d := newDriver(e)
 	ready(t, d)
 	ctx := context.Background()
-	h, err := d.Start(ctx, "0", runnerclient.Claim{JobID: 42, Attempt: 2, StartupToken: "st_secret"})
+	h, err := d.Start(ctx, "0", runnerclient.Claim{JobID: 42, Attempt: 2, StartupToken: "st_secret", ExecutionTrustDecision: decision})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +444,7 @@ func TestStartRunsOneIsolatedContainerPerJob(t *testing.T) {
 		t.Fatal("workspace volume not created")
 	}
 	wantCmd := []string{"oyzu-executor", "--oyzu", "oyzu", "--server", "https://runs.example",
-		"--startup-token-file", "/run/oyzu/startup-token", "--work-dir", "/work"}
+		"--startup-token-file", "/run/oyzu/startup-token", "--work-dir", "/work", "--execution-trust-decision", decision}
 	if !slices.Equal(s.Cmd, wantCmd) {
 		t.Fatalf("Cmd = %q", s.Cmd)
 	}
