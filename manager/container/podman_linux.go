@@ -504,7 +504,9 @@ func (p *podmanProfile) inspectAnchor(path, id string, spec Spec, pid int) (stri
 	return namespace, fmt.Sprintf("%d:%s", pid, before), nil
 }
 func verifyAnchorOCI(o ociSandbox, spec Spec) error {
-	if err := verifyPodmanOCI(o, spec.User); err != nil { return err }
+	if err := verifyPodmanOCI(o, spec.User); err != nil {
+		return err
+	}
 	r := o.Linux.Resources
 	if !o.Root.Readonly || !slices.Equal(o.Process.Args, spec.Cmd) || r.Memory.Limit == nil || *r.Memory.Limit != spec.MemoryBytes ||
 		r.Memory.Swap == nil || *r.Memory.Swap != spec.MemoryBytes || r.Pids.Limit != spec.PidsLimit || r.CPU.Quota == nil || r.CPU.Period == nil ||

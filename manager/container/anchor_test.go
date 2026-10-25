@@ -287,28 +287,52 @@ func TestAnchorFinalizeDrainsProbesAndRefusesActiveJobs(t *testing.T) {
 }
 
 func TestAnchorReapAndModeKeepPairOwnership(t *testing.T) {
-	ctx:=context.Background();d,e:=anchorDriver()
-	if _,err:=d.ensureGateway(ctx);err!=nil {t.Fatal(err)}
-	anchorID,gatewayID:=d.anchor.id,d.gw.id
-	if err:=d.Reap(ctx,nil);err!=nil {t.Fatal(err)}
-	if d.anchor.id!=anchorID || d.gw.id!=gatewayID || len(e.containers)!=2 {t.Fatal("reaper removed current pair")}
-	d.inUse=map[manager.SlotID]*job{"0":{name:"active"}}
-	if changed,err:=d.ApplyReadinessMode(ctx,"open");err!=nil || changed {t.Fatalf("changed mode with live job: %v %v",changed,err)}
-	delete(d.inUse,"0")
-	pctx,release,err:=d.beginProbe(ctx);if err!=nil {t.Fatal(err)}
-	if changed,err:=d.ApplyReadinessMode(pctx,"open");err!=nil || changed {t.Fatal("changed mode with live probe")}
+	ctx := context.Background()
+	d, e := anchorDriver()
+	if _, err := d.ensureGateway(ctx); err != nil {
+		t.Fatal(err)
+	}
+	anchorID, gatewayID := d.anchor.id, d.gw.id
+	if err := d.Reap(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if d.anchor.id != anchorID || d.gw.id != gatewayID || len(e.containers) != 2 {
+		t.Fatal("reaper removed current pair")
+	}
+	d.inUse = map[manager.SlotID]*job{"0": {name: "active"}}
+	if changed, err := d.ApplyReadinessMode(ctx, "open"); err != nil || changed {
+		t.Fatalf("changed mode with live job: %v %v", changed, err)
+	}
+	delete(d.inUse, "0")
+	pctx, release, err := d.beginProbe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := d.ApplyReadinessMode(pctx, "open"); err != nil || changed {
+		t.Fatal("changed mode with live probe")
+	}
 	release()
-	if changed,err:=d.ApplyReadinessMode(ctx,"open");err!=nil || !changed {t.Fatalf("drained mode change failed: %v",err)}
-	if len(e.containers)!=0 || !slices.Equal(e.removed,[]string{roleGateway,roleAnchor}) {t.Fatalf("mode retirement order: %v",e.removed)}
+	if changed, err := d.ApplyReadinessMode(ctx, "open"); err != nil || !changed {
+		t.Fatalf("drained mode change failed: %v", err)
+	}
+	if len(e.containers) != 0 || !slices.Equal(e.removed, []string{roleGateway, roleAnchor}) {
+		t.Fatalf("mode retirement order: %v", e.removed)
+	}
 	// A predecessor's recorded roles are cleaned gateway first, anchor last.
-	d,e=anchorDriver()
-	_,_ = e.CreateContainer(ctx,d.anchorName(),d.anchorSpec())
-	_,_ = e.CreateContainer(ctx,d.gatewayName(),Spec{Labels:map[string]string{LabelPool:d.Pool,LabelManager:d.managerLabel(),LabelRole:roleGateway}})
-	if err:=d.Reap(ctx,nil);err!=nil {t.Fatal(err)}
-	if !slices.Equal(e.removed,[]string{roleGateway,roleAnchor}) {t.Fatalf("stale retirement order: %v",e.removed)}
-	d,e=anchorDriver()
-	_,_ = e.CreateContainer(ctx,d.anchorName(),d.anchorSpec())
-	_,_ = e.CreateContainer(ctx,d.gatewayName(),Spec{Labels:map[string]string{LabelPool:d.Pool,LabelManager:d.managerLabel(),LabelRole:roleGateway}})
-	e.removeErr=roleGateway
-	if err:=d.Reap(ctx,nil);err==nil || len(e.containers)!=2 {t.Fatal("uncertain stale gateway released anchor")}
+	d, e = anchorDriver()
+	_, _ = e.CreateContainer(ctx, d.anchorName(), d.anchorSpec())
+	_, _ = e.CreateContainer(ctx, d.gatewayName(), Spec{Labels: map[string]string{LabelPool: d.Pool, LabelManager: d.managerLabel(), LabelRole: roleGateway}})
+	if err := d.Reap(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(e.removed, []string{roleGateway, roleAnchor}) {
+		t.Fatalf("stale retirement order: %v", e.removed)
+	}
+	d, e = anchorDriver()
+	_, _ = e.CreateContainer(ctx, d.anchorName(), d.anchorSpec())
+	_, _ = e.CreateContainer(ctx, d.gatewayName(), Spec{Labels: map[string]string{LabelPool: d.Pool, LabelManager: d.managerLabel(), LabelRole: roleGateway}})
+	e.removeErr = roleGateway
+	if err := d.Reap(ctx, nil); err == nil || len(e.containers) != 2 {
+		t.Fatal("uncertain stale gateway released anchor")
+	}
 }

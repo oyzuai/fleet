@@ -291,20 +291,52 @@ func TestPodmanAppliedOCIRejectsControlDrift(t *testing.T) {
 }
 
 func TestNamespaceAnchorRequiresEffectiveOCIControls(t *testing.T) {
-	d,_:=anchorDriver();spec:=d.anchorSpec()
+	d, _ := anchorDriver()
+	spec := d.anchorSpec()
 	var o ociSandbox
-	raw,_:=json.Marshal(map[string]any{
-		"root":map[string]any{"readonly":true},
-		"process":map[string]any{"args":spec.Cmd,"user":map[string]int{"uid":1000,"gid":1000},"noNewPrivileges":true},
-		"mounts":[]any{map[string]any{"destination":"/sys","type":"sysfs","options":[]string{"ro","nosuid","nodev","noexec"}}},
-		"linux":map[string]any{"maskedPaths":containerSandboxPolicy().MaskedPaths,"namespaces":[]any{map[string]string{"type":"pid"},map[string]string{"type":"ipc"},map[string]string{"type":"uts"},map[string]string{"type":"mount"},map[string]string{"type":"cgroup"},map[string]string{"type":"network"}},"resources":map[string]any{"memory":map[string]int64{"limit":spec.MemoryBytes,"swap":spec.MemoryBytes},"pids":map[string]int64{"limit":spec.PidsLimit},"cpu":map[string]int64{"quota":10000,"period":100000}}},
+	raw, _ := json.Marshal(map[string]any{
+		"root":    map[string]any{"readonly": true},
+		"process": map[string]any{"args": spec.Cmd, "user": map[string]int{"uid": 1000, "gid": 1000}, "noNewPrivileges": true},
+		"mounts":  []any{map[string]any{"destination": "/sys", "type": "sysfs", "options": []string{"ro", "nosuid", "nodev", "noexec"}}},
+		"linux":   map[string]any{"maskedPaths": containerSandboxPolicy().MaskedPaths, "namespaces": []any{map[string]string{"type": "pid"}, map[string]string{"type": "ipc"}, map[string]string{"type": "uts"}, map[string]string{"type": "mount"}, map[string]string{"type": "cgroup"}, map[string]string{"type": "network"}}, "resources": map[string]any{"memory": map[string]int64{"limit": spec.MemoryBytes, "swap": spec.MemoryBytes}, "pids": map[string]int64{"limit": spec.PidsLimit}, "cpu": map[string]int64{"quota": 10000, "period": 100000}}},
 	})
-	if err:=json.Unmarshal(raw,&o);err!=nil {t.Fatal(err)}
-	o.Linux.Seccomp=expectedOCISeccomp(t)
-	if err:=verifyAnchorOCI(o,spec);err!=nil {t.Fatal(err)}
-	for _,drift:=range []string{"root","command","memory","swap","cpu","pids","NNP","capabilities","namespace","seccomp"} {t.Run(drift,func(t *testing.T){
-		b,_:=json.Marshal(o);var changed ociSandbox;_ = json.Unmarshal(b,&changed)
-		switch drift {case "root":changed.Root.Readonly=false;case "command":changed.Process.Args=[]string{"/bin/sh"};case "memory":*changed.Linux.Resources.Memory.Limit*=2;case "swap":changed.Linux.Resources.Memory.Swap=nil;case "cpu":*changed.Linux.Resources.CPU.Quota*=2;case "pids":changed.Linux.Resources.Pids.Limit*=2;case "NNP":changed.Process.NoNewPrivileges=false;case "capabilities":changed.Process.Capabilities=map[string][]string{"effective":{"CAP_NET_ADMIN"}};case "namespace":changed.Linux.Namespaces=nil;case "seccomp":changed.Linux.Seccomp=[]byte(`{}`)}
-		if err:=verifyAnchorOCI(changed,spec);err==nil {t.Fatal("accepted anchor OCI drift")}
-	})}
+	if err := json.Unmarshal(raw, &o); err != nil {
+		t.Fatal(err)
+	}
+	o.Linux.Seccomp = expectedOCISeccomp(t)
+	if err := verifyAnchorOCI(o, spec); err != nil {
+		t.Fatal(err)
+	}
+	for _, drift := range []string{"root", "command", "memory", "swap", "cpu", "pids", "NNP", "capabilities", "namespace", "seccomp"} {
+		t.Run(drift, func(t *testing.T) {
+			b, _ := json.Marshal(o)
+			var changed ociSandbox
+			_ = json.Unmarshal(b, &changed)
+			switch drift {
+			case "root":
+				changed.Root.Readonly = false
+			case "command":
+				changed.Process.Args = []string{"/bin/sh"}
+			case "memory":
+				*changed.Linux.Resources.Memory.Limit *= 2
+			case "swap":
+				changed.Linux.Resources.Memory.Swap = nil
+			case "cpu":
+				*changed.Linux.Resources.CPU.Quota *= 2
+			case "pids":
+				changed.Linux.Resources.Pids.Limit *= 2
+			case "NNP":
+				changed.Process.NoNewPrivileges = false
+			case "capabilities":
+				changed.Process.Capabilities = map[string][]string{"effective": {"CAP_NET_ADMIN"}}
+			case "namespace":
+				changed.Linux.Namespaces = nil
+			case "seccomp":
+				changed.Linux.Seccomp = []byte(`{}`)
+			}
+			if err := verifyAnchorOCI(changed, spec); err == nil {
+				t.Fatal("accepted anchor OCI drift")
+			}
+		})
+	}
 }
