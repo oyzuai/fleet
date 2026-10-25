@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"net/url"
 )
 
 // Podman4's Docker compatibility API treats seccomp as a filename and ignores
@@ -13,6 +14,13 @@ import (
 // controls instead of accepting the echoed HostConfig fields.
 func podmanSecurityOptions(path string) []string {
 	return []string{"no-new-privileges:true", "seccomp=" + path, "unmask=ALL", "mask=/sys/firmware:/sys/devices/virtual/powercap"}
+}
+func podmanEchoedOptions(options []string,path string)bool{return sameStrings(options,[]string{"no-new-privileges","seccomp="+path})||sameStrings(options,[]string{"no-new-privileges:true","seccomp="+path})}
+func(d *Docker)podmanOCIPath(ctx context.Context,id string)(string,error){
+ // Compat inspect omits OCIConfigPath and native mask/unmask options. Obtain
+ // the actual engine-generated runtime spec from native inspect instead.
+ native:=Docker{client:d.client,base:strings.TrimSuffix(d.base,apiVersion)+"v4.9.0/libpod",callTimeout:d.callTimeout}
+ var out struct{OCIConfigPath string};if err:=native.do(ctx,"GET","/containers/"+url.PathEscape(id)+"/json",nil,nil,&out);err!=nil{return "",err};return out.OCIConfigPath,nil
 }
 func (d *Docker) prepareSandbox(ctx context.Context) error {
 	d.adapterMu.Lock()
