@@ -628,7 +628,7 @@ func TestRunDelegatesQualifiedAndNativeTasksToIsolatedResolver(t *testing.T) {
 			if err := json.Unmarshal(b, &args); err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(args, []string{"run", "--isolated", task}) {
+			if !reflect.DeepEqual(args, []string{"--json", "run", "--isolated", task}) {
 				t.Fatalf("resolver args=%q", args)
 			}
 		})
