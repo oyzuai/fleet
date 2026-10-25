@@ -262,6 +262,14 @@ removal, then removes the anchor. An uncertain gateway removal retains the
 anchor and reports failure. Reaping preserves the current pair and removes
 only owned stale pairs in that order. Docker uses its ordinary gateway path.
 
+Job containers also have a read-only root; the existing `/work` volume remains
+writable. Allocation qualification checks this flag and, on Podman, its actual
+OCI root setting. Podman may report `Config.Image` as a local tag even when
+created by digest: qualification checks the native manifest digest, the image's
+exact RepoDigest and matching actual image configuration ID instead of trusting
+that tag. Anchor environment and labels include only the pinned image defaults,
+Fleet's ownership labels and the fixed engine-generated container/hostname values.
+
 The pool admits claims only after the enrolled manager reports
 `oyzu.io/isolation=container`, `oyzu.io/egress=enforced` and
 `oyzu.io/untrusted=accepted`. Reports are refreshed every ten seconds; missing,

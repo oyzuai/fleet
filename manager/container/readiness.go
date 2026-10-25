@@ -199,6 +199,8 @@ type allocationInspector interface {
 	InspectReadinessAllocation(context.Context, string) (allocation, error)
 }
 type allocation struct {
+	PinnedImages []string
+	ReadOnly bool
 	NetworkIDs     []string
 	ImageReference string
 	ExpectedImage  string
@@ -222,7 +224,7 @@ func (d *Driver) checkAllocation(ctx context.Context, id string, expectedDNS []s
 	if err != nil {
 		return err
 	}
-	if a.ImageReference != d.Image || a.ExpectedImage == "" || a.Image != a.ExpectedImage {
+	if (a.ImageReference != d.Image && !slices.Contains(a.PinnedImages,d.Image)) || a.ExpectedImage == "" || a.Image != a.ExpectedImage {
 		return fmt.Errorf("%w: actual allocation image differs from its pinned image", readiness.ErrBoundaryChanged)
 	}
 	if !slices.Equal(a.DNS, expectedDNS) {
@@ -234,7 +236,7 @@ func (d *Driver) checkAllocation(ctx context.Context, id string, expectedDNS []s
 	if a.Networks != 1 || a.IPv6 || a.Privileged || a.HostNetwork || a.ExtraMount {
 		return fmt.Errorf("%w: actual allocation exceeds the qualified container boundary", readiness.ErrBoundaryChanged)
 	}
-	if a.User != d.user() || !a.SandboxApplied {
+	if a.User != d.user() || !a.SandboxApplied || !a.ReadOnly {
 		return fmt.Errorf("%w: actual syscall/proc or non-root policy differs from the measured runtime", readiness.ErrBoundaryChanged)
 	}
 	return nil

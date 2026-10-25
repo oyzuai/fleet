@@ -37,6 +37,7 @@ func (e *boundedGatewayEngine) NamespaceAnchorRequired(ctx context.Context) (boo
 func (e *boundedGatewayEngine) InspectNamespaceAnchor(ctx context.Context, id string, spec Spec) (anchorIdentity, error) {
 	return e.Engine.(namespaceAnchorEngine).InspectNamespaceAnchor(ctx, id, spec)
 }
+func (e *boundedGatewayEngine) InspectReadinessAllocation(ctx context.Context,id string) (allocation,error) {return e.Engine.(allocationInspector).InspectReadinessAllocation(ctx,id)}
 
 // Podman4.9's rootless CNI teardown behaves differently when the gateway is
 // the last bridge container. Another retained container masks that failure,
@@ -70,7 +71,9 @@ func requireExclusiveGatewayStore(t *testing.T, ctx context.Context, engine *Doc
 
 func (e *harmlessGatewayEngine) CreateContainer(ctx context.Context, name string, spec Spec) (string, error) {
 	if spec.Volume != "" {
-		spec.Cmd = []string{"/bin/true"}
+		// Fixed proof-only command: verify the actual job root rejects writes
+		// while its ordinary workspace volume remains writable.
+		spec.Cmd = []string{"/bin/sh","-c","if touch /oyzu-readonly-root-proof 2>/dev/null; then exit 91; fi; touch /work/oyzu-writable-workspace-proof"}
 	}
 	return e.boundedGatewayEngine.CreateContainer(ctx, name, spec)
 }
@@ -497,6 +500,8 @@ func TestPodmanGatewayRegistrationAfterNetworkCleanup(t *testing.T) {
 			}
 			for len(handles) > 0 {
 				h := handles[0]
+				j,err:=d.job(h);if err!=nil {t.Fatal(err)}
+				if err:=d.checkAllocation(ctx,j.id,j.dns,j.networkID);err!=nil {t.Fatalf("actual job OCI allocation: %v",err)}
 				exit, err := d.Wait(ctx, h)
 				if err != nil || exit.Code != 0 {
 					t.Fatalf("harmless job wait: %+v %v", exit, err)

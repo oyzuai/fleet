@@ -336,3 +336,26 @@ func TestAnchorReapAndModeKeepPairOwnership(t *testing.T) {
 		t.Fatal("uncertain stale gateway released anchor")
 	}
 }
+
+func TestAnchorEnvironmentContainsOnlyImageAndFixedEngineDefaults(t *testing.T) {
+	id:=strings.Repeat("a",64)
+	expected:=anchorEnvironment([]string{"PATH=/usr/bin","XDG_DATA_HOME=/opt/data","HOME=/old"},id)
+	actual:=[]string{"PATH=/usr/bin","XDG_DATA_HOME=/opt/data","HOME=/","container=podman","HOSTNAME="+id[:12]}
+	if !sameEnvironment(actual,expected) {t.Fatal("fixed Podman defaults rejected")}
+	for _,changed:=range [][]string{append(slices.Clone(actual),"OYZU_GATEWAY_TOKEN=unexpected"),append(slices.Clone(actual),"HOME=/"),append(slices.Clone(actual[:4]),"HOSTNAME=other"),actual[:4]} {
+		if sameEnvironment(changed,expected) {t.Fatal("anchor accepted extra/replaced/missing environment")}
+	}
+}
+
+type measuredAllocationEngine struct { *fakeEngine; actual allocation }
+func (e *measuredAllocationEngine) InspectReadinessAllocation(context.Context,string) (allocation,error) {return e.actual,nil}
+func TestJobAllocationRequiresReadonlyAndVerifiedImmutableImage(t *testing.T) {
+	d:=newDriver(newFakeEngine())
+	e:=&measuredAllocationEngine{fakeEngine:newFakeEngine(),actual:allocation{ImageReference:"rewritten:local-tag",PinnedImages:[]string{d.Image},Image:"actual-image-id",ExpectedImage:"actual-image-id",NetworkIDs:[]string{"job-network"},Networks:1,User:d.user(),SandboxApplied:true,ReadOnly:true}}
+	d.Engine=e
+	if err:=d.checkAllocation(context.Background(),"job",nil,"job-network");err!=nil {t.Fatal(err)}
+	e.actual.ReadOnly=false
+	if err:=d.checkAllocation(context.Background(),"job",nil,"job-network");!errors.Is(err,readiness.ErrBoundaryChanged) {t.Fatal("writable actual job root accepted")}
+	e.actual.ReadOnly=true;e.actual.PinnedImages=[]string{"other@sha256:"+strings.Repeat("f",64)}
+	if err:=d.checkAllocation(context.Background(),"job",nil,"job-network");!errors.Is(err,readiness.ErrBoundaryChanged) {t.Fatal("mutable tag accepted without exact immutable pin")}
+}

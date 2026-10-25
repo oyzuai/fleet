@@ -409,6 +409,7 @@ func (p *podmanProfile) inspectOCI(path, id, user string) error {
 	if err != nil {
 		return err
 	}
+	if !o.Root.Readonly {return errors.New("Podman allocation root is writable")}
 	return verifyPodmanOCI(o, user)
 }
 func (p *podmanProfile) readOCI(path, id string) (o ociSandbox, err error) {

@@ -732,12 +732,15 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 	}
 	var image struct {
 		ID string `json:"Id"`
+		RepoDigests []string
 	}
-	if err := d.do(ctx, "GET", "/images/"+url.PathEscape(out.Config.Image)+"/json", nil, nil, &image); err != nil {
+	imageLookup:=out.Config.Image
+	if d.podman {imageLookup=out.Image}
+	if err := d.do(ctx, "GET", "/images/"+url.PathEscape(imageLookup)+"/json", nil, nil, &image); err != nil {
 		return allocation{}, err
 	}
 	a := allocation{ImageReference: out.Config.Image, ExpectedImage: image.ID, DNS: out.HostConfig.Dns, Image: out.Image, Networks: len(out.NetworkSettings.Networks), Privileged: out.HostConfig.Privileged, HostNetwork: out.HostConfig.NetworkMode == "host", User: out.Config.User,
-		SandboxApplied: out.HostConfig.sandbox().applied()}
+		SandboxApplied: out.HostConfig.sandbox().applied(),ReadOnly:out.HostConfig.ReadonlyRootfs}
 	if d.podman {
 		a.SandboxApplied = false
 		if err := d.profile.validate(); err != nil {
@@ -746,13 +749,14 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 		if !podmanEchoedOptions(out.HostConfig.SecurityOpt, d.profile.path) {
 			return a, errors.New("Podman sandbox options changed")
 		}
-		ociPath, err := d.podmanOCIPath(ctx, id)
+		native, err := d.podmanContainer(ctx, id)
 		if err != nil {
 			return a, err
 		}
-		if err := d.profile.inspectOCI(ociPath, id, out.Config.User); err != nil {
+		if err := d.profile.inspectOCI(native.OCIConfigPath, id, out.Config.User); err != nil {
 			return a, err
 		}
+		for _,ref:=range image.RepoDigests {_,digest,ok:=strings.Cut(ref,"@");if ok && digest==native.ImageDigest {a.PinnedImages=append(a.PinnedImages,ref)}}
 		a.SandboxApplied = true
 	}
 	for _, n := range out.NetworkSettings.Networks {

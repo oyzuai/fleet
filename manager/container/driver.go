@@ -375,7 +375,7 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 	id, err := d.Engine.CreateContainer(ctx, name, Spec{
 		Image: d.Image, Cmd: cmd, User: d.user(), Labels: labels, Volume: j.volume, WorkDir: WorkDir,
 		NanoCPUs: int64(d.CPUs * 1e9), MemoryBytes: d.MemoryBytes, PidsLimit: pids, Network: network,
-		Env: env, DNS: dns, Sysctls: sysctls,
+		Env: env, DNS: dns, Sysctls: sysctls, ReadOnly: true,
 	})
 	if err != nil {
 		return h, fmt.Errorf("create the container: %w", err)
