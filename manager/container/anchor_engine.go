@@ -69,24 +69,31 @@ func (d *Docker) InspectNamespaceAnchor(ctx context.Context, id string, spec Spe
 		}
 	}
 	h := out.HostConfig
-	checks := []struct { name string; valid bool }{
-		{"identity",out.ID==id && strings.TrimPrefix(out.Name,"/")=="oyzu-"+spec.Labels[LabelManager]+"-namespace-anchor"},
-		{"liveness",out.State.Running && out.State.Pid>0 && !out.State.Restarting && !out.State.Paused && !out.State.Dead},
-		{"image",out.Config.Image==spec.Image && image.ID!="" && out.Image==image.ID},
-		{"user",out.Config.User==spec.User}, {"directory",out.Config.WorkingDir==spec.WorkDir},
-		{"command",slices.Equal(out.Config.Cmd,spec.Cmd) && len(out.Config.Entrypoint)==0 && len(image.Config.Entrypoint)==0},
-		{"environment",sameStrings(out.Config.Env,expectedEnv)}, {"labels",maps.Equal(out.Config.Labels,spec.Labels)},
-		{"readonly",h.ReadonlyRootfs && !h.Privileged}, {"bridge",h.NetworkMode==defaultNetwork},
-		{"memory",h.Memory==spec.MemoryBytes}, {"swap",h.MemorySwap==spec.MemoryBytes}, {"pids",h.PidsLimit==spec.PidsLimit},
-		{"mounts",len(out.Mounts)==0 && len(h.Mounts)==0}, {"ports",len(h.PortBindings)==0},
-		{"dns",len(h.Dns)==0}, {"sysctls",len(h.Sysctls)==0}, {"networks",len(out.NetworkSettings.Networks)==1},
-		{"security-options",podmanEchoedOptions(h.SecurityOpt,d.profile.path)},
-		{"capabilities",len(h.CapAdd)==0 && sameStrings(h.CapDrop,[]string{"ALL"})},
+	checks := []struct {
+		name  string
+		valid bool
+	}{
+		{"identity", out.ID == id && strings.TrimPrefix(out.Name, "/") == "oyzu-"+spec.Labels[LabelManager]+"-namespace-anchor"},
+		{"liveness", out.State.Running && out.State.Pid > 0 && !out.State.Restarting && !out.State.Paused && !out.State.Dead},
+		{"image", out.Config.Image == spec.Image && image.ID != "" && out.Image == image.ID},
+		{"user", out.Config.User == spec.User}, {"directory", out.Config.WorkingDir == spec.WorkDir},
+		{"command", slices.Equal(out.Config.Cmd, spec.Cmd) && len(out.Config.Entrypoint) == 0 && len(image.Config.Entrypoint) == 0},
+		{"environment", sameStrings(out.Config.Env, expectedEnv)}, {"labels", maps.Equal(out.Config.Labels, spec.Labels)},
+		{"readonly", h.ReadonlyRootfs && !h.Privileged}, {"bridge", h.NetworkMode == defaultNetwork},
+		{"memory", h.Memory == spec.MemoryBytes}, {"swap", h.MemorySwap == spec.MemoryBytes}, {"pids", h.PidsLimit == spec.PidsLimit},
+		{"mounts", len(out.Mounts) == 0 && len(h.Mounts) == 0}, {"ports", len(h.PortBindings) == 0},
+		{"dns", len(h.Dns) == 0}, {"sysctls", len(h.Sysctls) == 0}, {"networks", len(out.NetworkSettings.Networks) == 1},
+		{"security-options", podmanEchoedOptions(h.SecurityOpt, d.profile.path)},
+		{"capabilities", len(h.CapAdd) == 0 && sameStrings(h.CapDrop, []string{"ALL"})},
 	}
 	var failed []string
-	for _,check:=range checks {if !check.valid {failed=append(failed,check.name)}}
-	if len(failed)>0 {
-		return identity, errors.New("namespace anchor allocation differs from its fixed template: "+strings.Join(failed,","))
+	for _, check := range checks {
+		if !check.valid {
+			failed = append(failed, check.name)
+		}
+	}
+	if len(failed) > 0 {
+		return identity, errors.New("namespace anchor allocation differs from its fixed template: " + strings.Join(failed, ","))
 	}
 	var networkID string
 	for _, n := range out.NetworkSettings.Networks {
