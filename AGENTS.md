@@ -26,3 +26,16 @@ verification, including older billing/plan exceptions.
   workspace may continue under their resource rules, without an Actions worker.
 - Preserve workflow definitions and runner installations for a future approved
   run. Do not delete source, retained evidence or installed tools under this policy.
+
+## Be practical
+
+Maintainer decision (2026-10-25): do the task, run the tests that matter, and say
+plainly whether they passed or failed; the command and pass/fail is enough. Keep
+user-facing documentation up to date: whenever a change alters what users see or
+do, update the existing user-facing docs in the same change. Don't write other
+docs (status or qualification files, proof files, internal write-ups) or new
+scripts unless the change needs them or the task asks. Keep PR descriptions short.
+Clean up builds, workspaces, containers and images you created (never other
+people's data) and say how much disk you used. Never skip signing, provenance,
+access-control or compliance checks, and never hide a failure. Where another rule
+here asks for more, this one wins.
