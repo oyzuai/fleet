@@ -535,3 +535,24 @@ func TestPodmanGatewayRegistrationAfterNetworkCleanup(t *testing.T) {
 		})
 	}
 }
+
+func TestPodmanNamespaceAnchorInspection(t *testing.T) {
+	socket,image:=os.Getenv("FLEET_PODMAN_PROOF_SOCKET"),os.Getenv("FLEET_PODMAN_GATEWAY_IMAGE")
+	if socket==""||image=="" {t.Skip("dedicated anchor inspection needs explicit socket/image")}
+	if os.Geteuid()!=1002||!strings.HasPrefix(socket,"/run/user/1002/")||!strings.HasPrefix(image,"localhost/oyzu-pool-executor@sha256:") {t.Fatal("proof restricted to dedicated uid1002 and immutable local image")}
+	ctx,cancel:=context.WithTimeout(context.Background(),60*time.Second);defer cancel()
+	engine,err:=NewDocker("unix://"+socket,DockerOptions{});if err!=nil {t.Fatal(err)}
+	requireExclusiveGatewayStore(t,ctx,engine)
+	d:=&Driver{Engine:engine,Image:image,Manager:time.Now().UnixNano(),Pool:"oyzu-pool-slice1-proof"}
+	t.Cleanup(func(){cleanup,stop:=context.WithTimeout(context.Background(),15*time.Second);defer stop();if err:=d.Finalize(cleanup);err!=nil {t.Error(err)}})
+	d.gwMu.Lock();err=d.createAnchorLocked(ctx);d.gwMu.Unlock()
+	if err!=nil && d.anchor!=nil {
+		var actual struct {Config struct {Env []string};HostConfig struct {CapAdd,CapDrop []string; NetworkMode string; Memory,MemorySwap,PidsLimit int64}}
+		if inspectErr:=engine.do(ctx,"GET","/containers/"+d.anchor.id+"/json",nil,nil,&actual);inspectErr!=nil {t.Fatalf("inspect own failed anchor: %v",inspectErr)}
+		var keys []string;podmanDefault:=false
+		for _,entry:=range actual.Config.Env {key,_,_:=strings.Cut(entry,"=");keys=append(keys,key);podmanDefault=podmanDefault||entry=="container=podman"}
+		t.Logf("own compatibility metadata: bridge=%q memory=%d swap=%d pids=%d cap-add=%v cap-drop=%v env-keys=%v fixed-container-default=%v",actual.HostConfig.NetworkMode,actual.HostConfig.Memory,actual.HostConfig.MemorySwap,actual.HostConfig.PidsLimit,actual.HostConfig.CapAdd,actual.HostConfig.CapDrop,keys,podmanDefault)
+	}
+	if err!=nil {t.Fatal(err)}
+	t.Log("actual anchor bridge/process/OCI security/resource identity qualified")
+}
