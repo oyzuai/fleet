@@ -54,20 +54,18 @@ trust-governed build claim supplies a canonical lowercase, nonzero UUID. Fleet
 carries it through the driver to the executor and echoes it without constructing
 decision facts. Its typed startup request carries readiness alongside the
 reference. Shape validation happens before spending startup material; a server
-refusal has no fallback that drops the reference. Other assignments may omit it
-only when the server does not require the binding.
+refusal has no fallback that drops the reference. An assignment whose claim
+carries no reference, such as a kind job, omits it.
 
 The reference grants no execution, resource-use or credential authority. Current
 one-use startup, assignment and readiness checks remain mandatory. The server
 must reject missing, unknown, substituted, stale or wrong-attempt required
 references before issuing a job credential.
 
-Bounded local tests exercise the actual HTTP client and a real process-driver
-child running the actual executor command. The controlled HTTP server refuses
-before issuing work. Container, Kubernetes and VM handoff tests use their
-existing fake infrastructure. These qualify transport only; connected server
-binding, native Secret consumption, host integrity and deployment remain
-unqualified. GitHub Actions remains intentionally disabled/unrun.
+The VM handover serves the reference with each assignment; the instance agent
+that turns it into executor flags is outside this repository. The container and
+Kubernetes drivers pass it as a command argument: it is correlation metadata,
+not a credential.
 
 ## Renewal and rotation
 
