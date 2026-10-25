@@ -399,7 +399,7 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 		// Only the trusted executor bootstrap is running. It cannot spend a
 		// startup token until the actual namespace is observed and this archive's
 		// final ready marker is delivered. No job code or source runs beforehand.
-		if err = d.checkAllocation(ctx, id, dns, j.networkID,false); err != nil {
+		if err = d.checkAllocation(ctx, id, dns, j.networkID, false); err != nil {
 			return h, err
 		}
 		if err = d.CheckReadiness(ctx, c.Readiness); err != nil {

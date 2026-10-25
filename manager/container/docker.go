@@ -756,11 +756,13 @@ func (d *Docker) InspectReadinessAllocation(ctx context.Context, id string) (all
 		if err != nil {
 			return a, err
 		}
-		actualRoot,err:=d.profile.inspectAllocationOCI(native.OCIConfigPath,id,out.Config.User)
+		actualRoot, err := d.profile.inspectAllocationOCI(native.OCIConfigPath, id, out.Config.User)
 		if err != nil {
 			return a, err
 		}
-		if actualRoot!=a.ReadOnly {return a,errors.New("Podman actual root mount differs from its allocation")}
+		if actualRoot != a.ReadOnly {
+			return a, errors.New("Podman actual root mount differs from its allocation")
+		}
 		for _, ref := range image.RepoDigests {
 			_, digest, ok := strings.Cut(ref, "@")
 			if ok && digest == native.ImageDigest {

@@ -136,15 +136,15 @@ func (d *Driver) ReadinessBoundary(ctx context.Context) (readiness.Boundary, err
 		d.gwMu.Unlock()
 	}
 	command, _ := json.Marshal(struct {
-		Command      []string
-		User         string
-		CPUs         float64
-		Memory       int64
-		Pids         int64
-		Sandbox      string
-		HostSecurity []string
-		IPv6         string          `json:",omitempty"`
-		Anchor       *anchorIdentity `json:",omitempty"`
+		Command         []string
+		User            string
+		CPUs            float64
+		Memory          int64
+		Pids            int64
+		Sandbox         string
+		HostSecurity    []string
+		IPv6            string          `json:",omitempty"`
+		Anchor          *anchorIdentity `json:",omitempty"`
 		JobRootReadOnly bool
 	}{slices.Clone(d.Command), d.user(), d.CPUs, d.MemoryBytes, d.PidsLimit, sandboxPolicyFingerprint(), slices.Clone(info.SecurityOptions), ipv6, anchor, false})
 	runtime := sha256.Sum256(append([]byte(info.ServerVersion), command...))
@@ -237,7 +237,7 @@ func (d *Driver) checkAllocation(ctx context.Context, id string, expectedDNS []s
 	if a.Networks != 1 || a.IPv6 || a.Privileged || a.HostNetwork || a.ExtraMount {
 		return fmt.Errorf("%w: actual allocation exceeds the qualified container boundary", readiness.ErrBoundaryChanged)
 	}
-	if a.User != d.user() || !a.SandboxApplied || a.ReadOnly!=expectedReadOnly {
+	if a.User != d.user() || !a.SandboxApplied || a.ReadOnly != expectedReadOnly {
 		return fmt.Errorf("%w: actual syscall/proc or non-root policy differs from the measured runtime", readiness.ErrBoundaryChanged)
 	}
 	return nil
@@ -383,7 +383,7 @@ func (d *Driver) ProbeReadiness(ctx context.Context, c readiness.Challenge) (res
 	if err = d.Engine.StartContainer(ctx, j.id); err != nil {
 		return
 	}
-	if err = d.checkAllocation(ctx, j.id, dns, j.networkID,true); err != nil {
+	if err = d.checkAllocation(ctx, j.id, dns, j.networkID, true); err != nil {
 		outcome := "inconclusive"
 		if errors.Is(err, readiness.ErrBoundaryChanged) {
 			outcome = "failed"
@@ -437,7 +437,7 @@ func (d *Driver) CheckReadinessAllocation(ctx context.Context, h manager.Handle,
 	id := j.id
 	dns := slices.Clone(j.dns)
 	d.mu.Unlock()
-	if err = d.checkAllocation(ctx, id, dns, j.networkID,false); err != nil && errors.Is(err, readiness.ErrBoundaryChanged) {
+	if err = d.checkAllocation(ctx, id, dns, j.networkID, false); err != nil && errors.Is(err, readiness.ErrBoundaryChanged) {
 		d.mu.Lock()
 		d.localBinding = nil
 		d.readinessPoisoned = true
