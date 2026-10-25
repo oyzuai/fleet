@@ -6,6 +6,9 @@ The [private native-input contract](docs/runtime-inputs.md) describes the curren
 executor/engine file binding and controlled Unix-socket proxy integration in
 progress. Native qualification is pending.
 
+A single-tenant [pool server](docs/pool-server.md) that serves remote builds
+without the platform is designed but not implemented.
+
 Manager and executor authentication have separate
 [lifecycles](docs/authentication.md). A manager enrolls
 once and signs login assertions; Oyzu issues the manager, startup and job
