@@ -131,13 +131,21 @@ func (d *Docker) InspectNamespaceAnchor(ctx context.Context, id string, spec Spe
 type podmanEndpoint struct{ NetworkID, IPAddress string }
 
 func podmanDefaultBridgeAddress(topLevel string, networks map[string]podmanEndpoint) (string, error) {
-	n, ok := networks[defaultNetwork]
-	if len(networks) != 1 || !ok || n.NetworkID != defaultNetwork {
+	name := defaultNetwork
+	n, ok := networks[name]
+	if !ok {
+		// Qualified Podman4.9 reports its default endpoint as podman, but
+		// the compatibility network API exposes that same network as bridge.
+		name = "podman"
+		n, ok = networks[name]
+	}
+	if len(networks) != 1 || !ok || n.NetworkID != name {
 		return "", errors.New("namespace anchor has no actual default bridge allocation")
 	}
 	address := n.IPAddress
-	// Podman4.9's default-network branch keeps its address at the top level;
-	// custom network endpoints must never use this fallback.
+	// Some default-network inspections keep the address at the top level.
+	// The caller still resolves the compatibility bridge and requires this
+	// container/IP endpoint in that exact network before admitting the anchor.
 	if address == "" {
 		address = topLevel
 	}

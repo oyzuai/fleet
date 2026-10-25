@@ -252,8 +252,10 @@ nonroot `/bin/sleep infinity` anchor from the same pinned image before the
 gateway, with a read-only root, fixed sandbox, no mounts, ports or credentials,
 32 MiB memory, 0.1 CPU and 16 processes. Actual bridge allocation, OCI controls,
 process and network-namespace identity are inspected and included in the opaque
-runtime readiness fingerprint. Missing, stopped, replaced or unobservable
-anchors revoke local authority and block admission and network disconnects;
+runtime readiness fingerprint. Podman's native default endpoint name `podman`
+and compatibility alias `bridge` are resolved to the inspected bridge definition
+ID, with matching container/IP membership required. Missing, stopped, replaced or
+unobservable anchors revoke local authority and block admission and network disconnects;
 Fleet does not silently replace them under an accepted proof. Restart the
 drained manager to establish a new pair and repeat qualification.
 

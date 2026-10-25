@@ -42,6 +42,24 @@ func TestPodmanNetworkNamesRequireActualEndpointIdentity(t *testing.T) {
 	}
 }
 
+func TestPodmanDefaultBridgeAliasRetainsActualEndpointProof(t *testing.T) {
+	d, _ := newStub(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /networks/bridge": reply(200, `{"Id":"definition-id","Name":"bridge","Driver":"bridge","Containers":{"own":{"IPv4Address":"10.88.0.2/16"}}}`),
+	})
+	// Podman4.9's native/compat container inspect names this endpoint podman,
+	// while compatibility network inspect exposes the same default as bridge.
+	address, err := podmanDefaultBridgeAddress("10.88.0.2", map[string]podmanEndpoint{
+		"podman": {NetworkID: "podman", IPAddress: "10.88.0.2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	measured, err := d.inspectPodmanNetwork(context.Background(), "own", defaultNetwork, address)
+	if err != nil || measured.ID != "definition-id" {
+		t.Fatalf("default bridge identity: %+v %v", measured, err)
+	}
+}
+
 func TestPodmanDefaultBridgeAddressIsNarrowlyResolved(t *testing.T) {
 	for _, test := range []struct {
 		top      string
@@ -50,6 +68,9 @@ func TestPodmanDefaultBridgeAddressIsNarrowlyResolved(t *testing.T) {
 	}{
 		{"10.88.0.2", map[string]podmanEndpoint{"bridge": {NetworkID: "bridge"}}, true},
 		{"", map[string]podmanEndpoint{"bridge": {NetworkID: "bridge", IPAddress: "10.88.0.2"}}, true},
+		{"", map[string]podmanEndpoint{"podman": {NetworkID: "podman", IPAddress: "10.88.0.2"}}, true},
+		{"10.88.0.2", map[string]podmanEndpoint{"podman": {NetworkID: "bridge"}}, false},
+		{"10.88.0.2", map[string]podmanEndpoint{"bridge": {NetworkID: "podman"}}, false},
 		{"10.88.0.2", map[string]podmanEndpoint{"custom": {NetworkID: "custom"}}, false},
 		{"10.88.0.2", map[string]podmanEndpoint{"bridge": {NetworkID: "bridge"}, "other": {NetworkID: "other"}}, false},
 		{"", map[string]podmanEndpoint{"bridge": {NetworkID: "bridge"}}, false},

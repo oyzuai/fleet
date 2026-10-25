@@ -584,7 +584,7 @@ func (d *Driver) Reap(ctx context.Context, live []manager.JobID) error {
 			continue
 		}
 		if c.Labels[LabelRole] == roleAnchor || c.Labels[LabelRole] == roleGateway {
-			if !matches(c.Labels, map[string]string{LabelPool: d.Pool, LabelManager: d.managerLabel()}) ||
+			if c.Labels[LabelPool] != d.Pool || c.Labels[LabelManager] != d.managerLabel() ||
 				(c.Labels[LabelRole] == roleAnchor && c.Name != d.anchorName()) || (c.Labels[LabelRole] == roleGateway && c.Name != d.gatewayName()) {
 				return errors.New("unrecognized stale gateway pair; refusing cleanup")
 			}
