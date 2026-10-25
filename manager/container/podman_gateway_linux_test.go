@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -29,6 +30,26 @@ type boundedGatewayEngine struct {
 }
 
 type harmlessGatewayEngine struct{ *boundedGatewayEngine }
+
+// Podman4.9's rootless CNI teardown behaves differently when the gateway is
+// the last bridge container. Another retained container masks that failure,
+// even if its kernel network is already broken. Never mutate foreign objects
+// to establish this prerequisite; the runtime owner sequences their removal.
+func requireExclusiveGatewayStore(t *testing.T, ctx context.Context, engine *Docker) {
+	t.Helper()
+	if err := engine.prepareSandbox(ctx); err != nil { t.Fatal(err) }
+	if !engine.podman { t.Fatal("gateway proof requires qualified Podman4.9") }
+	containers, err := engine.ListContainers(ctx, nil)
+	if err != nil { t.Fatal(err) }
+	for _, container := range containers {
+		var network struct {
+			NetworkSettings struct { SandboxKey string }
+			HostConfig struct { NetworkMode string }
+		}
+		if err := engine.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(container.ID)+"/json", nil, nil, &network); err != nil { t.Fatal(err) }
+		if network.NetworkSettings.SandboxKey != "" && network.HostConfig.NetworkMode != "none" { t.Fatalf("last-container proof requires no preexisting active network namespace; runtime owner must sequence %s", container.Name) }
+	}
+}
 
 func (e *harmlessGatewayEngine) CreateContainer(ctx context.Context, name string, spec Spec) (string, error) {
 	if spec.Volume != "" {
@@ -61,6 +82,7 @@ func TestPodmanDriverJobRegistrationLifecycle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			requireExclusiveGatewayStore(t, ctx, engine)
 			bounded := &boundedGatewayEngine{Engine: engine}
 			d := &Driver{Engine: &harmlessGatewayEngine{bounded}, Image: image, Command: []string{"oyzu-executor"}, Manager: time.Now().UnixNano(), Pool: "oyzu-pool-slice1-proof", Egress: EgressEnforce, Server: "https://example.invalid", pulled: true}
 			t.Cleanup(func() {
@@ -250,6 +272,7 @@ func TestPodmanDriverGatewayProbeCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	requireExclusiveGatewayStore(t, ctx, engine)
 	bounded := &boundedGatewayEngine{Engine: engine}
 	d := &Driver{Engine: bounded, Image: image, Command: []string{"oyzu-executor"}, Manager: time.Now().UnixNano(), Pool: "oyzu-pool-slice1-proof", Egress: EgressEnforce}
 	t.Cleanup(func() {
@@ -308,6 +331,7 @@ func TestPodmanGatewayRegistrationAfterNetworkCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	requireExclusiveGatewayStore(t, ctx, engine)
 	name := fmt.Sprintf("oyzu-pool-gateway-proof-%d", time.Now().UnixNano())
 	labels := map[string]string{LabelPool: "oyzu-pool-slice1-proof", LabelManager: "gateway-registration"}
 	// This token belongs solely to the disposable test gateway.
