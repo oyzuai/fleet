@@ -164,7 +164,9 @@ func (a *GitHubApp) Source(ctx context.Context, repo string) (runnerclient.Sourc
 	return runnerclient.Source{Token: out.Token, Expires: out.Expires, Repository: repo}, nil
 }
 func (a *GitHubApp) CommitExists(ctx context.Context, repo, sha string) (bool, error) {
-	if !repositoryRE.MatchString(repo) || !commitRE.MatchString(sha) { return false, errors.New("invalid commit source") }
+	if !repositoryRE.MatchString(repo) || !commitRE.MatchString(sha) {
+		return false, errors.New("invalid commit source")
+	}
 	s, e := a.Source(ctx, repo)
 	if e != nil {
 		return false, e

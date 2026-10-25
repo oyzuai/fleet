@@ -232,10 +232,18 @@ func validateCreate(in RunCreate, raw []byte) []fieldError {
 	_ = json.Unmarshal(raw, &top)
 	check := func(prefix string, fields map[string]json.RawMessage, allowed, required []string) {
 		for key, value := range fields {
-			if !contains(allowed, key) { add(prefix+"/"+key, "UNKNOWN_FIELD") }
-			if bytes.Equal(bytes.TrimSpace(value), []byte("null")) { add(prefix+"/"+key, "INVALID_FORMAT") }
+			if !contains(allowed, key) {
+				add(prefix+"/"+key, "UNKNOWN_FIELD")
+			}
+			if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				add(prefix+"/"+key, "INVALID_FORMAT")
+			}
 		}
-		for _, key := range required { if _, ok := fields[key]; !ok { add(prefix+"/"+key, "REQUIRED") } }
+		for _, key := range required {
+			if _, ok := fields[key]; !ok {
+				add(prefix+"/"+key, "REQUIRED")
+			}
+		}
 	}
 	check("", top, []string{"repository", "commit", "ref", "operation"}, []string{"repository", "commit", "operation"})
 	var repo, operation map[string]json.RawMessage
@@ -314,7 +322,9 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, c caller) {
 	var in RunCreate
 	decodeErr := json.Unmarshal(raw, &in)
 	errs := validateCreate(in, raw)
-	if decodeErr != nil { errs = append(errs, fieldError{Field:"/", Code:"INVALID_FORMAT", Message:"A field has the wrong JSON type."}) }
+	if decodeErr != nil {
+		errs = append(errs, fieldError{Field: "/", Code: "INVALID_FORMAT", Message: "A field has the wrong JSON type."})
+	}
 	if len(errs) > 0 {
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(422)
@@ -404,9 +414,22 @@ func (s *Server) idempotent(w http.ResponseWriter, owner, key, bodyHash string) 
 }
 func (s *Server) listRuns(w http.ResponseWriter, r *http.Request, c caller) {
 	q := r.URL.Query()
-	if v := q.Get("repository"); v != "" && (!strings.HasPrefix(v,"github:") || !repositoryRE.MatchString(strings.TrimPrefix(v,"github:"))) { problem(w,400,"REQUEST_INVALID","Invalid repository filter."); return }
-	if v := q.Get("commit"); v != "" && !commitRE.MatchString(v) { problem(w,400,"REQUEST_INVALID","Invalid commit filter."); return }
-	if v := q.Get("state"); v != "" { for _, state := range strings.Split(v,",") { if !contains([]string{"queued","running","succeeded","failed","skipped","cancelled","timed_out"},state) { problem(w,400,"REQUEST_INVALID","Invalid state filter."); return } } }
+	if v := q.Get("repository"); v != "" && (!strings.HasPrefix(v, "github:") || !repositoryRE.MatchString(strings.TrimPrefix(v, "github:"))) {
+		problem(w, 400, "REQUEST_INVALID", "Invalid repository filter.")
+		return
+	}
+	if v := q.Get("commit"); v != "" && !commitRE.MatchString(v) {
+		problem(w, 400, "REQUEST_INVALID", "Invalid commit filter.")
+		return
+	}
+	if v := q.Get("state"); v != "" {
+		for _, state := range strings.Split(v, ",") {
+			if !contains([]string{"queued", "running", "succeeded", "failed", "skipped", "cancelled", "timed_out"}, state) {
+				problem(w, 400, "REQUEST_INVALID", "Invalid state filter.")
+				return
+			}
+		}
+	}
 	size, ok := queryInt(w, r, "page_size", 25, 1, 100)
 	if !ok {
 		return
