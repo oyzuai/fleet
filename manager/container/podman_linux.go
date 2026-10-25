@@ -463,7 +463,7 @@ func verifyPodmanOCI(o ociSandbox, user string) error {
 		}
 	}
 	if !sameStrings(o.Linux.MaskedPaths, containerSandboxPolicy().MaskedPaths) || len(o.Linux.ReadonlyPaths) != 0 {
-		return errors.New("Podman applied proc/sys path restrictions differ")
+		return fmt.Errorf("Podman applied proc/sys path restrictions differ: masked=%v readonly=%v",o.Linux.MaskedPaths,o.Linux.ReadonlyPaths)
 	}
 	sysro := false
 	for _, m := range o.Mounts {

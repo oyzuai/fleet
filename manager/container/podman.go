@@ -13,7 +13,11 @@ import (
 // /sys must remain a read-only OCI mount; inspection verifies the effective
 // controls instead of accepting the echoed HostConfig fields.
 func podmanSecurityOptions(path string) []string {
-	return []string{"no-new-privileges:true", "seccomp=" + path, "unmask=ALL", "mask=/sys/firmware:/sys/devices/virtual/powercap"}
+	options:=[]string{"no-new-privileges:true", "seccomp=" + path,"mask=/sys/firmware:/sys/devices/virtual/powercap"}
+	// ALL also changes Podman's cgroup mount to writable. Remove only its
+	// measured default masks/readonly proc paths; preserve read-only cgroups.
+	for _,p:=range []string{"/proc/acpi","/proc/kcore","/proc/keys","/proc/latency_stats","/proc/timer_list","/proc/timer_stats","/proc/sched_debug","/proc/scsi","/sys/firmware","/sys/fs/selinux","/sys/dev/block","/proc/asound","/proc/bus","/proc/fs","/proc/irq","/proc/sys","/proc/sysrq-trigger"}{options=append(options,"unmask="+p)}
+	return options
 }
 func podmanEchoedOptions(options []string,path string)bool{return sameStrings(options,[]string{"no-new-privileges","seccomp="+path})||sameStrings(options,[]string{"no-new-privileges:true","seccomp="+path})}
 func(d *Docker)podmanOCIPath(ctx context.Context,id string)(string,error){
