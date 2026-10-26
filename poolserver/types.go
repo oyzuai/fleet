@@ -150,6 +150,15 @@ type Operation struct {
 	AffectedBase string   `json:"affected_base,omitempty"`
 	Task         string   `json:"task,omitempty"`
 }
+
+// SnapshotSource identifies a content-addressed working-tree archive. Its base
+// commit is informational; snapshot runs cannot publish or write shared caches.
+type SnapshotSource struct {
+	Kind       string `json:"kind"`
+	Digest     string `json:"digest"`
+	BaseCommit string `json:"base_commit,omitempty"`
+}
+
 type RunCreate struct {
 	Repository Repository `json:"repository"`
 	Commit     string     `json:"commit"`
