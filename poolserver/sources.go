@@ -284,6 +284,7 @@ func (s *Server) putSource(w http.ResponseWriter, r *http.Request, c caller, kin
 			d.Meta.Sources = map[string]sourceRecord{}
 		}
 		d.Meta.SourceOwners[digest][s.cfg.Account+"\x00"+c.ID] = true
+		record.LastUsed = s.now()
 		d.Meta.Sources[digest] = record
 		if !s.persist(w, d) {
 			return

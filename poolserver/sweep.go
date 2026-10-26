@@ -61,7 +61,9 @@ func (s *Server) sweepSources() (result error) {
 	d := s.state.clone()
 	protected := map[string]bool{}
 	for _, run := range d.Runs {
-		if run.Run.Source != nil && (run.Run.State == "queued" || run.Run.State == "running") {
+		job := d.Jobs[run.JobID]
+		liveJob := job != nil && (job.State == "queued" || job.State == "claimed" || job.State == "running")
+		if run.Run.Source != nil && (liveJob || run.Run.State == "queued" || run.Run.State == "running") {
 			protected[run.Run.Source.Digest] = true
 		}
 	}
@@ -81,13 +83,24 @@ func (s *Server) sweepSources() (result error) {
 		return a.Before(b)
 	})
 	projected := sourceBytes + blobBytes
+	changed := false
+	for digest := range d.Meta.SourceOwners {
+		if _, keep := d.Meta.Sources[digest]; !keep {
+			delete(d.Meta.SourceOwners, digest)
+			changed = true
+		}
+	}
+	for digest, file := range sources {
+		if _, keep := d.Meta.Sources[digest]; !keep {
+			projected -= file.size
+		}
+	}
 	// Already orphaned old blobs are reclaimable without evicting a manifest.
 	for digest, file := range files {
 		if refs[digest] == 0 && !now.Before(file.modified.Add(time.Hour)) {
 			projected -= file.size
 		}
 	}
-	changed := false
 	for _, digest := range order {
 		record := d.Meta.Sources[digest]
 		old := !now.Before(record.LastUsed.Add(s.cfg.sourceRetention))

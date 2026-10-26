@@ -411,6 +411,12 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, c caller) {
 		problem(w, 422, "SOURCE_UNAVAILABLE", "Upload the source manifest before starting a run.")
 		return
 	}
+	if in.Source != nil {
+		if _, ok := s.state.Meta.Sources[in.Source.Digest]; !ok {
+			problem(w, 422, "SOURCE_UNAVAILABLE", "Upload the source manifest before starting a run.")
+			return
+		}
+	}
 	d := s.state.clone()
 	d.Meta.NextID++
 	id := d.Meta.NextID

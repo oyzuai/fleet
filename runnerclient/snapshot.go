@@ -69,6 +69,9 @@ func sourceRelative(name string) bool {
 // sourceObject rejects duplicate keys, unknown/missing fields, nulls and trailing
 // JSON. Typed decoding alone accepts duplicate keys and null scalar values.
 func sourceObject(data []byte) (map[string]json.RawMessage, error) {
+	if !utf8.Valid(data) {
+		return nil, errors.New("source JSON must be UTF-8")
+	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	t, err := d.Token()
 	if err != nil || t != json.Delim('{') {
@@ -117,6 +120,7 @@ func ParseSourceManifest(data []byte) (SourceManifest, error) {
 	}
 	out.Entries = make([]SourceEntry, 0, len(entries))
 	kinds := map[string]string{}
+	links := map[string]string{}
 	sizes := map[string]int64{}
 	var total int64
 	previous := ""
@@ -149,6 +153,7 @@ func ParseSourceManifest(data []byte) (SourceManifest, error) {
 			if e.Target == "" || path.IsAbs(e.Target) || strings.ContainsAny(e.Target, "\\:\x00") || (resolved != "." && !sourceRelative(resolved)) {
 				return out, errors.New("source link escapes tree")
 			}
+			links[e.Path] = e.Target
 		default:
 			return out, errors.New("unsupported source entry kind")
 		}
@@ -169,5 +174,49 @@ func ParseSourceManifest(data []byte) (SourceManifest, error) {
 		previous = e.Path
 		out.Entries = append(out.Entries, e)
 	}
+	for name, target := range links {
+		if err := sourceLinkInside(name, target, links); err != nil {
+			return out, err
+		}
+	}
 	return out, nil
+}
+
+// Resolve symlinks before interpreting subsequent '..' components, just as
+// the filesystem does. Cleaning first could conceal a traversal through a link
+// to an ancestor. The executor still checks actual resolution after creation.
+func sourceLinkInside(name, target string, links map[string]string) error {
+	var resolved []string
+	if parent := path.Dir(name); parent != "." {
+		resolved = strings.Split(parent, "/")
+	}
+	pending := strings.Split(target, "/")
+	followed := 0
+	for len(pending) != 0 {
+		part := pending[0]
+		pending = pending[1:]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			if len(resolved) == 0 {
+				return errors.New("source link escapes tree")
+			}
+			resolved = resolved[:len(resolved)-1]
+			continue
+		case ".git":
+			return errors.New("source link references .git")
+		}
+		candidate := strings.Join(append(resolved, part), "/")
+		if next, ok := links[candidate]; ok {
+			followed++
+			if followed > 40 {
+				return errors.New("source link cannot be resolved")
+			}
+			pending = append(strings.Split(next, "/"), pending...)
+		} else {
+			resolved = append(resolved, part)
+		}
+	}
+	return nil
 }
