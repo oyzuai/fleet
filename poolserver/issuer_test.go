@@ -34,6 +34,12 @@ func TestPoolJobTokenCreatorClaimsAndJWKS(t *testing.T) {
 			}
 			facts := map[string]string{"repository": body.Repository.Name, "ref": body.Ref}
 			if strings.HasPrefix(kind, "actions") {
+				repositoryCalls := attachRepositoryFactsAPI(t, f, http.StatusOK)
+				t.Cleanup(func() {
+					if repositoryCalls.Load() != 0 {
+						t.Error("Actions run looked up repository IDs instead of preserving creator claims")
+					}
+				})
 				key, err := rsa.GenerateKey(rand.Reader, 2048)
 				if err != nil {
 					t.Fatal(err)

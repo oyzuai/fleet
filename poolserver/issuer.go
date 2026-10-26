@@ -1,8 +1,8 @@
 package poolserver
 
-// Job identity belongs to the pool server: only verified creator facts and the
-// persisted run source enter its tokens. Executors choose an audience, never
-// the claims that authorize shared-cache writes.
+// Job identity belongs to the pool server: verified creator facts, repository
+// source facts and the persisted run source enter its tokens. Executors choose
+// an audience, never the claims that authorize shared-cache writes.
 import (
 	"crypto/ed25519"
 	"crypto/rand"
@@ -30,6 +30,12 @@ type creatorFacts struct {
 	RefType           string `json:"ref_type,omitempty"`
 	EventName         string `json:"event_name,omitempty"`
 	JobWorkflowRef    string `json:"job_workflow_ref,omitempty"`
+}
+
+// repositoryFacts identifies repository source without granting creator authority.
+type repositoryFacts struct {
+	RepositoryID      string `json:"repository_id"`
+	RepositoryOwnerID string `json:"repository_owner_id"`
 }
 
 type jobIssuer struct {
@@ -94,6 +100,9 @@ func (s *Server) issueJobToken(w http.ResponseWriter, r *http.Request, rr *runRe
 	facts := creatorFacts{Repository: rr.Run.Repository.Name, Ref: rr.Run.Ref}
 	if rr.Creator != nil {
 		facts = *rr.Creator
+	} else if rr.RepositoryFacts != nil {
+		facts.RepositoryID = rr.RepositoryFacts.RepositoryID
+		facts.RepositoryOwnerID = rr.RepositoryFacts.RepositoryOwnerID
 	}
 	sourceKind := "commit"
 	if rr.Run.Source != nil {
