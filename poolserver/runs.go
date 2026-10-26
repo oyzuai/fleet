@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -396,6 +397,17 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, c caller) {
 		problem(w, 422, "COMMIT_NOT_FOUND", "The commit must be pushed before starting a run.")
 		return
 	}
+	var sourceFacts *repositoryFacts
+	if c.Claims == nil {
+		if app, ok := s.source.(*GitHubApp); ok {
+			var err error
+			sourceFacts, err = app.repositoryFacts(r.Context(), in.Repository.Name)
+			if err != nil {
+				// Never include credential-bearing errors or GitHub response bodies.
+				log.Printf("pool repository facts: repository %s: GitHub lookup unavailable", in.Repository.Name)
+			}
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.storageErr != nil {
@@ -442,7 +454,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, c caller) {
 		command = append(command, in.Operation.Targets...)
 	}
 	job := runnerclient.Job{ID: id, RunID: id, Kind: "build", CorrelationID: rid, Repository: in.Repository.Name, HeadSHA: in.Commit, HeadBranch: in.Ref, Operation: in.Operation.Kind, Targets: in.Operation.Targets, Task: in.Operation.Task, AffectedBase: in.Operation.AffectedBase, Command: command, Secrets: []string{}}
-	d.Runs[rid] = &runRecord{Run: run, Owner: c.ID, BodyHash: bodyHash, Idempotency: key, JobID: id}
+	d.Runs[rid] = &runRecord{Run: run, Owner: c.ID, BodyHash: bodyHash, Idempotency: key, JobID: id, RepositoryFacts: sourceFacts}
 	if c.Claims != nil {
 		claims := c.Claims
 		d.Runs[rid].Creator = &creatorFacts{Repository: claims.Repository, RepositoryID: claims.RepositoryID, RepositoryOwnerID: claims.RepositoryOwnerID, Ref: claims.Ref, RefType: claims.RefType, EventName: claims.EventName, JobWorkflowRef: claims.JobWorkflowRef}

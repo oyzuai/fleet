@@ -17,14 +17,15 @@ import (
 )
 
 type runRecord struct {
-	Run          Run                        `json:"run"`
-	Owner        string                     `json:"owner"`
-	BodyHash     string                     `json:"body_hash"`
-	Idempotency  string                     `json:"idempotency,omitempty"`
-	JobID        int64                      `json:"job_id"`
-	Creator      *creatorFacts              `json:"creator,omitempty"`
-	Checks       map[string]*stageCheck     `json:"checks,omitempty"`
-	TestFailures []runnerclient.TestFailure `json:"test_failures,omitempty"`
+	Run             Run                        `json:"run"`
+	Owner           string                     `json:"owner"`
+	BodyHash        string                     `json:"body_hash"`
+	Idempotency     string                     `json:"idempotency,omitempty"`
+	JobID           int64                      `json:"job_id"`
+	Creator         *creatorFacts              `json:"creator,omitempty"`
+	RepositoryFacts *repositoryFacts           `json:"repository_facts,omitempty"`
+	Checks          map[string]*stageCheck     `json:"checks,omitempty"`
+	TestFailures    []runnerclient.TestFailure `json:"test_failures,omitempty"`
 }
 type jobRecord struct {
 	Job            runnerclient.Job      `json:"job"`

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -178,4 +179,26 @@ func (a *GitHubApp) CommitExists(ctx context.Context, repo, sha string) (bool, e
 		return false, e
 	}
 	return out.SHA == sha, nil
+}
+
+// repositoryFacts resolves source identity with the existing single-repository,
+// read-only installation credential. These IDs grant no Actions authority.
+func (a *GitHubApp) repositoryFacts(ctx context.Context, repo string) (*repositoryFacts, error) {
+	source, err := a.Source(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		ID    int64 `json:"id"`
+		Owner struct {
+			ID int64 `json:"id"`
+		} `json:"owner"`
+	}
+	if _, err = a.request(ctx, "GET", "/repos/"+repo, source.Token, nil, &out); err != nil {
+		return nil, err
+	}
+	if out.ID <= 0 || out.Owner.ID <= 0 {
+		return nil, errors.New("repository IDs unavailable")
+	}
+	return &repositoryFacts{RepositoryID: strconv.FormatInt(out.ID, 10), RepositoryOwnerID: strconv.FormatInt(out.Owner.ID, 10)}, nil
 }
