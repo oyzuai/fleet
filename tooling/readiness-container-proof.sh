@@ -12,7 +12,7 @@ cleanup(){
 }
 trap cleanup EXIT
 cd "$root"
-CGO_ENABLED=0 oyzu exec -- go build -o "$proof_dir/executor" ./cmd/executor
+CGO_ENABLED=0 go build -o "$proof_dir/executor" ./cmd/executor
 cat > "$proof_dir/Dockerfile" <<'DOCKERFILE'
 FROM scratch
 COPY --chmod=0555 executor /executor
@@ -29,4 +29,4 @@ canary_ip="$(docker inspect "$canary_name" --format '{{range .NetworkSettings.Ne
 FLEET_READINESS_IMAGE="$image_digest" \
 FLEET_READINESS_CANARY_URL="http://$canary_ip:8080" \
 FLEET_READINESS_CANARY_DNS="$canary_ip:8053" \
-oyzu exec -- go test ./manager/container -run '^TestReadinessDockerBoundaryAndGatewayReplacement$' -count=1 -v
+go test ./manager/container -run '^TestReadinessDockerBoundaryAndGatewayReplacement$' -count=1 -v

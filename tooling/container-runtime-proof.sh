@@ -16,7 +16,7 @@ cleanup() {
 trap cleanup EXIT
 cd "$root"
 mkdir -p "$proof_dir/stage/work" "$proof_dir/stage/etc" "$proof_dir/stage/rootfs/"{dev,proc,sys,tmp,run,output}
-CGO_ENABLED=0 oyzu exec -- go build -o "$proof_dir/stage/probe" ./tooling/fixtures/rootless-oci
+CGO_ENABLED=0 go build -o "$proof_dir/stage/probe" ./tooling/fixtures/rootless-oci
 cp "$proof_dir/stage/probe" "$proof_dir/stage/rootfs/probe"
 cp "$OYZU_CRUN" "$proof_dir/stage/crun"
 printf 'proof:x:1000:1000:Fleet runtime proof:/work:/probe\n' > "$proof_dir/stage/etc/passwd"
@@ -32,4 +32,4 @@ image_tag="127.0.0.1:$registry_port/rootless-runtime:proof"
 docker build --network=none -t "$image_tag" "$proof_dir"
 docker push "$image_tag"
 image_digest="$(docker image inspect "$image_tag" --format '{{index .RepoDigests 0}}')"
-FLEET_RUNTIME_IMAGE="$image_digest" oyzu exec -- go test ./manager/container -run '^TestDaemonlessOCIWithContainerPolicy$' -count=1 -v
+FLEET_RUNTIME_IMAGE="$image_digest" go test ./manager/container -run '^TestDaemonlessOCIWithContainerPolicy$' -count=1 -v

@@ -311,8 +311,8 @@ API; container loopback does not reach the host listener.
 Focused Go tests for each route, run through the real `runnerclient` and the
 real manager against an `httptest` server, plus the OIDC verifier with a local
 key. Tests inject only generated App signing keys and local GitHub responses;
-they need no live App credential. Run `oyzu exec -- go test -race ./poolserver
-./cmd/pool-server` and `oyzu exec -- go vet ./poolserver ./cmd/pool-server`.
+they need no live App credential. Run `go test -race ./poolserver
+./cmd/pool-server` and `go vet ./poolserver ./cmd/pool-server`.
 The real proof is the one the proposal names, run on build01.
 
 For the dedicated UID1002 Podman4.9 prerequisite, a compiled
