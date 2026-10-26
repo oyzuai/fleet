@@ -156,6 +156,10 @@ deduplicated bytes. A caller can reference a digest only after submitting its
 complete verified archive, including when the bytes already exist. Knowing
 another caller's digest grants no run or download access.
 
+File blobs are shared within the configured account: permitted callers may learn
+whether a blob already exists, while run access remains tied to ownership of
+the complete source manifest.
+
 `RunCreate` requires exactly one of `commit` and
 `source: {kind: snapshot, digest, base_commit?}`. The uploaded digest must exist;
 the optional base commit need not be pushed. The run echoes `source` and exposes
