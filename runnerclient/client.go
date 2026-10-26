@@ -402,6 +402,21 @@ type Outcome struct {
 	// Outputs are what a succeeded build's manifest lists: the manifest
 	// itself and every artifact, by digest (IMPL-450).
 	Outputs []Output `json:"outputs,omitempty"`
+	// TestFailures are bounded JUnit failures from this build's manifest,
+	// including when the native build failed. At most 200 are sent, with
+	// messages bounded to 1024 UTF-8 bytes.
+	TestFailures []TestFailure `json:"test_failures,omitempty"`
+}
+
+// TestFailure is one JUnit failure or error associated with a target's test
+// stage. Path and Line are optional checkout-relative source coordinates.
+type TestFailure struct {
+	Scope     string `json:"scope"`
+	Name      string `json:"name"`
+	Classname string `json:"classname,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Line      int    `json:"line,omitempty"`
+	Message   string `json:"message"`
 }
 
 // Output is one file a build wrote, as its build manifest records it. Target,

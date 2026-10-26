@@ -509,6 +509,15 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		return cmd, cmd.Run()
 	}
 	previous := nativeCompletionRecord(cfg.WorkDir)
+	if job.Operation == "build" {
+		defer func() {
+			failures, err := readTestFailures(cfg.WorkDir, previous, nativeCompletionRecord(cfg.WorkDir), stdout.String)
+			outcome.TestFailures = failures
+			if err != nil {
+				log.Warn("some test failure reports were not read", "error", stdout.String(err.Error()))
+			}
+		}()
+	}
 	cmd, err := runNative(args, input, stdout)
 	var retainedOutputs []runnerclient.Output
 	var retainedCompletion []byte
@@ -620,14 +629,19 @@ type nativeCompletion struct{ confirmed bool }
 func cancellationOutcome(previous runnerclient.Outcome, confirmed bool) runnerclient.Outcome {
 	if !confirmed {
 		return runnerclient.Outcome{State: "failed", ExitCode: previous.ExitCode, ReasonCode: "RUNNER_ERROR",
-			Summary: "Cancellation requested, but native termination was not confirmed by a fresh completed build record.\n\n" + previous.Summary}
+			Summary: "Cancellation requested, but native termination was not confirmed by a fresh completed build record.\n\n" + previous.Summary, TestFailures: previous.TestFailures}
 	}
 	return runnerclient.Outcome{State: "cancelled", ExitCode: previous.ExitCode,
-		Summary: "Native execution stopped after cancellation was requested.\n\n" + previous.Summary}
+		Summary: "Native execution stopped after cancellation was requested.\n\n" + previous.Summary, TestFailures: previous.TestFailures}
 }
 
 func nativeCompletionRecord(directory string) []byte {
-	file, err := os.Open(filepath.Join(directory, filepath.FromSlash(ManifestPath)))
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return nil
+	}
+	defer root.Close()
+	file, err := root.Open(filepath.FromSlash(ManifestPath))
 	if err != nil {
 		return nil
 	}

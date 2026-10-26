@@ -23,7 +23,8 @@ import (
 )
 
 // GitHubApp keeps the signing key exclusively inside the server. Installation
-// tokens are minted afresh for one repository with contents:read only.
+// source tokens are minted afresh for one repository with contents:read.
+// Cached check-write tokens stay inside the server.
 type GitHubApp struct {
 	key           *rsa.PrivateKey
 	appID         int64
@@ -32,6 +33,7 @@ type GitHubApp struct {
 	base          string
 	mu            sync.Mutex
 	installations map[string]int64
+	checkTokens   map[string]checkCredential
 }
 
 func newGitHubApp(c Config, o Options) (*GitHubApp, error) {
@@ -62,7 +64,7 @@ func newGitHubApp(c Config, o Options) (*GitHubApp, error) {
 	if key == nil || key.N.BitLen() < 2048 {
 		return nil, errors.New("GitHub App requires an RSA key of at least 2048 bits")
 	}
-	return &GitHubApp{key: key, appID: c.GitHubApp.AppID, client: o.HTTPClient, now: o.Now, base: "https://api.github.com", installations: map[string]int64{}}, nil
+	return &GitHubApp{key: key, appID: c.GitHubApp.AppID, client: o.HTTPClient, now: o.Now, base: "https://api.github.com", installations: map[string]int64{}, checkTokens: map[string]checkCredential{}}, nil
 }
 func (a *GitHubApp) jwt() (string, error) {
 	now := a.now()

@@ -17,12 +17,14 @@ import (
 )
 
 type runRecord struct {
-	Run         Run           `json:"run"`
-	Owner       string        `json:"owner"`
-	BodyHash    string        `json:"body_hash"`
-	Idempotency string        `json:"idempotency,omitempty"`
-	JobID       int64         `json:"job_id"`
-	Creator     *creatorFacts `json:"creator,omitempty"`
+	Run          Run                        `json:"run"`
+	Owner        string                     `json:"owner"`
+	BodyHash     string                     `json:"body_hash"`
+	Idempotency  string                     `json:"idempotency,omitempty"`
+	JobID        int64                      `json:"job_id"`
+	Creator      *creatorFacts              `json:"creator,omitempty"`
+	Checks       map[string]*stageCheck     `json:"checks,omitempty"`
+	TestFailures []runnerclient.TestFailure `json:"test_failures,omitempty"`
 }
 type jobRecord struct {
 	Job            runnerclient.Job      `json:"job"`
@@ -265,6 +267,7 @@ func (s *Server) expire() error {
 			r.Run.State = "timed_out"
 			r.Run.FinishedAt = &now
 			r.Run.Reason = &Reason{Code: "LEASE_EXPIRED", Message: "The executor lease expired."}
+			finishStageChecks(r)
 			changed = true
 		}
 		if finished(r.Run) && j.Logs.State == "open" && !now.Before(j.DrainUntil) {
