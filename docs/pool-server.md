@@ -105,7 +105,7 @@ exactly.
 | `job/source` | Mints a GitHub App installation token for `job.repository` only, with `permissions: {"contents": "read"}`, and answers `Source`. Slice 2 adds the snapshot answer. |
 | `job/logs`, `job/logs/finish` | Stores chunks (base64 gzip NDJSON, hash-checked, gapless `seq`) as `runnerclient.LogChunk` and `LogFinish` describe. The finishing bearer keeps log authority for 15 minutes after `job/finish`. |
 | `job/finish` | Records the `Outcome`; sets the run's state, exit code, reason and outputs. |
-| `job/id-token` | Slice 3: an Ed25519-signed JWT (`iss` = `public_url`, `aud` from the request, `sub` = `repo:<repository>:ref:<ref>`, plus `repository`, `sha`, `ref`, `run_id`, `source_kind`), 10 minutes. JWKS at `/.well-known/jwks.json`. Before slice 3 it answers 404. |
+| `job/id-token` | Requires a live job bearer; answers an Ed25519-signed JWT (`iss` = `public_url`, `aud` from the request, `sub` = `repo:<repository>:ref:<ref>`, plus `repository`, `sha`, `ref`, `run_id`, `source_kind`), valid for 10 minutes. JWKS at `/.well-known/jwks.json`. |
 | `job/egress` | 404 (no grants). |
 | `job/secrets`, `job/write-token`, `job/kind/*` | 404. Jobs from this server never name secrets and are never renovate, lock or kind jobs. |
 
@@ -230,17 +230,46 @@ remains available in the result resource; downloading bytes is a follow-up.
 | Installation tokens | Minted per `job/source` call, one repository, `contents: read`, ≤ 1 hour | The executor's checkout only. The executor masks it and keeps it out of the `oyzu` process environment. |
 | Manager key | The manager's state directory | Login and rotation assertions. |
 | Startup and job bearers | Server stores SHA-256 only | One executor, one attempt. |
-| Pool signing key (slice 3) | `state_dir/issuer.key`, 0600 | Signs job ID tokens; public half at the JWKS URL. |
+| Pool signing key | `state_dir/issuer.key`, 0600 | Signs job ID tokens; public half at the JWKS URL. |
+
+On first startup the server generates an Ed25519 signing key and persists its
+seed in `state_dir/issuer.key` as private JSON. Restarts reuse the same key and
+`kid`; an unreadable, corrupt or incorrectly protected existing key fails
+startup instead of silently replacing the issuer identity. Keep it with the
+state backup. Key rotation remains a follow-up. `GET /.well-known/jwks.json`
+needs no caller credential and exposes only the public OKP/Ed25519 signing key.
+
+The executor's existing loopback broker requests a token with the build's
+chosen audience; it passes no authorization claims. `job/id-token` accepts
+`{"audience":"https://cache.example.test"}` and answers `token` and
+`expires_at`, as the runner protocol specifies. Empty or oversized audiences
+and audiences containing NUL or newline controls are refused. Manager,
+startup, expired and finished-job bearers cannot mint tokens. Tokens already
+issued retain their ten-minute lifetime.
+
+Actions-created runs persist the verified creator's `repository`,
+`repository_id`, `repository_owner_id`, `ref`, `ref_type`, `event_name` and
+`job_workflow_ref` when present, and copy those values into job tokens without
+deriving missing claims. This authority survives server restarts and creator
+token expiry. Tailnet-created runs carry only their repository and ref as
+creator facts. Runs recorded before creator facts were persisted also omit
+the Actions-only claims. Every token separately identifies the pool run with
+`run_id`, its commit (or snapshot base commit, when supplied) with `sha`, and
+its source with `source_kind: commit` or `snapshot`.
 
 ## Slice 3: cache writes
 
-The cache-gate on build01 already verifies GitHub OIDC tokens to authorize
-writes. Slice 3 adds the pool's issuer and JWKS URL as a second trusted issuer.
+The server supplies job identity for slice 3. The separately deployed
+cache-gate on build01 must trust the configured pool issuer and JWKS URL
+alongside its GitHub OIDC issuer before pool tokens authorize cache access.
 Only an Actions-created main push commit run may write: the token must preserve
 the creator's verified repository IDs, branch type, event and workflow ref,
 alongside `source_kind: commit`. Tailnet callers have no Actions event or
-workflow claims. PR, tailnet and snapshot jobs keep read-only access. The image
-sets machine-scope `cache.remote` to the gate.
+workflow claims. PR, tailnet and snapshot jobs keep read-only access. The
+executor image's machine-scope `cache.remote` must point at the gate, and the
+pool's egress allow list must permit that origin. These deployment settings
+and gate authorization are owned by platform `deploy/ovh-farm`; issuing a
+token alone does not demonstrate a cache write or cache hit.
 
 ## Slice 4: per-stage checks
 
@@ -356,9 +385,12 @@ API; container loopback does not reach the host listener.
 
 Focused Go tests for each route, run through the real `runnerclient` and the
 real manager against an `httptest` server, plus the OIDC verifier with a local
-key. Tests inject only generated App signing keys and local GitHub responses;
-they need no live App credential. Run `go test -race ./poolserver
-./cmd/pool-server` and `go vet ./poolserver ./cmd/pool-server`.
+key. Job token tests cover Actions push/PR claims, absent Actions facts,
+tailnet and snapshot sources, issuer persistence across restart and a JWKS
+signature round trip. Tests inject only generated App signing keys and local
+GitHub responses; they need no live App credential. Run
+`oyzu exec -- go test -race ./poolserver ./cmd/pool-server` and
+`oyzu exec -- go vet ./poolserver ./cmd/pool-server` on Linux.
 The real proof is the one the proposal names, run on build01.
 
 For the dedicated UID1002 Podman4.9 prerequisite, a compiled

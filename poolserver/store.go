@@ -22,6 +22,7 @@ type runRecord struct {
 	BodyHash    string `json:"body_hash"`
 	Idempotency string `json:"idempotency,omitempty"`
 	JobID       int64  `json:"job_id"`
+	Creator     *creatorFacts `json:"creator,omitempty"`
 }
 type jobRecord struct {
 	Job            runnerclient.Job      `json:"job"`

@@ -40,6 +40,11 @@ type oidcClaims struct {
 	Ref        string       `json:"ref"`
 	RunID      string       `json:"run_id"`
 	RunAttempt string       `json:"run_attempt"`
+	RepositoryID string `json:"repository_id"`
+	RepositoryOwnerID string `json:"repository_owner_id"`
+	RefType string `json:"ref_type"`
+	EventName string `json:"event_name"`
+	JobWorkflowRef string `json:"job_workflow_ref"`
 }
 type oidcVerifier struct {
 	audience, jwksURL string

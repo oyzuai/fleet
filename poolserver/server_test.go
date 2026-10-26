@@ -226,7 +226,7 @@ func TestRunLifecycleRealRunnerClient(t *testing.T) {
 	if status != 404 || !bytes.Contains(b, []byte("OUTPUT_NOT_FOUND")) {
 		t.Fatalf("output %d %s", status, b)
 	}
-	for _, route := range []string{"job/id-token", "job/secrets", "job/write-token", "job/kind/start", "readiness/work"} {
+	for _, route := range []string{"job/secrets", "job/write-token", "job/kind/start", "readiness/work"} {
 		status, _, _ := f.request(t, "POST", "/runner/v1/"+route, "", nil, map[string]string{"Authorization": "Bearer " + st.JobToken})
 		if status != 404 {
 			t.Fatalf("slice-only route %s: %d", route, status)
