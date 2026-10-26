@@ -35,6 +35,16 @@ var outputDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 type buildManifest struct {
 	SchemaVersion string `json:"schemaVersion"`
 	Kind          string `json:"kind"`
+	RunID         string `json:"runId"`
+	Status        string `json:"status"`
+	Reports       []struct {
+		Target string `json:"target"`
+		Kind   string `json:"kind"`
+		Format string `json:"format"`
+		Status string `json:"status"`
+		Path   string `json:"path"`
+		Digest string `json:"digest"`
+	} `json:"reports"`
 	Artifacts     []struct {
 		Target    string `json:"target"`
 		Name      string `json:"name"`
@@ -72,12 +82,9 @@ func readOutputs(dir string) ([]runnerclient.Output, error) {
 // manifestOutputs indexes the exact producer record. A retained handoff retry
 // returns that sealed record instead of rewriting the failed invocation on disk.
 func manifestOutputs(raw []byte) ([]runnerclient.Output, error) {
-	var m buildManifest
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, fmt.Errorf("%s is not JSON: %w", ManifestPath, err)
-	}
-	if m.SchemaVersion != "v1alpha1" || m.Kind != "build-manifest" {
-		return nil, fmt.Errorf("%s is not a v1alpha1 build manifest", ManifestPath)
+	m, err := parseBuildManifest(raw)
+	if err != nil {
+		return nil, err
 	}
 	if len(m.Artifacts)+1 > MaxOutputs {
 		return nil, fmt.Errorf("%s lists %d artifacts; runs takes at most %d", ManifestPath, len(m.Artifacts), MaxOutputs-1)
@@ -97,4 +104,15 @@ func manifestOutputs(raw []byte) ([]runnerclient.Output, error) {
 			Target: a.Target, Name: a.Name, Version: a.Version, OCIDigest: a.OCIDigest})
 	}
 	return out, nil
+}
+
+func parseBuildManifest(raw []byte) (buildManifest, error) {
+	var m buildManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return m, fmt.Errorf("%s is not JSON: %w", ManifestPath, err)
+	}
+	if m.SchemaVersion != "v1alpha1" || m.Kind != "build-manifest" {
+		return m, fmt.Errorf("%s is not a v1alpha1 build manifest", ManifestPath)
+	}
+	return m, nil
 }

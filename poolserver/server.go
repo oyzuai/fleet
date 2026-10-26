@@ -21,6 +21,9 @@ type Server struct {
 	changed    chan struct{}
 	storageErr error
 	downloads  map[string]sourceDownload
+	checks     *GitHubApp
+	checksMu   sync.Mutex
+	nextChecks time.Time
 }
 
 func New(c Config, o Options) (*Server, error) {
@@ -46,6 +49,7 @@ func New(c Config, o Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{cfg: c, now: o.Now, source: source, state: d, changed: make(chan struct{}), downloads: map[string]sourceDownload{}}
+	s.checks, _ = source.(*GitHubApp)
 	s.oidc = &oidcVerifier{audience: c.PublicURL, client: o.HTTPClient, now: o.Now, jwksURL: "https://token.actions.githubusercontent.com/.well-known/jwks"}
 	if err = s.expire(); err != nil {
 		return nil, err
@@ -68,6 +72,7 @@ func (s *Server) Reap(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
+			s.retryChecks(ctx)
 		}
 	}
 }

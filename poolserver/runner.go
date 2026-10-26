@@ -350,7 +350,7 @@ func (s *Server) jobRoute(w http.ResponseWriter, r *http.Request, route, digest 
 		if !parseBodyLimit(w, r, &outcome, 8<<20) {
 			return
 		}
-		if !contains([]string{"succeeded", "failed", "cancelled", "timed_out", "skipped"}, outcome.State) || len(outcome.Plan) > 0 || len(outcome.Outputs) > 1000 {
+		if !contains([]string{"succeeded", "failed", "cancelled", "timed_out", "skipped"}, outcome.State) || len(outcome.Plan) > 0 || len(outcome.Outputs) > 1000 || !validTestFailures(outcome.TestFailures) {
 			problem(w, 400, "REQUEST_INVALID", "Invalid job outcome.")
 			return
 		}
@@ -381,12 +381,15 @@ func (s *Server) jobRoute(w http.ResponseWriter, r *http.Request, route, digest 
 		rr.Run.State = outcome.State
 		rr.Run.ExitCode = outcome.ExitCode
 		rr.Run.FinishedAt = &now
+		rr.TestFailures = outcome.TestFailures
+		finishStageChecks(rr)
 		if outcome.ReasonCode != "" {
 			rr.Run.Reason = &Reason{Code: outcome.ReasonCode, Message: outcome.Summary}
 		} else if outcome.State == "cancelled" {
 			rr.Run.Reason = &Reason{Code: "CANCELLED_BY_USER", Message: "Cancelled by the caller."}
 		}
 		if s.persist(w, d) {
+			s.publishChecksLocked(r.Context(), rr.Run.ID)
 			respond(w, 200, map[string]bool{"ok": true})
 		}
 	case "job/logs":

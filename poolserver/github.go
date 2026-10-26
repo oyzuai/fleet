@@ -23,7 +23,8 @@ import (
 )
 
 // GitHubApp keeps the signing key exclusively inside the server. Installation
-// tokens are minted afresh for one repository with contents:read only.
+// tokens are minted afresh for one repository. Source tokens have contents:read;
+// check-write tokens stay inside the server.
 type GitHubApp struct {
 	key           *rsa.PrivateKey
 	appID         int64
