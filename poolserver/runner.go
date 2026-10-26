@@ -389,7 +389,7 @@ func (s *Server) jobRoute(w http.ResponseWriter, r *http.Request, route, digest 
 			rr.Run.Reason = &Reason{Code: "CANCELLED_BY_USER", Message: "Cancelled by the caller."}
 		}
 		if s.persist(w, d) {
-			s.publishChecksLocked(r.Context(), rr.Run.ID)
+			s.enqueueChecksLocked(rr.Run.ID)
 			respond(w, 200, map[string]bool{"ok": true})
 		}
 	case "job/logs":

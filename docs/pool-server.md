@@ -228,7 +228,7 @@ remains available in the result resource; downloading bytes is a follow-up.
 | --- | --- | --- |
 | GitHub App private key | `/etc/oyzu-pool/github-app.pem`, root 0600, read by the server at start | Nothing else. Never logged. |
 | Installation tokens | Minted per `job/source` call, one repository, `contents: read`, ≤ 1 hour | The executor's checkout only. The executor masks it and keeps it out of the `oyzu` process environment. |
-| Check-write installation tokens | Minted separately for one repository, `checks: write`, ≤ 1 hour | The pool server only; never sent to an executor. |
+| Check-write installation tokens | Minted separately for one repository, `checks: write`, ≤ 1 hour; cached in server memory until five minutes before expiry | The pool server only; never sent to an executor. |
 | Manager key | The manager's state directory | Login and rotation assertions. |
 | Startup and job bearers | Server stores SHA-256 only | One executor, one attempt. |
 | Pool signing key (slice 3) | `state_dir/issuer.key`, 0600 | Signs job ID tokens; public half at the JWKS URL. |
@@ -243,8 +243,8 @@ keep read-only access. The image sets machine-scope `cache.remote` to the gate.
 
 ## Slice 4: per-stage checks
 
-For commit runs, the first log entry with a `<target>:<stage>` scope creates a
-GitHub check named `oyzu / <target> / <stage>` on the run's commit, with status
+For commit runs, the first log entry with a `<target>:<stage>` scope queues a
+GitHub check named `oyzu / <target> / <stage>` on the run's commit, initially
 `in_progress`. A structured `finished` event completes it: `success` becomes
 `success`, `failed` becomes `failure`, `skipped` and `cancelled` retain those
 conclusions, and other statuses become `neutral`. At `job/finish`, remaining
@@ -260,12 +260,20 @@ using checkout-relative paths and the reported line (line 1 when absent).
 Annotations are sent in batches of at most 50. Failures without a path appear
 in the check summary; long summaries are truncated to fit GitHub's limit.
 
+Log and outcome acceptance queues check updates without waiting for GitHub.
+A single background publisher runs with the lease reaper's lifecycle and
+coalesces queued updates per run, so a stage may already be complete when its
+check first appears. Stopping the reaper cancels and waits for the publisher.
+
 The existing App issuer mints a separate, single-repository `checks: write`
-token; this token stays in the server. Snapshot runs and repositories without
+token; this token stays in server memory and is reused until five minutes
+before expiry. A check request rejected with 401 refreshes its token and retries
+once. Snapshot runs and repositories without
 an App installation post no checks. GitHub failures are logged without
 credentials and do not change the build result. Check IDs and pending results
-are persisted per run and scope. Retried chunks reuse those IDs; after a
-restart the lease reaper retries pending delivery. A stable external ID also
+are persisted per run and scope. Retried chunks reuse those IDs; the lease
+reaper queues pending delivery every 30 seconds, including after a restart,
+without waiting for GitHub. A stable external ID also
 lets the server recover a check when GitHub accepted its creation but the
 response was lost. Annotation batches are append operations: a lost response
 can cause the affected batch to appear again on retry.

@@ -164,18 +164,20 @@ func checkTruncate(value string, limit int) string {
 	return value + "\n[truncated]"
 }
 
-// publishChecksLocked is called only after durable log/outcome acceptance.
-// GitHub writes never hold the state lock or affect the runner's response.
-func (s *Server) publishChecksLocked(ctx context.Context, runID string) {
+// enqueueChecksLocked is called with mu held after durable acceptance. Requests
+// only mark a run dirty; the Reap-owned publisher handles all GitHub I/O.
+func (s *Server) enqueueChecksLocked(runID string) {
 	if s.checks == nil {
 		return
 	}
-	s.mu.Unlock()
-	defer s.mu.Lock()
-	s.publishChecks(ctx, runID)
+	s.dirtyChecks[runID] = struct{}{}
+	select {
+	case s.checkWake <- struct{}{}:
+	default:
+	}
 }
 
-func (s *Server) retryChecks(ctx context.Context) {
+func (s *Server) retryChecks() {
 	if s.checks == nil {
 		return
 	}
@@ -185,25 +187,57 @@ func (s *Server) retryChecks(ctx context.Context) {
 		return
 	}
 	s.nextChecks = s.now().Add(30 * time.Second)
-	var ids []string
 	for id, rr := range s.state.Runs {
 		for _, c := range rr.Checks {
 			if c.Published != c.Revision {
-				ids = append(ids, id)
+				s.enqueueChecksLocked(id)
 				break
 			}
 		}
 	}
 	s.mu.Unlock()
-	sort.Strings(ids)
-	for _, id := range ids {
-		s.publishChecks(ctx, id)
+}
+
+func (s *Server) runCheckPublisher(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.checkWake:
+			s.flushChecks(ctx)
+		}
+	}
+}
+
+// flushChecks drains accepted work and serializes delivery. Tests can drain the
+// same queue deterministically without starting a lifecycle goroutine.
+func (s *Server) flushChecks(ctx context.Context) {
+	s.checksMu.Lock()
+	defer s.checksMu.Unlock()
+	for ctx.Err() == nil {
+		s.mu.Lock()
+		var ids []string
+		for id := range s.dirtyChecks {
+			ids = append(ids, id)
+		}
+		s.mu.Unlock()
+		if len(ids) == 0 {
+			return
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			if ctx.Err() != nil {
+				return
+			}
+			s.mu.Lock()
+			delete(s.dirtyChecks, id)
+			s.mu.Unlock()
+			s.publishChecks(ctx, id)
+		}
 	}
 }
 
 func (s *Server) publishChecks(ctx context.Context, runID string) {
-	s.checksMu.Lock()
-	defer s.checksMu.Unlock()
 	s.mu.Lock()
 	rr := s.state.clone().Runs[runID]
 	s.mu.Unlock()
@@ -222,24 +256,19 @@ func (s *Server) publishChecks(ctx context.Context, runID string) {
 	sort.Strings(scopes)
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	token, err := s.checks.checkToken(ctx, rr.Run.Repository.Name)
-	if err != nil {
-		log.Printf("pool checks: run %s: GitHub check credential unavailable", runID)
-		return
-	}
 	for _, scope := range scopes {
 		c := rr.Checks[scope]
-		if err := s.publishStageCheck(ctx, token, rr, scope, c); err != nil {
+		if err := s.publishStageCheck(ctx, rr, scope, c); err != nil {
 			// Deliberately omit response bodies, URLs, errors and tokens.
 			log.Printf("pool checks: run %s scope %s: GitHub check delivery incomplete", runID, scope)
 		}
 	}
 }
 
-func (s *Server) publishStageCheck(ctx context.Context, token string, rr *runRecord, scope string, c *stageCheck) error {
+func (s *Server) publishStageCheck(ctx context.Context, rr *runRecord, scope string, c *stageCheck) error {
 	out, annotations := checkText(rr, scope, c)
 	if c.ID == 0 {
-		id, err := s.checks.ensureCheck(ctx, token, rr, scope, out.Title)
+		id, err := s.checks.ensureCheck(ctx, rr, scope, out.Title)
 		if err != nil {
 			return err
 		}
@@ -259,7 +288,7 @@ func (s *Server) publishStageCheck(ctx context.Context, token string, rr *runRec
 			body["status"] = "completed"
 			body["conclusion"] = c.Conclusion
 		}
-		_, err := s.checks.request(ctx, "PATCH", fmt.Sprintf("/repos/%s/check-runs/%d", rr.Run.Repository.Name, c.ID), token, body, nil)
+		err := s.checks.checkRequest(ctx, rr.Run.Repository.Name, "PATCH", fmt.Sprintf("/repos/%s/check-runs/%d", rr.Run.Repository.Name, c.ID), body, nil)
 		if err != nil {
 			return err
 		}
@@ -280,7 +309,11 @@ func (s *Server) recordCheckDelivery(runID, scope string, delivered *stageCheck)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d := s.state.clone()
-	c := d.Runs[runID].Checks[scope]
+	rr := d.Runs[runID]
+	if rr == nil || rr.Checks[scope] == nil {
+		return nil
+	}
+	c := rr.Checks[scope]
 	c.ID = delivered.ID
 	c.AnnotationsSent = delivered.AnnotationsSent
 	c.Published = delivered.Published

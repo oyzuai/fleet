@@ -12,18 +12,20 @@ import (
 )
 
 type Server struct {
-	cfg        Config
-	now        func() time.Time
-	source     SourceProvider
-	oidc       *oidcVerifier
-	mu         sync.Mutex
-	state      diskState
-	changed    chan struct{}
-	storageErr error
-	downloads  map[string]sourceDownload
-	checks     *GitHubApp
-	checksMu   sync.Mutex
-	nextChecks time.Time
+	cfg         Config
+	now         func() time.Time
+	source      SourceProvider
+	oidc        *oidcVerifier
+	mu          sync.Mutex
+	state       diskState
+	changed     chan struct{}
+	storageErr  error
+	downloads   map[string]sourceDownload
+	checks      *GitHubApp
+	checksMu    sync.Mutex
+	nextChecks  time.Time
+	dirtyChecks map[string]struct{}
+	checkWake   chan struct{}
 }
 
 func New(c Config, o Options) (*Server, error) {
@@ -50,6 +52,8 @@ func New(c Config, o Options) (*Server, error) {
 	}
 	s := &Server{cfg: c, now: o.Now, source: source, state: d, changed: make(chan struct{}), downloads: map[string]sourceDownload{}}
 	s.checks, _ = source.(*GitHubApp)
+	s.dirtyChecks = map[string]struct{}{}
+	s.checkWake = make(chan struct{}, 1)
 	s.oidc = &oidcVerifier{audience: c.PublicURL, client: o.HTTPClient, now: o.Now, jwksURL: "https://token.actions.githubusercontent.com/.well-known/jwks"}
 	if err = s.expire(); err != nil {
 		return nil, err
@@ -59,6 +63,17 @@ func New(c Config, o Options) (*Server, error) {
 
 // Reap expires leases even when no requests arrive. The caller owns its context.
 func (s *Server) Reap(ctx context.Context) error {
+	publishCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	s.retryChecks()
+	go func() {
+		defer close(done)
+		s.runCheckPublisher(publishCtx)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
 	for {
@@ -72,7 +87,7 @@ func (s *Server) Reap(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			s.retryChecks(ctx)
+			s.retryChecks()
 		}
 	}
 }

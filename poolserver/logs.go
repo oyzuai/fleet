@@ -36,7 +36,7 @@ func (s *Server) uploadLogs(w http.ResponseWriter, r *http.Request, d diskState,
 	}
 	if in.Seq <= int64(len(j.Logs.Chunks)) {
 		if j.Logs.Chunks[in.Seq-1] == in.Hash {
-			s.publishChecksLocked(r.Context(), jobRunID(d, j))
+			s.enqueueChecksLocked(jobRunID(d, j))
 			respond(w, 200, runnerclient.LogAck{NextSeq: int64(len(j.Logs.Chunks) + 1), State: j.Logs.State})
 		} else {
 			logConflict(w, j)
@@ -108,7 +108,7 @@ func (s *Server) uploadLogs(w http.ResponseWriter, r *http.Request, d diskState,
 	runID := jobRunID(d, j)
 	observeStageLogs(d.Runs[runID], entries)
 	if s.persist(w, d) {
-		s.publishChecksLocked(r.Context(), runID)
+		s.enqueueChecksLocked(runID)
 		respond(w, 200, runnerclient.LogAck{NextSeq: int64(len(j.Logs.Chunks) + 1), State: j.Logs.State})
 	}
 }

@@ -4,16 +4,28 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
 )
+
+type checkCredential struct {
+	token   string
+	expires time.Time
+}
 
 // checkToken uses the existing App issuer but never the source-token path.
 // Its single-repository, checks-only token stays within the server.
 func (a *GitHubApp) checkToken(ctx context.Context, repo string) (string, error) {
 	if !repositoryRE.MatchString(repo) {
 		return "", errors.New("invalid repository")
+	}
+	a.mu.Lock()
+	cached := a.checkTokens[repo]
+	a.mu.Unlock()
+	if cached.token != "" && a.now().Before(cached.expires.Add(-5*time.Minute)) {
+		return cached.token, nil
 	}
 	jwt, err := a.jwt()
 	if err != nil {
@@ -60,10 +72,37 @@ func (a *GitHubApp) checkToken(ctx context.Context, repo string) (string, error)
 			return "", errors.New("check credential has excess permissions")
 		}
 	}
+	a.mu.Lock()
+	a.checkTokens[repo] = checkCredential{token: out.Token, expires: out.Expires}
+	a.mu.Unlock()
 	return out.Token, nil
 }
 
-func (a *GitHubApp) ensureCheck(ctx context.Context, token string, rr *runRecord, scope, name string) (int64, error) {
+// checkRequest refreshes rejected credentials once. Check identity recovery and
+// annotation progress remain with the normal delivery path.
+func (a *GitHubApp) checkRequest(ctx context.Context, repo, method, path string, body, out any) error {
+	for attempt := 0; attempt < 2; attempt++ {
+		token, err := a.checkToken(ctx, repo)
+		if err != nil {
+			return err
+		}
+		status, err := a.request(ctx, method, path, token, body, out)
+		if status != http.StatusUnauthorized {
+			return err
+		}
+		a.mu.Lock()
+		if a.checkTokens[repo].token == token {
+			delete(a.checkTokens, repo)
+		}
+		a.mu.Unlock()
+		if attempt == 1 {
+			return err
+		}
+	}
+	return errors.New("check credential unavailable")
+}
+
+func (a *GitHubApp) ensureCheck(ctx context.Context, rr *runRecord, scope, name string) (int64, error) {
 	externalID := "oyzu:" + rr.Run.ID + ":" + hash([]byte(scope))
 	// A create response may be lost after GitHub accepted it, before the ID
 	// was persisted. Recover that check by its stable external ID on retry.
@@ -75,7 +114,7 @@ func (a *GitHubApp) ensureCheck(ctx context.Context, token string, rr *runRecord
 			} `json:"check_runs"`
 		}
 		path := fmt.Sprintf("/repos/%s/commits/%s/check-runs?check_name=%s&filter=all&per_page=100&page=%d", rr.Run.Repository.Name, rr.Run.Commit, url.QueryEscape(name), page)
-		if _, err := a.request(ctx, "GET", path, token, nil, &out); err != nil {
+		if err := a.checkRequest(ctx, rr.Run.Repository.Name, "GET", path, nil, &out); err != nil {
 			return 0, err
 		}
 		for _, check := range out.Checks {
@@ -91,7 +130,7 @@ func (a *GitHubApp) ensureCheck(ctx context.Context, token string, rr *runRecord
 		ID int64 `json:"id"`
 	}
 	body := map[string]any{"name": name, "head_sha": rr.Run.Commit, "external_id": externalID, "status": "in_progress"}
-	if _, err := a.request(ctx, "POST", "/repos/"+rr.Run.Repository.Name+"/check-runs", token, body, &out); err != nil {
+	if err := a.checkRequest(ctx, rr.Run.Repository.Name, "POST", "/repos/"+rr.Run.Repository.Name+"/check-runs", body, &out); err != nil {
 		return 0, err
 	}
 	if out.ID <= 0 {

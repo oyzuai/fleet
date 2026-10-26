@@ -31,18 +31,23 @@ type fakeStageCheck struct {
 }
 
 type fakeChecksAPI struct {
-	mu         sync.Mutex
-	checks     map[int64]*fakeStageCheck
-	calls      int
-	creates    int
-	patches    int
-	missing    bool
-	fail       bool
-	lostCreate bool
-	failPatch  int
-	excess     bool
-	wrongRepo  bool
-	expired    bool
+	mu                 sync.Mutex
+	checks             map[int64]*fakeStageCheck
+	calls              int
+	creates            int
+	patches            int
+	missing            bool
+	fail               bool
+	lostCreate         bool
+	failPatch          int
+	excess             bool
+	wrongRepo          bool
+	expired            bool
+	tokenMints         int
+	unauthorized       int
+	unauthorizedMethod string
+	blocked            <-chan struct{}
+	entered            chan struct{}
 }
 
 func attachChecksAPI(t *testing.T, f *fixture) *fakeChecksAPI {
@@ -50,8 +55,27 @@ func attachChecksAPI(t *testing.T, f *fixture) *fakeChecksAPI {
 	fake := &fakeChecksAPI{checks: map[int64]*fakeStageCheck{}}
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fake.mu.Lock()
+		blocked, entered := fake.blocked, fake.entered
+		fake.mu.Unlock()
+		if blocked != nil {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			select {
+			case <-blocked:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		fake.mu.Lock()
 		defer fake.mu.Unlock()
 		fake.calls++
+		if strings.Contains(r.URL.Path, "check-runs") && r.Method == fake.unauthorizedMethod && fake.unauthorized > 0 {
+			fake.unauthorized--
+			w.WriteHeader(401)
+			return
+		}
 		if fake.fail {
 			w.WriteHeader(503)
 			return
@@ -64,6 +88,7 @@ func attachChecksAPI(t *testing.T, f *fixture) *fakeChecksAPI {
 			}
 			respond(w, 200, map[string]int{"id": 42})
 		case r.Method == "POST" && r.URL.Path == "/app/installations/42/access_tokens":
+			fake.tokenMints++
 			var in struct {
 				Repositories []string          `json:"repositories"`
 				Permissions  map[string]string `json:"permissions"`
@@ -201,6 +226,7 @@ func uploadStageChunk(t *testing.T, f *fixture, token string, chunk runnerclient
 	if _, err := f.c.UploadLogs(context.Background(), token, chunk); err != nil {
 		t.Fatal(err)
 	}
+	f.s.flushChecks(context.Background())
 }
 
 func TestStageChecksStartFinishAndChunkRetry(t *testing.T) {
@@ -273,6 +299,7 @@ func TestStageCheckAnnotationsBatchAndPathlessSummary(t *testing.T) {
 	if err := f.c.Finish(context.Background(), st.JobToken, runnerclient.Outcome{State: "failed", TestFailures: failures}); err != nil {
 		t.Fatal(err)
 	}
+	f.s.flushChecks(context.Background())
 	checks, _, _, _ := api.snapshot()
 	c := checks["oyzu / cli / test"]
 	if fmt.Sprint(c.Batches) != "[50 50 21]" || len(c.Output.Annotations) != 121 || !strings.Contains(c.Output.Summary, "pathless failure") || strings.Contains(c.Output.Summary, "must not leak") {
@@ -296,6 +323,7 @@ func TestStageChecksFinishOpenScopesAndLateLogs(t *testing.T) {
 			if err := f.c.Finish(context.Background(), st.JobToken, runnerclient.Outcome{State: state}); err != nil {
 				t.Fatal(err)
 			}
+			f.s.flushChecks(context.Background())
 			checks, _, _, _ := api.snapshot()
 			c := checks["oyzu / cli / test"]
 			want := "failure"
@@ -334,7 +362,8 @@ func TestStageChecksSurviveRestartAndAmbiguousCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 	reopened.checks = f.s.checks
-	reopened.retryChecks(context.Background())
+	reopened.retryChecks()
+	reopened.flushChecks(context.Background())
 	checks, _, creates, _ := api.snapshot()
 	if creates != 1 || checks["oyzu / cli / test"].Conclusion != "success" {
 		t.Fatalf("restart duplicated or lost check: %#v", checks)
@@ -349,7 +378,8 @@ func TestStageChecksSurviveRestartAndAmbiguousCreate(t *testing.T) {
 	}
 	again.checks = f.s.checks
 	_, calls, _, _ := api.snapshot()
-	again.retryChecks(context.Background())
+	again.retryChecks()
+	again.flushChecks(context.Background())
 	_, after, _, _ := api.snapshot()
 	if calls != after {
 		t.Fatalf("published state was redelivered after restart: %d -> %d", calls, after)
@@ -392,7 +422,8 @@ func TestStageChecksLeaseExpiryClosesOpenScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.s.retryChecks(context.Background())
+	f.s.retryChecks()
+	f.s.flushChecks(context.Background())
 	checks, _, _, _ := api.snapshot()
 	c := checks["oyzu / cli / test"]
 	if c.Conclusion != "failure" || c.Output.Summary != "stage did not report a result" {
@@ -416,12 +447,14 @@ func TestStageCheckPartialAnnotationRetry(t *testing.T) {
 	if err := f.c.Finish(context.Background(), st.JobToken, runnerclient.Outcome{State: "failed", TestFailures: failures}); err != nil {
 		t.Fatal(err)
 	}
+	f.s.flushChecks(context.Background())
 	reopened, err := New(f.cfg, Options{Source: testSource{exists: true}, Now: f.s.now})
 	if err != nil {
 		t.Fatal(err)
 	}
 	reopened.checks = f.s.checks
-	reopened.retryChecks(context.Background())
+	reopened.retryChecks()
+	reopened.flushChecks(context.Background())
 	checks, _, creates, _ := api.snapshot()
 	c := checks["oyzu / cli / test"]
 	if creates != 1 || fmt.Sprint(c.Batches) != "[50 50 1]" || len(c.Output.Annotations) != 101 || c.Output.Annotations[0].StartLine != 1 {
@@ -461,6 +494,7 @@ func TestStageChecksSkipSnapshotsAndUnavailableInstallation(t *testing.T) {
 			if err := f.c.Finish(context.Background(), st.JobToken, runnerclient.Outcome{State: "succeeded"}); err != nil {
 				t.Fatal(err)
 			}
+			f.s.flushChecks(context.Background())
 			_, calls, creates, _ := api.snapshot()
 			if creates != 0 || (snapshot && calls != 0) {
 				t.Fatalf("checks posted for excluded source: calls %d creates %d", calls, creates)
@@ -483,6 +517,7 @@ func TestGitHubCheckErrorsDoNotFailRunnerRequests(t *testing.T) {
 	if err := f.c.Finish(context.Background(), st.JobToken, runnerclient.Outcome{State: "succeeded"}); err != nil {
 		t.Fatal(err)
 	}
+	f.s.flushChecks(context.Background())
 	status, b, _ := f.request(t, "GET", run.Links.Self, "micah@example.com", nil, nil)
 	if status != 200 || !bytes.Contains(b, []byte(`"state":"succeeded"`)) || bytes.Contains(b, []byte("private-check-token")) {
 		t.Fatalf("GitHub error changed run or leaked credential: %d %s", status, b)
@@ -490,7 +525,8 @@ func TestGitHubCheckErrorsDoNotFailRunnerRequests(t *testing.T) {
 	api.mu.Lock()
 	api.fail = false
 	api.mu.Unlock()
-	f.s.retryChecks(context.Background())
+	f.s.retryChecks()
+	f.s.flushChecks(context.Background())
 	checks, _, creates, _ := api.snapshot()
 	if creates != 1 || checks["oyzu / cli / test"].Conclusion != "success" {
 		t.Fatalf("GitHub recovery lost result: %#v", checks)
@@ -537,5 +573,190 @@ func TestStageCheckFailureBoundsAndSummaryLimit(t *testing.T) {
 	out, annotations := checkText(rr, "cli:test", &stageCheck{Conclusion: "failure"})
 	if len(out.Summary) > 60<<10 || !strings.HasSuffix(out.Summary, "[truncated]") || len(annotations) != 0 {
 		t.Fatal("pathless summary was not bounded")
+	}
+}
+
+func startCheckReaper(t *testing.T, s *Server) (context.CancelFunc, <-chan struct{}) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := s.Reap(ctx); err != context.Canceled {
+			t.Errorf("Reap returned %v", err)
+		}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("check publisher did not stop with Reap")
+		}
+	})
+	return cancel, done
+}
+
+func TestStageChecksBlockedGitHubDoesNotDelayRunnerRequests(t *testing.T) {
+	f := newFixture(t)
+	api := attachChecksAPI(t, f)
+	f.create(t)
+	st := f.start(t, f.login(t).access)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseGitHub := func() { releaseOnce.Do(func() { close(release) }) }
+	entered := make(chan struct{}, 1)
+	api.mu.Lock()
+	api.blocked, api.entered = release, entered
+	api.mu.Unlock()
+	startCheckReaper(t, f.s)
+	// Release before waiting for reaper cleanup, including on assertion failure.
+	t.Cleanup(releaseGitHub)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	chunk := stageChunk(t, 1, 1, runnerclient.LogEntry{Scope: "cli:test"})
+	if _, err := f.c.UploadLogs(ctx, st.JobToken, chunk); err != nil {
+		t.Fatalf("initial log upload waited for GitHub: %v", err)
+	}
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("publisher did not reach GitHub")
+	}
+	if _, err := f.c.UploadLogs(ctx, st.JobToken, chunk); err != nil {
+		t.Fatalf("duplicate log upload waited for GitHub: %v", err)
+	}
+	end := stageChunk(t, 2, 2, runnerclient.LogEntry{Scope: "cli:test", Event: &runnerclient.LogEvent{Kind: "finished", Status: "success"}})
+	if _, err := f.c.UploadLogs(ctx, st.JobToken, end); err != nil {
+		t.Fatalf("new log upload waited for GitHub: %v", err)
+	}
+	if err := f.c.Finish(ctx, st.JobToken, runnerclient.Outcome{State: "succeeded"}); err != nil {
+		t.Fatalf("job finish waited for GitHub: %v", err)
+	}
+	// The safety-net scan also only enqueues, even while the publisher is stuck.
+	f.now.Add(30)
+	f.s.retryChecks()
+	releaseGitHub()
+	f.s.flushChecks(context.Background())
+	checks, _, creates, _ := api.snapshot()
+	if creates != 1 || checks["oyzu / cli / test"].Conclusion != "success" {
+		t.Fatalf("queued checks did not publish after GitHub resumed: %#v", checks)
+	}
+}
+
+func TestStageChecksReapCancellationStopsBlockedPublisher(t *testing.T) {
+	f := newFixture(t)
+	api := attachChecksAPI(t, f)
+	f.create(t)
+	st := f.start(t, f.login(t).access)
+	entered := make(chan struct{}, 1)
+	api.mu.Lock()
+	api.blocked, api.entered = make(chan struct{}), entered
+	api.mu.Unlock()
+	cancel, done := startCheckReaper(t, f.s)
+	if _, err := f.c.UploadLogs(context.Background(), st.JobToken, stageChunk(t, 1, 1, runnerclient.LogEntry{Scope: "cli:test"})); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("publisher did not reach GitHub")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Reap did not cancel and join the blocked publisher")
+	}
+}
+
+func TestStageChecksQueueCoalescesAndReusesToken(t *testing.T) {
+	f := newFixture(t)
+	api := attachChecksAPI(t, f)
+	f.create(t)
+	st := f.start(t, f.login(t).access)
+	for i := int64(1); i <= 4; i++ {
+		chunk := stageChunk(t, i, i, runnerclient.LogEntry{Scope: "cli:test"})
+		if _, err := f.c.UploadLogs(context.Background(), st.JobToken, chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.s.mu.Lock()
+	dirty := len(f.s.dirtyChecks)
+	f.s.mu.Unlock()
+	_, calls, _, _ := api.snapshot()
+	if dirty != 1 || calls != 0 {
+		t.Fatalf("queued chunks: dirty runs %d, GitHub calls %d", dirty, calls)
+	}
+	f.s.flushChecks(context.Background())
+	_, _, creates, patches := api.snapshot()
+	if creates != 1 || patches != 1 {
+		t.Fatalf("coalesced chunks: creates %d patches %d", creates, patches)
+	}
+	for i := int64(5); i <= 7; i++ {
+		uploadStageChunk(t, f, st.JobToken, stageChunk(t, i, i, runnerclient.LogEntry{Scope: "cli:test", Event: &runnerclient.LogEvent{Kind: "finished", Status: "success"}}))
+	}
+	api.mu.Lock()
+	mints := api.tokenMints
+	api.mu.Unlock()
+	if mints != 1 {
+		t.Fatalf("several log chunks minted %d check credentials", mints)
+	}
+}
+
+func TestStageCheckTokenRefreshesBeforeExpiry(t *testing.T) {
+	f := newFixture(t)
+	api := attachChecksAPI(t, f)
+	for _, advance := range []int64{0, 55*60 - 1, 1, 60 * 60} {
+		f.now.Add(advance)
+		if _, err := f.s.checks.checkToken(context.Background(), "oyzuai/fleet"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	api.mu.Lock()
+	mints := api.tokenMints
+	api.mu.Unlock()
+	if mints != 3 {
+		t.Fatalf("expected initial, pre-expiry and expired refresh; got %d", mints)
+	}
+}
+
+func TestStageCheckUnauthorizedRefreshIsBounded(t *testing.T) {
+	for _, method := range []string{"GET", "POST", "PATCH"} {
+		for _, rejections := range []int{1, 3} {
+			t.Run(fmt.Sprintf("%s/%d", method, rejections), func(t *testing.T) {
+				f := newFixture(t)
+				api := attachChecksAPI(t, f)
+				f.create(t)
+				st := f.start(t, f.login(t).access)
+				api.mu.Lock()
+				api.unauthorizedMethod, api.unauthorized = method, rejections
+				api.mu.Unlock()
+				uploadStageChunk(t, f, st.JobToken, stageChunk(t, 1, 1, runnerclient.LogEntry{Scope: "cli:test", Event: &runnerclient.LogEvent{Kind: "finished", Status: "success"}}))
+				checks, _, _, _ := api.snapshot()
+				api.mu.Lock()
+				mints, remaining := api.tokenMints, api.unauthorized
+				api.mu.Unlock()
+				if mints != 2 || remaining != max(0, rejections-2) {
+					t.Fatalf("401 retry unbounded: mints %d remaining rejections %d", mints, remaining)
+				}
+				if rejections == 1 && checks["oyzu / cli / test"].Conclusion != "success" {
+					t.Fatalf("refresh did not recover check delivery: %#v", checks)
+				}
+				if rejections > 1 && checks["oyzu / cli / test"].Conclusion != "" {
+					t.Fatalf("repeated 401 unexpectedly completed: %#v", checks)
+				}
+			})
+		}
+	}
+}
+
+func TestRecordCheckDeliveryIgnoresRemovedRunOrScope(t *testing.T) {
+	f := newFixture(t)
+	run := f.create(t)
+	for _, id := range []string{run.ID, "removed-run"} {
+		if err := f.s.recordCheckDelivery(id, "removed:scope", &stageCheck{ID: 42}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
