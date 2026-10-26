@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -110,12 +112,41 @@ func TestSnapshotDownloadDecodesVerifiedArchive(t *testing.T) {
 	h := sha256.Sum256(compressed)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(compressed) }))
 	defer srv.Close()
-	root := t.TempDir()
-	cfg := Config{Client: runnerclient.New(srv.URL, srv.Client()), WorkDir: root}
-	if err = restoreSnapshot(context.Background(), cfg, runnerclient.Source{Kind: "snapshot", URL: srv.URL, Digest: "sha256:" + hex.EncodeToString(h[:])}); err != nil {
-		t.Fatal(err)
-	}
-	if b, err := os.ReadFile(filepath.Join(root, "changed")); err != nil || string(b) != "xxxx" {
-		t.Fatalf("%q %v", b, err)
+	for _, name := range []string{"ordinary", "read-only-parent"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			workDir := root
+			if name == "read-only-parent" {
+				if runtime.GOOS != "linux" {
+					t.Skip("Linux executor filesystem contract")
+				}
+				// /proc/self/fd is immutable even for a root test process,
+				// unlike a chmod-only fixture. Its directory descriptor names
+				// the writable work directory without permitting sibling files.
+				dir, err := os.Open(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer dir.Close()
+				workDir = "/proc/self/fd/" + strconv.FormatUint(uint64(dir.Fd()), 10)
+				probe, err := os.CreateTemp(filepath.Dir(workDir), ".source-probe-*")
+				if err == nil {
+					probe.Close()
+					os.Remove(probe.Name())
+					t.Fatal("fixture parent unexpectedly permits staging")
+				}
+			}
+			cfg := Config{Client: runnerclient.New(srv.URL, srv.Client()), WorkDir: workDir}
+			if err := restoreSnapshot(context.Background(), cfg, runnerclient.Source{Kind: "snapshot", URL: srv.URL, Digest: "sha256:" + hex.EncodeToString(h[:])}); err != nil {
+				t.Fatal(err)
+			}
+			if b, err := os.ReadFile(filepath.Join(root, "changed")); err != nil || string(b) != "xxxx" {
+				t.Fatalf("%q %v", b, err)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil || len(entries) != 1 || entries[0].Name() != "changed" {
+				t.Fatalf("archive staging survived restoration: %v %v", entries, err)
+			}
+		})
 	}
 }

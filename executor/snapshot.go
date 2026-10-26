@@ -45,11 +45,16 @@ func restoreSnapshot(ctx context.Context, cfg Config, source runnerclient.Source
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("snapshot download answered HTTP %d", resp.StatusCode)
 	}
-	f, err := os.CreateTemp(filepath.Dir(cfg.WorkDir), ".source-*.tar.zst")
+	f, err := os.CreateTemp(cfg.WorkDir, ".source-*.tar.zst")
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
+	archivePath := f.Name()
+	defer func() {
+		if archivePath != "" {
+			_ = os.Remove(archivePath)
+		}
+	}()
 	defer f.Close()
 	h := sha256.New()
 	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, maxSourceArchive+1))
@@ -65,6 +70,13 @@ func restoreSnapshot(ctx context.Context, cfg Config, source runnerclient.Source
 	if _, err = f.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
+	// Only WorkDir is writable in the executor contract. Unlink the verified
+	// archive while retaining its open descriptor for zstd, so extraction still
+	// requires an empty directory and no staging bytes reach the build.
+	if err = os.Remove(archivePath); err != nil {
+		return err
+	}
+	archivePath = ""
 	cmd := exec.CommandContext(ctx, "zstd", "-d", "--stdout")
 	cmd.Stdin = f
 	stdout, err := cmd.StdoutPipe()
