@@ -51,9 +51,9 @@ func New(c Config, o Options) (*Server, error) {
 	if err = s.expire(); err != nil {
 		return nil, err
 	}
-	if err = s.sweepSources(); err != nil {
-		return nil, err
-	}
+	// Cleanup failures are logged by the sweep and retried hourly; they never
+	// stop the pool from starting or serving builds.
+	_ = s.sweepSources()
 	return s, nil
 }
 
@@ -68,9 +68,7 @@ func (s *Server) Reap(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-sweep.C:
-			if err := s.sweepSources(); err != nil {
-				return err
-			}
+			_ = s.sweepSources()
 		case <-t.C:
 			s.mu.Lock()
 			err := s.expire()
