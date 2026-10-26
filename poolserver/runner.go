@@ -22,7 +22,7 @@ func (s *Server) runner(w http.ResponseWriter, r *http.Request) {
 	}
 	route := strings.TrimPrefix(r.URL.Path, "/runner/v1/")
 	switch route {
-	case "job/id-token", "job/egress", "job/secrets", "job/write-token":
+	case "job/egress", "job/secrets", "job/write-token":
 		problem(w, 404, "REQUEST_INVALID", "Route not implemented by this pool.")
 		return
 	}
@@ -317,6 +317,8 @@ func (s *Server) jobRoute(w http.ResponseWriter, r *http.Request, route, digest 
 		return
 	}
 	switch route {
+	case "job/id-token":
+		s.issueJobToken(w, r, rr)
 	case "job/heartbeat":
 		j.Lease = now.Add(2 * time.Minute)
 		if s.persist(w, d) {

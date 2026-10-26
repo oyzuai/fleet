@@ -472,7 +472,7 @@ func TestStageChecksSkipSnapshotsAndUnavailableInstallation(t *testing.T) {
 			f := newFixture(t)
 			api := attachChecksAPI(t, f)
 			if snapshot {
-				data := []byte("snapshot fixture")
+				data, _ := sourceTestManifest(t, f, "snapshot fixture")
 				digest := "sha256:" + hash(data)
 				if status := uploadSource(t, f, digest, data); status != 201 {
 					t.Fatalf("upload snapshot: %d", status)

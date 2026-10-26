@@ -58,7 +58,7 @@ func readTestFailures(directory string, previous, current []byte, mask func(stri
 			continue
 		}
 		scope := report.Target + ":test"
-		if report.Target == "" || len(scope) > 512 || !sourceRelative(report.Path) || !outputDigest.MatchString(report.Digest) {
+		if report.Target == "" || len(scope) > 512 || !junitRelative(report.Path) || !outputDigest.MatchString(report.Digest) {
 			problems = append(problems, errors.New("a JUnit report has an invalid target, path or digest"))
 			continue
 		}
@@ -235,7 +235,7 @@ func inheritJUnitLocation(location, parent junitLocation) junitLocation {
 
 func junitSource(location junitLocation) (string, int) {
 	source := firstString(location.File, location.Path)
-	if !sourceRelative(source) || len(source) > maxTestText || strings.IndexFunc(source, func(r rune) bool { return r < ' ' || r == '\x7f' }) >= 0 {
+	if !junitRelative(source) || len(source) > maxTestText || strings.IndexFunc(source, func(r rune) bool { return r < ' ' || r == '\x7f' }) >= 0 {
 		return "", 0
 	}
 	line, err := strconv.Atoi(location.Line)
@@ -243,6 +243,20 @@ func junitSource(location junitLocation) (string, int) {
 		line = 0
 	}
 	return source, line
+}
+
+// junitRelative keeps report paths and source coordinates portable and relative
+// to the checkout without depending on the snapshot transport implementation.
+func junitRelative(name string) bool {
+	if name == "" || path.IsAbs(name) || strings.ContainsAny(name, "\\:\x00") || path.Clean(name) != name {
+		return false
+	}
+	for _, part := range strings.Split(name, "/") {
+		if part == ".git" || part == ".." || part == "." || part == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func boundedTestText(text string) string {

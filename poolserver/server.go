@@ -16,7 +16,9 @@ type Server struct {
 	now         func() time.Time
 	source      SourceProvider
 	oidc        *oidcVerifier
+	issuer      *jobIssuer
 	mu          sync.Mutex
+	sourceMu    sync.RWMutex
 	state       diskState
 	changed     chan struct{}
 	storageErr  error
@@ -50,14 +52,22 @@ func New(c Config, o Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	issuer, err := loadJobIssuer(c.StateDir)
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{cfg: c, now: o.Now, source: source, state: d, changed: make(chan struct{}), downloads: map[string]sourceDownload{}}
 	s.checks, _ = source.(*GitHubApp)
 	s.dirtyChecks = map[string]struct{}{}
 	s.checkWake = make(chan struct{}, 1)
+	s.issuer = issuer
 	s.oidc = &oidcVerifier{audience: c.PublicURL, client: o.HTTPClient, now: o.Now, jwksURL: "https://token.actions.githubusercontent.com/.well-known/jwks"}
 	if err = s.expire(); err != nil {
 		return nil, err
 	}
+	// Cleanup failures are logged by the sweep and retried hourly; they never
+	// stop the pool from starting or serving builds.
+	_ = s.sweepSources()
 	return s, nil
 }
 
@@ -76,10 +86,14 @@ func (s *Server) Reap(ctx context.Context) error {
 	}()
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
+	sweep := time.NewTicker(time.Hour)
+	defer sweep.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-sweep.C:
+			_ = s.sweepSources()
 		case <-t.C:
 			s.mu.Lock()
 			err := s.expire()
@@ -94,6 +108,10 @@ func (s *Server) Reap(ctx context.Context) error {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Request-Id", randomToken()[:24])
 	w.Header().Set("Cache-Control", "no-store")
+	if r.URL.Path == "/.well-known/jwks.json" && r.Method == http.MethodGet {
+		respond(w, http.StatusOK, s.issuer.jwks())
+		return
+	}
 	if r.URL.Path == "/healthz" && r.Method == "GET" {
 		s.mu.Lock()
 		err := s.storageErr
