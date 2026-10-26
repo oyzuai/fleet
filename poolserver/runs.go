@@ -390,7 +390,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, c caller) {
 	}
 	if !exists {
 		if in.Source != nil {
-			problem(w, 422, "SOURCE_UNAVAILABLE", "Upload the source archive before starting a run.")
+			problem(w, 422, "SOURCE_UNAVAILABLE", "Upload the source manifest before starting a run.")
 			return
 		}
 		problem(w, 422, "COMMIT_NOT_FOUND", "The commit must be pushed before starting a run.")
@@ -405,11 +405,22 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, c caller) {
 	if s.idempotent(w, c.ID, key, bodyHash) {
 		return
 	}
+	// The sweep may have removed an unreferenced source during the filesystem
+	// check above. Recheck metadata at the same commit point that queues its job.
+	if in.Source != nil && !s.state.Meta.SourceOwners[in.Source.Digest][s.cfg.Account+"\x00"+c.ID] {
+		problem(w, 422, "SOURCE_UNAVAILABLE", "Upload the source manifest before starting a run.")
+		return
+	}
 	d := s.state.clone()
 	d.Meta.NextID++
 	id := d.Meta.NextID
 	rid := randomToken()[:32]
 	now := s.now()
+	if in.Source != nil {
+		record := d.Meta.Sources[in.Source.Digest]
+		record.LastUsed = now
+		d.Meta.Sources[in.Source.Digest] = record
+	}
 	self := "/api/v1alpha1/accounts/" + s.cfg.Account + "/runs/" + rid
 	if in.Source != nil {
 		in.Commit = in.Source.BaseCommit

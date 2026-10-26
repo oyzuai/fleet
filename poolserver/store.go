@@ -62,6 +62,7 @@ type metadata struct {
 	Access          map[string]accessRecord    `json:"access"`
 	Assertions      map[string]time.Time       `json:"assertions"`
 	SourceOwners    map[string]map[string]bool `json:"source_owners,omitempty"`
+	Sources         map[string]sourceRecord    `json:"sources,omitempty"`
 }
 type diskState struct {
 	Meta metadata              `json:"meta"`

@@ -17,6 +17,7 @@ type Server struct {
 	source     SourceProvider
 	oidc       *oidcVerifier
 	mu         sync.Mutex
+	sourceMu   sync.RWMutex
 	state      diskState
 	changed    chan struct{}
 	storageErr error
@@ -50,6 +51,9 @@ func New(c Config, o Options) (*Server, error) {
 	if err = s.expire(); err != nil {
 		return nil, err
 	}
+	if err = s.sweepSources(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -57,10 +61,16 @@ func New(c Config, o Options) (*Server, error) {
 func (s *Server) Reap(ctx context.Context) error {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
+	sweep := time.NewTicker(time.Hour)
+	defer sweep.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-sweep.C:
+			if err := s.sweepSources(); err != nil {
+				return err
+			}
 		case <-t.C:
 			s.mu.Lock()
 			err := s.expire()
