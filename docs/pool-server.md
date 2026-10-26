@@ -265,6 +265,7 @@ remains available in the result resource; downloading bytes is a follow-up.
 | --- | --- | --- |
 | GitHub App private key | `/etc/oyzu-pool/github-app.pem`, root 0600, read by the server at start | Nothing else. Never logged. |
 | Installation tokens | Minted per `job/source` call, one repository, `contents: read`, ≤ 1 hour | The executor's checkout only. The executor masks it and keeps it out of the `oyzu` process environment. |
+| Check-write installation tokens | Minted separately for one repository, `checks: write`, ≤ 1 hour; cached in server memory until five minutes before expiry | The pool server only; never sent to an executor. |
 | Manager key | The manager's state directory | Login and rotation assertions. |
 | Startup and job bearers | Server stores SHA-256 only | One executor, one attempt. |
 | Pool signing key | `state_dir/issuer.key`, 0600 | Signs job ID tokens; public half at the JWKS URL. |
@@ -315,13 +316,46 @@ token alone does not demonstrate a cache write or cache hit.
 
 ## Slice 4: per-stage checks
 
-On `job/finish`, and while the job runs as entries arrive, the server reads the
-build's structured `finished` log events and the reports the outcome lists. It
-posts one check run per target and stage (`oyzu / <target> / <stage>`) on the
-run's commit with the App's Checks permission, `in_progress` when the scope
-starts and `completed` with its conclusion at the end. Test failures from JUnit
-reports become annotations (GitHub limits 50 per request; batch). Snapshot runs
-post no checks.
+For commit runs, the first log entry with a `<target>:<stage>` scope queues a
+GitHub check named `oyzu / <target> / <stage>` on the run's commit, initially
+`in_progress`. A structured `finished` event completes it: `success` becomes
+`success`, `failed` becomes `failure`, `skipped` and `cancelled` retain those
+conclusions, and other statuses become `neutral`. At `job/finish`, remaining
+open checks become `cancelled` for a cancelled run; otherwise they fail with
+"stage did not report a result". Finished events delivered during the log drain
+can supply the stage's actual result. An expired executor lease also closes
+open checks as failures.
+
+The executor sends JUnit failures in the outcome's optional `test_failures`
+array, with at most 200 failures and at most 1 KiB of UTF-8 message text per
+failure. The server attaches failure annotations to the matching scope's check,
+using checkout-relative paths and the reported line (line 1 when absent).
+Annotations are sent in batches of at most 50. Failures without a path appear
+in the check summary; long summaries are truncated to fit GitHub's limit.
+
+Log and outcome acceptance queues check updates without waiting for GitHub.
+A single background publisher runs with the lease reaper's lifecycle and
+coalesces queued updates per run, so a stage may already be complete when its
+check first appears. Stopping the reaper cancels and waits for the publisher.
+
+The existing App issuer mints a separate, single-repository `checks: write`
+token; this token stays in server memory and is reused until five minutes
+before expiry. A check request rejected with 401 refreshes its token and retries
+once. Snapshot runs and repositories without
+an App installation post no checks. GitHub failures are logged without
+credentials and do not change the build result. Check IDs and pending results
+are persisted per run and scope. Retried chunks reuse those IDs; the lease
+reaper queues pending delivery every 30 seconds, including after a restart,
+without waiting for GitHub. A stable external ID also
+lets the server recover a check when GitHub accepted its creation but the
+response was lost. Annotation batches are append operations: a lost response
+can cause the affected batch to appear again on retry.
+
+Checks currently have no run-page link or re-run button. Coverage and lint
+annotations, checks for snapshot runs, and Windows/macOS pools are later work.
+
+A repository maintainer can mark an individual stage check as required in
+branch protection. The pool never changes branch protection settings.
 
 ## Deployment on build01
 

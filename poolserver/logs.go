@@ -36,6 +36,7 @@ func (s *Server) uploadLogs(w http.ResponseWriter, r *http.Request, d diskState,
 	}
 	if in.Seq <= int64(len(j.Logs.Chunks)) {
 		if j.Logs.Chunks[in.Seq-1] == in.Hash {
+			s.enqueueChecksLocked(jobRunID(d, j))
 			respond(w, 200, runnerclient.LogAck{NextSeq: int64(len(j.Logs.Chunks) + 1), State: j.Logs.State})
 		} else {
 			logConflict(w, j)
@@ -66,12 +67,14 @@ func (s *Server) uploadLogs(w http.ResponseWriter, r *http.Request, d diskState,
 		problem(w, 400, "REQUEST_INVALID", "Invalid log entry count.")
 		return
 	}
+	entries := make([]runnerclient.LogEntry, 0, len(lines))
 	for i, line := range lines {
 		var entry runnerclient.LogEntry
 		if !utf8.Valid(line) || decodeJSON(bytes.NewReader(line), &entry) != nil || entry.Sequence != in.First+int64(i) || !contains([]string{"stdout", "stderr", "system"}, entry.Stream) || entry.Time.IsZero() || utf8.RuneCountInString(entry.Text) > 65536 || utf8.RuneCountInString(entry.Scope) > 512 || utf8.RuneCountInString(entry.ParentScope) > 512 || entry.Redacted < 0 || !validEvent(entry.Event) {
 			problem(w, 400, "REQUEST_INVALID", "Invalid log entry.")
 			return
 		}
+		entries = append(entries, entry)
 	}
 	f, e := os.OpenFile(logPath(s.cfg.StateDir, j), os.O_CREATE|os.O_WRONLY, 0600)
 	if e == nil {
@@ -102,7 +105,10 @@ func (s *Server) uploadLogs(w http.ResponseWriter, r *http.Request, d diskState,
 	j.Logs.Bytes += int64(len(raw))
 	j.Logs.Entries = in.Last
 	j.Logs.Chunks = append(j.Logs.Chunks, in.Hash)
+	runID := jobRunID(d, j)
+	observeStageLogs(d.Runs[runID], entries)
 	if s.persist(w, d) {
+		s.enqueueChecksLocked(runID)
 		respond(w, 200, runnerclient.LogAck{NextSeq: int64(len(j.Logs.Chunks) + 1), State: j.Logs.State})
 	}
 }
