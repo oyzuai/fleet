@@ -62,6 +62,10 @@ func fakeGit() {
 			_ = os.MkdirAll("dist", 0700)
 			_ = os.WriteFile(ManifestPath, []byte(record), 0600)
 		}
+		if report := os.Getenv("FAKE_GIT_JUNIT"); report != "" {
+			_ = os.MkdirAll("dist/api/reports", 0o700)
+			_ = os.WriteFile("dist/api/reports/junit.xml", []byte(report), 0o600)
+		}
 	case "status":
 		// No environment holds a NUL, so the tests write it as \0.
 		fmt.Print(strings.ReplaceAll(os.Getenv("FAKE_GIT_STATUS"), `\0`, "\x00"))
@@ -196,6 +200,10 @@ func fakeOyzu() {
 	if m, ok := os.LookupEnv("FAKE_OYZU_MANIFEST"); ok {
 		_ = os.MkdirAll("dist", 0o700)
 		_ = os.WriteFile(filepath.Join("dist", "manifest.json"), []byte(m), 0o600)
+	}
+	if report := os.Getenv("FAKE_OYZU_JUNIT"); report != "" {
+		_ = os.MkdirAll("dist/api/reports", 0o700)
+		_ = os.WriteFile("dist/api/reports/junit.xml", []byte(report), 0o600)
 	}
 	if d := os.Getenv("FAKE_OYZU_SLEEP"); d != "" {
 		t, _ := time.ParseDuration(d)

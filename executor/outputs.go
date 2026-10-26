@@ -45,7 +45,7 @@ type buildManifest struct {
 		Path   string `json:"path"`
 		Digest string `json:"digest"`
 	} `json:"reports"`
-	Artifacts     []struct {
+	Artifacts []struct {
 		Target    string `json:"target"`
 		Name      string `json:"name"`
 		Version   string `json:"version"`
