@@ -288,9 +288,14 @@ Actions-created runs persist the verified creator's `repository`,
 `repository_id`, `repository_owner_id`, `ref`, `ref_type`, `event_name` and
 `job_workflow_ref` when present, and copy those values into job tokens without
 deriving missing claims. This authority survives server restarts and creator
-token expiry. Tailnet-created runs carry only their repository and ref as
-creator facts. Runs recorded before creator facts were persisted also omit
-the Actions-only claims. Every token separately identifies the pool run with
+token expiry. At creation, terminal/tailnet runs look up `repository_id` and
+`repository_owner_id` through the pool's GitHub App and persist them separately
+as repository source facts. Their job tokens include those IDs when available,
+but never gain `event_name`, `ref_type` or `job_workflow_ref`; they remain
+read-only. A failed lookup is logged without failing the run, and its tokens
+omit the IDs. Tokens reuse persisted facts without another lookup. Older
+terminal runs without these facts still omit the IDs and Actions-only claims.
+Every token separately identifies the pool run with
 `run_id`, its commit (or snapshot base commit, when supplied) with `sha`, and
 its source with `source_kind: commit` or `snapshot`.
 
