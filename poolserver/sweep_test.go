@@ -145,3 +145,48 @@ func TestSourceStartupSweepUsesPersistedLastUsed(t *testing.T) {
 		t.Fatal("startup sweep retained ownership")
 	}
 }
+
+func TestSourceSweepRetainsBlobReferencedByAnotherManifest(t *testing.T) {
+	f := newFixture(t)
+	old, blob := storedTestSource(t, f, "shared content")
+	f.now.Add(int64((6 * 24 * time.Hour) / time.Second))
+	data, again := sourceTestManifest(t, f, "shared content")
+	if blob != again {
+		t.Fatal("fixture did not reuse blob")
+	}
+	newer := "sha256:" + hash(data)
+	if status := uploadSource(t, f, newer, data); status != 201 {
+		t.Fatalf("second manifest %d", status)
+	}
+	f.now.Add(int64((2 * 24 * time.Hour) / time.Second))
+	if err := f.s.sweepSources(); err != nil {
+		t.Fatal(err)
+	}
+	assertSourceFile(t, f.s.sourcePath(old), false)
+	assertSourceFile(t, f.s.sourcePath(newer), true)
+	assertSourceFile(t, f.s.blobPath(blob), true)
+}
+
+func TestSourceConfigurationDefaultsAndValidation(t *testing.T) {
+	f := newFixture(t)
+	if f.s.cfg.sourceRetention != 7*24*time.Hour || f.s.cfg.SourceQuota != 20<<30 {
+		t.Fatalf("source defaults %s %d", f.s.cfg.sourceRetention, f.s.cfg.SourceQuota)
+	}
+	for _, retention := range []string{"0d", "-1h", "invalid", "999999999999999999d"} {
+		cfg := f.cfg
+		cfg.SourceRetention = retention
+		if err := cfg.defaults(); err == nil {
+			t.Fatalf("accepted source_retention %q", retention)
+		}
+	}
+	cfg := f.cfg
+	cfg.SourceRetention = "12h"
+	cfg.SourceQuota = -1
+	if err := cfg.defaults(); err == nil {
+		t.Fatal("accepted negative quota")
+	}
+	cfg.SourceQuota = 1024
+	if err := cfg.defaults(); err != nil || cfg.sourceRetention != 12*time.Hour {
+		t.Fatalf("custom source configuration %v", err)
+	}
+}

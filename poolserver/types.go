@@ -26,7 +26,6 @@ type Config struct {
 	StateDir              string   `json:"state_dir"`
 	SourceRetention       string   `json:"source_retention,omitempty"`
 	SourceQuota           int64    `json:"source_quota,omitempty"`
-	sourceRetention       time.Duration
 	Repositories          []string `json:"repositories"`
 	EnrollmentTokenSHA256 string   `json:"enrollment_token_sha256"`
 	Audience              string   `json:"audience,omitempty"`
@@ -39,6 +38,8 @@ type Config struct {
 		PrivateKeyFile string `json:"private_key_file"`
 	} `json:"github_app"`
 	EgressAllow []runnerclient.EgressAllow `json:"egress_allow"`
+
+	sourceRetention time.Duration
 }
 type GitHubCaller struct {
 	Repository string   `json:"repository"`
