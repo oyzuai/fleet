@@ -16,6 +16,7 @@ type Server struct {
 	now        func() time.Time
 	source     SourceProvider
 	oidc       *oidcVerifier
+	issuer     *jobIssuer
 	mu         sync.Mutex
 	state      diskState
 	changed    chan struct{}
@@ -45,7 +46,12 @@ func New(c Config, o Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	issuer, err := loadJobIssuer(c.StateDir)
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{cfg: c, now: o.Now, source: source, state: d, changed: make(chan struct{}), downloads: map[string]sourceDownload{}}
+	s.issuer = issuer
 	s.oidc = &oidcVerifier{audience: c.PublicURL, client: o.HTTPClient, now: o.Now, jwksURL: "https://token.actions.githubusercontent.com/.well-known/jwks"}
 	if err = s.expire(); err != nil {
 		return nil, err
@@ -74,6 +80,10 @@ func (s *Server) Reap(ctx context.Context) error {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Request-Id", randomToken()[:24])
 	w.Header().Set("Cache-Control", "no-store")
+	if r.URL.Path == "/.well-known/jwks.json" && r.Method == http.MethodGet {
+		respond(w, http.StatusOK, s.issuer.jwks())
+		return
+	}
 	if r.URL.Path == "/healthz" && r.Method == "GET" {
 		s.mu.Lock()
 		err := s.storageErr

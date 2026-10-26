@@ -426,6 +426,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, c caller) {
 	}
 	job := runnerclient.Job{ID: id, RunID: id, Kind: "build", CorrelationID: rid, Repository: in.Repository.Name, HeadSHA: in.Commit, HeadBranch: in.Ref, Operation: in.Operation.Kind, Targets: in.Operation.Targets, Task: in.Operation.Task, AffectedBase: in.Operation.AffectedBase, Command: command, Secrets: []string{}}
 	d.Runs[rid] = &runRecord{Run: run, Owner: c.ID, BodyHash: bodyHash, Idempotency: key, JobID: id}
+	if c.Claims != nil {
+		claims := c.Claims
+		d.Runs[rid].Creator = &creatorFacts{Repository: claims.Repository, RepositoryID: claims.RepositoryID, RepositoryOwnerID: claims.RepositoryOwnerID, Ref: claims.Ref, RefType: claims.RefType, EventName: claims.EventName, JobWorkflowRef: claims.JobWorkflowRef}
+	}
 	d.Jobs[id] = &jobRecord{Job: job, State: "queued", Logs: logRecord{State: "open"}, Outputs: []runnerclient.Output{}}
 	if !s.persist(w, d) {
 		return
