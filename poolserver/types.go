@@ -150,11 +150,21 @@ type Operation struct {
 	AffectedBase string   `json:"affected_base,omitempty"`
 	Task         string   `json:"task,omitempty"`
 }
+
+// SnapshotSource identifies a content-addressed working-tree archive. Its base
+// commit is informational; snapshot runs cannot publish or write shared caches.
+type SnapshotSource struct {
+	Kind       string `json:"kind"`
+	Digest     string `json:"digest"`
+	BaseCommit string `json:"base_commit,omitempty"`
+}
+
 type RunCreate struct {
-	Repository Repository `json:"repository"`
-	Commit     string     `json:"commit"`
-	Ref        string     `json:"ref,omitempty"`
-	Operation  Operation  `json:"operation"`
+	Repository Repository      `json:"repository"`
+	Commit     string          `json:"commit,omitempty"`
+	Source     *SnapshotSource `json:"source,omitempty"`
+	Ref        string          `json:"ref,omitempty"`
+	Operation  Operation       `json:"operation"`
 }
 type Reason struct {
 	Code    string `json:"code"`
@@ -180,23 +190,24 @@ type Output struct {
 	Size      int64  `json:"size"`
 }
 type Run struct {
-	ID                string     `json:"id"`
-	Account           string     `json:"account"`
-	Project           string     `json:"project"`
-	Repository        Repository `json:"repository"`
-	Commit            string     `json:"commit"`
-	Ref               string     `json:"ref,omitempty"`
-	Operation         Operation  `json:"operation"`
-	Trigger           Trigger    `json:"trigger"`
-	State             string     `json:"state"`
-	Reason            *Reason    `json:"reason,omitempty"`
-	Attempt           int        `json:"attempt"`
-	ExitCode          *int       `json:"exit_code,omitempty"`
-	CancelRequestedAt *time.Time `json:"cancel_requested_at,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
-	StartedAt         *time.Time `json:"started_at,omitempty"`
-	FinishedAt        *time.Time `json:"finished_at,omitempty"`
-	Links             Links      `json:"links"`
+	ID                string          `json:"id"`
+	Account           string          `json:"account"`
+	Project           string          `json:"project"`
+	Repository        Repository      `json:"repository"`
+	Commit            string          `json:"commit,omitempty"`
+	Source            *SnapshotSource `json:"source,omitempty"`
+	Ref               string          `json:"ref,omitempty"`
+	Operation         Operation       `json:"operation"`
+	Trigger           Trigger         `json:"trigger"`
+	State             string          `json:"state"`
+	Reason            *Reason         `json:"reason,omitempty"`
+	Attempt           int             `json:"attempt"`
+	ExitCode          *int            `json:"exit_code,omitempty"`
+	CancelRequestedAt *time.Time      `json:"cancel_requested_at,omitempty"`
+	CreatedAt         time.Time       `json:"created_at"`
+	StartedAt         *time.Time      `json:"started_at,omitempty"`
+	FinishedAt        *time.Time      `json:"finished_at,omitempty"`
+	Links             Links           `json:"links"`
 }
 
 func finished(r Run) bool { return r.State != "queued" && r.State != "running" }

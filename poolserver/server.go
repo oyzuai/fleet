@@ -20,6 +20,7 @@ type Server struct {
 	state      diskState
 	changed    chan struct{}
 	storageErr error
+	downloads  map[string]sourceDownload
 }
 
 func New(c Config, o Options) (*Server, error) {
@@ -44,7 +45,7 @@ func New(c Config, o Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: c, now: o.Now, source: source, state: d, changed: make(chan struct{})}
+	s := &Server{cfg: c, now: o.Now, source: source, state: d, changed: make(chan struct{}), downloads: map[string]sourceDownload{}}
 	s.oidc = &oidcVerifier{audience: c.PublicURL, client: o.HTTPClient, now: o.Now, jwksURL: "https://token.actions.githubusercontent.com/.well-known/jwks"}
 	if err = s.expire(); err != nil {
 		return nil, err
@@ -89,6 +90,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/v1alpha1/") {
+		if s.sourceRoute(w, r) {
+			return
+		}
 		s.runs(w, r)
 		return
 	}
