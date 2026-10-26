@@ -235,10 +235,12 @@ remains available in the result resource; downloading bytes is a follow-up.
 ## Slice 3: cache writes
 
 The cache-gate on build01 already verifies GitHub OIDC tokens to authorize
-writes. Add the pool's issuer and JWKS URL as a second trusted issuer. The gate
-allows writes when the pool token's `ref` is `refs/heads/main`, its
-`source_kind` is `commit`, and its `repository` is listed. PR and snapshot jobs
-keep read-only access. The image sets machine-scope `cache.remote` to the gate.
+writes. Slice 3 adds the pool's issuer and JWKS URL as a second trusted issuer.
+Only an Actions-created main push commit run may write: the token must preserve
+the creator's verified repository IDs, branch type, event and workflow ref,
+alongside `source_kind: commit`. Tailnet callers have no Actions event or
+workflow claims. PR, tailnet and snapshot jobs keep read-only access. The image
+sets machine-scope `cache.remote` to the gate.
 
 ## Slice 4: per-stage checks
 
