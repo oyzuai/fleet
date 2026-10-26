@@ -22,7 +22,7 @@ type runRecord struct {
 	BodyHash     string                     `json:"body_hash"`
 	Idempotency  string                     `json:"idempotency,omitempty"`
 	JobID        int64                      `json:"job_id"`
-	Checks       map[string]*stageCheck      `json:"checks,omitempty"`
+	Checks       map[string]*stageCheck     `json:"checks,omitempty"`
 	TestFailures []runnerclient.TestFailure `json:"test_failures,omitempty"`
 }
 type jobRecord struct {
