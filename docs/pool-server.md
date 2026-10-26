@@ -250,6 +250,9 @@ starts and `completed` with its conclusion at the end. Test failures from JUnit
 reports become annotations (GitHub limits 50 per request; batch). Snapshot runs
 post no checks.
 
+A repository maintainer can mark an individual stage check as required in
+branch protection. The pool never changes branch protection settings.
+
 ## Deployment on build01
 
 Configured in platform `deploy/ovh-farm` (Ansible), not in this repository:
