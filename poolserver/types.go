@@ -24,6 +24,8 @@ type Config struct {
 	Listen                string   `json:"listen"`
 	PublicURL             string   `json:"public_url"`
 	StateDir              string   `json:"state_dir"`
+	SourceRetention       string   `json:"source_retention,omitempty"`
+	SourceQuota           int64    `json:"source_quota,omitempty"`
 	Repositories          []string `json:"repositories"`
 	EnrollmentTokenSHA256 string   `json:"enrollment_token_sha256"`
 	Audience              string   `json:"audience,omitempty"`
@@ -36,6 +38,8 @@ type Config struct {
 		PrivateKeyFile string `json:"private_key_file"`
 	} `json:"github_app"`
 	EgressAllow []runnerclient.EgressAllow `json:"egress_allow"`
+
+	sourceRetention time.Duration
 }
 type GitHubCaller struct {
 	Repository string   `json:"repository"`
@@ -65,6 +69,29 @@ func LoadConfig(path string) (Config, error) {
 	return c, err
 }
 func (c *Config) defaults() error {
+	if c.SourceRetention == "" {
+		c.SourceRetention = "7d"
+	}
+	retention := c.SourceRetention
+	if strings.HasSuffix(retention, "d") {
+		days, err := time.ParseDuration(strings.TrimSuffix(retention, "d") + "h")
+		if err != nil || days <= 0 || days > time.Duration(1<<63-1)/24 {
+			return errors.New("source_retention must be a positive duration")
+		}
+		c.sourceRetention = days * 24
+	} else {
+		var err error
+		c.sourceRetention, err = time.ParseDuration(retention)
+		if err != nil || c.sourceRetention <= 0 {
+			return errors.New("source_retention must be a positive duration")
+		}
+	}
+	if c.SourceQuota == 0 {
+		c.SourceQuota = 20 << 30
+	}
+	if c.SourceQuota < 0 {
+		return errors.New("source_quota must be positive bytes")
+	}
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8480"
 	}
@@ -151,7 +178,7 @@ type Operation struct {
 	Task         string   `json:"task,omitempty"`
 }
 
-// SnapshotSource identifies a content-addressed working-tree archive. Its base
+// SnapshotSource identifies a content-addressed working-tree manifest. Its base
 // commit is informational; snapshot runs cannot publish or write shared caches.
 type SnapshotSource struct {
 	Kind       string `json:"kind"`

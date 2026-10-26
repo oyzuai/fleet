@@ -18,6 +18,7 @@ type Server struct {
 	oidc       *oidcVerifier
 	issuer     *jobIssuer
 	mu         sync.Mutex
+	sourceMu   sync.RWMutex
 	state      diskState
 	changed    chan struct{}
 	storageErr error
@@ -56,6 +57,9 @@ func New(c Config, o Options) (*Server, error) {
 	if err = s.expire(); err != nil {
 		return nil, err
 	}
+	// Cleanup failures are logged by the sweep and retried hourly; they never
+	// stop the pool from starting or serving builds.
+	_ = s.sweepSources()
 	return s, nil
 }
 
@@ -63,10 +67,14 @@ func New(c Config, o Options) (*Server, error) {
 func (s *Server) Reap(ctx context.Context) error {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
+	sweep := time.NewTicker(time.Hour)
+	defer sweep.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-sweep.C:
+			_ = s.sweepSources()
 		case <-t.C:
 			s.mu.Lock()
 			err := s.expire()

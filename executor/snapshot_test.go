@@ -1,152 +1,187 @@
 package executor
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/oyzuai/fleet/runnerclient"
 )
 
-func snapshotTar(t *testing.T, headers ...*tar.Header) []byte {
+func snapshotDigest(data []byte) string {
+	h := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(h[:])
+}
+
+func snapshotManifest(t *testing.T, entries ...runnerclient.SourceEntry) []byte {
 	t.Helper()
-	var out bytes.Buffer
-	tw := tar.NewWriter(&out)
-	for _, h := range headers {
-		if err := tw.WriteHeader(h); err != nil {
-			t.Fatal(err)
-		}
-		if h.Typeflag == tar.TypeReg {
-			if _, err := tw.Write(bytes.Repeat([]byte("x"), int(h.Size))); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	if err := tw.Close(); err != nil {
+	data, err := json.Marshal(runnerclient.SourceManifest{Entries: entries})
+	if err != nil {
 		t.Fatal(err)
 	}
-	return out.Bytes()
+	return data
 }
 
-func TestSnapshotExtractionPreservesFilesAndRelativeLinks(t *testing.T) {
-	root := t.TempDir()
+func snapshotSource(url string, manifest []byte) runnerclient.Source {
+	digest := snapshotDigest(manifest)
+	return runnerclient.Source{Kind: "snapshot", URL: url + "/accounts/test/sources/" + digest + "?download=test-grant", Digest: digest}
+}
+
+func TestSnapshotDownloadRestoresFilesMetadataAndRelativeLinks(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux executor filesystem contract")
+	}
+	content := []byte("changed source")
+	blob := snapshotDigest(content)
 	modified := time.Unix(1720000000, 123456789)
-	archive := snapshotTar(t, &tar.Header{Name: "bin", Typeflag: tar.TypeDir, Mode: 0755, ModTime: modified, Format: tar.FormatPAX}, &tar.Header{Name: "bin/tool", Typeflag: tar.TypeReg, Size: 3, Mode: 0751, ModTime: modified, Format: tar.FormatPAX}, &tar.Header{Name: "tool", Typeflag: tar.TypeSymlink, Linkname: "bin/tool", Mode: 0777, ModTime: modified, Format: tar.FormatPAX}, &tar.Header{Name: "self", Typeflag: tar.TypeSymlink, Linkname: ".", Mode: 0777, ModTime: modified, Format: tar.FormatPAX})
-	if err := extractSnapshot(root, bytes.NewReader(archive)); err != nil {
-		t.Fatal(err)
-	}
-	b, err := os.ReadFile(filepath.Join(root, "tool"))
-	if err != nil || string(b) != "xxx" {
-		t.Fatalf("%q %v", b, err)
-	}
-	info, err := os.Stat(filepath.Join(root, "bin/tool"))
+	manifest := snapshotManifest(t,
+		runnerclient.SourceEntry{Path: "bin", Kind: "directory", Mode: 0750, Mtime: modified.UnixNano()},
+		runnerclient.SourceEntry{Path: "bin/tool", Kind: "file", Mode: 0751, Mtime: modified.UnixNano(), Size: int64(len(content)), Digest: blob},
+		runnerclient.SourceEntry{Path: "self", Kind: "symlink", Target: "."},
+		runnerclient.SourceEntry{Path: "tool", Kind: "symlink", Target: "bin/tool"},
+	)
+	encoder, err := zstd.NewWriter(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0751 || !info.ModTime().Equal(modified) {
-		t.Fatalf("metadata %v %v", info.Mode(), info.ModTime())
-	}
-	info, err = os.Lstat(filepath.Join(root, "tool"))
-	if err != nil || !info.ModTime().Equal(modified) {
-		t.Fatalf("link timestamp %v %v", info, err)
-	}
-}
-
-func TestSnapshotExtractionRefusesEscapesAndSpecialEntries(t *testing.T) {
-	for _, h := range []*tar.Header{
-		{Name: "../escape", Typeflag: tar.TypeReg}, {Name: "/escape", Typeflag: tar.TypeReg},
-		{Name: ".git/config", Typeflag: tar.TypeReg}, {Name: "link", Typeflag: tar.TypeSymlink, Linkname: "../escape"},
-		{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd"}, {Name: "hard", Typeflag: tar.TypeLink, Linkname: "file"},
-		{Name: "device", Typeflag: tar.TypeChar},
-	} {
-		t.Run(h.Name+string(h.Typeflag), func(t *testing.T) {
-			if err := extractSnapshot(t.TempDir(), bytes.NewReader(snapshotTar(t, h))); err == nil {
-				t.Fatal("unsafe archive accepted")
-			}
-		})
-	}
-	archive := snapshotTar(t, &tar.Header{Name: "a", Typeflag: tar.TypeSymlink, Linkname: "b"}, &tar.Header{Name: "a/file", Typeflag: tar.TypeReg})
-	if err := extractSnapshot(t.TempDir(), bytes.NewReader(archive)); err == nil {
-		t.Fatal("write through link accepted")
-	}
-}
-
-func TestSnapshotDownloadChecksDigestBeforeDecoding(t *testing.T) {
+	defer encoder.Close()
+	compressed := encoder.EncodeAll(content, nil)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "" {
-			t.Error("job credential leaked")
+		if r.Header.Get("Authorization") != "" || r.URL.Query().Get("download") != "test-grant" {
+			t.Error("download leaked job bearer or lost source grant")
 		}
-		w.Write([]byte("not zstd"))
+		if strings.Contains(r.URL.Path, "/sources/") {
+			_, _ = w.Write(manifest)
+		} else if strings.HasSuffix(r.URL.Path, "/blobs/"+blob) {
+			w.Header().Set("Content-Encoding", "zstd")
+			_, _ = w.Write(compressed)
+		} else {
+			http.NotFound(w, r)
+		}
 	}))
-	defer srv.Close()
-	cfg := Config{Client: runnerclient.New(srv.URL, srv.Client()), WorkDir: t.TempDir()}
-	err := restoreSnapshot(context.Background(), cfg, runnerclient.Source{Kind: "snapshot", URL: srv.URL, Digest: "sha256:" + strings.Repeat("0", 64)})
-	if err == nil || !strings.Contains(err.Error(), "digest mismatch") {
-		t.Fatalf("%v", err)
-	}
-}
-
-func TestSnapshotDownloadDecodesVerifiedArchive(t *testing.T) {
-	if _, err := exec.LookPath("zstd"); err != nil {
-		t.Skip("executor runtime requires zstd on PATH")
-	}
-	archive := snapshotTar(t, &tar.Header{Name: "changed", Typeflag: tar.TypeReg, Size: 4, Mode: 0644, ModTime: time.Unix(1720000000, 0)})
-	cmd := exec.Command("zstd", "-q", "--stdout")
-	cmd.Stdin = bytes.NewReader(archive)
-	compressed, err := cmd.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := sha256.Sum256(compressed)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(compressed) }))
 	defer srv.Close()
 	for _, name := range []string{"ordinary", "read-only-parent"} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			workDir := root
 			if name == "read-only-parent" {
-				if runtime.GOOS != "linux" {
-					t.Skip("Linux executor filesystem contract")
-				}
-				// /proc/self/fd is immutable even for a root test process,
-				// unlike a chmod-only fixture. Its directory descriptor names
-				// the writable work directory without permitting sibling files.
 				dir, err := os.Open(root)
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer dir.Close()
 				workDir = "/proc/self/fd/" + strconv.FormatUint(uint64(dir.Fd()), 10)
-				probe, err := os.CreateTemp(filepath.Dir(workDir), ".source-probe-*")
-				if err == nil {
-					probe.Close()
-					os.Remove(probe.Name())
-					t.Fatal("fixture parent unexpectedly permits staging")
-				}
 			}
 			cfg := Config{Client: runnerclient.New(srv.URL, srv.Client()), WorkDir: workDir}
-			if err := restoreSnapshot(context.Background(), cfg, runnerclient.Source{Kind: "snapshot", URL: srv.URL, Digest: "sha256:" + hex.EncodeToString(h[:])}); err != nil {
+			if err := restoreSnapshot(context.Background(), cfg, snapshotSource(srv.URL, manifest)); err != nil {
 				t.Fatal(err)
 			}
-			if b, err := os.ReadFile(filepath.Join(root, "changed")); err != nil || string(b) != "xxxx" {
-				t.Fatalf("%q %v", b, err)
+			got, err := os.ReadFile(filepath.Join(root, "tool"))
+			if err != nil || !bytes.Equal(got, content) {
+				t.Fatalf("restored file %q %v", got, err)
+			}
+			for path, mode := range map[string]os.FileMode{"bin": 0750, "bin/tool": 0751} {
+				info, err := os.Stat(filepath.Join(root, filepath.FromSlash(path)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm() != mode || !info.ModTime().Equal(modified) {
+					t.Fatalf("metadata %s %v %v", path, info.Mode(), info.ModTime())
+				}
 			}
 			entries, err := os.ReadDir(root)
-			if err != nil || len(entries) != 1 || entries[0].Name() != "changed" {
-				t.Fatalf("archive staging survived restoration: %v %v", entries, err)
+			if err != nil || len(entries) != 3 {
+				t.Fatalf("unexpected staging files %v %v", entries, err)
 			}
 		})
+	}
+}
+
+func TestSnapshotDownloadVerifiesManifestAndEveryBlob(t *testing.T) {
+	for _, mode := range []string{"manifest-digest", "manifest-invalid", "blob-digest", "blob-size", "link-unresolved"} {
+		t.Run(mode, func(t *testing.T) {
+			content := []byte("expected")
+			manifest := snapshotManifest(t, runnerclient.SourceEntry{Path: "file", Kind: "file", Mode: 0644, Size: int64(len(content)), Digest: snapshotDigest(content)})
+			if mode == "manifest-invalid" {
+				manifest = []byte(`{"entries":[],"unknown":1}`)
+			}
+			if mode == "link-unresolved" {
+				manifest = snapshotManifest(t, runnerclient.SourceEntry{Path: "link", Kind: "symlink", Target: "missing"})
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.Contains(r.URL.Path, "/sources/") {
+					if mode == "manifest-digest" {
+						_, _ = w.Write([]byte("incorrect manifest"))
+					} else {
+						_, _ = w.Write(manifest)
+					}
+				} else if mode == "blob-size" {
+					_, _ = w.Write(append(content, 'x'))
+				} else {
+					_, _ = w.Write([]byte("tampered"))
+				}
+			}))
+			defer srv.Close()
+			cfg := Config{Client: runnerclient.New(srv.URL, srv.Client()), WorkDir: t.TempDir()}
+			if err := restoreSnapshot(context.Background(), cfg, snapshotSource(srv.URL, manifest)); err == nil {
+				t.Fatalf("accepted %s", mode)
+			}
+		})
+	}
+}
+
+func TestSnapshotDownloadsAtMostEightFilesInParallel(t *testing.T) {
+	content := []byte("shared blob")
+	entries := make([]runnerclient.SourceEntry, 24)
+	for i := range entries {
+		entries[i] = runnerclient.SourceEntry{Path: fmt.Sprintf("file-%02d", i), Kind: "file", Mode: 0644, Size: int64(len(content)), Digest: snapshotDigest(content)}
+	}
+	manifest := snapshotManifest(t, entries...)
+	var active, peak, count atomic.Int32
+	gate := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/sources/") {
+			_, _ = w.Write(manifest)
+			return
+		}
+		n := active.Add(1)
+		defer active.Add(-1)
+		count.Add(1)
+		for old := peak.Load(); n > old && !peak.CompareAndSwap(old, n); old = peak.Load() {
+		}
+		if n == 8 {
+			once.Do(func() { close(gate) })
+		}
+		select {
+		case <-gate:
+			_, _ = w.Write(content)
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cfg := Config{Client: runnerclient.New(srv.URL, srv.Client()), WorkDir: t.TempDir()}
+	if err := restoreSnapshot(ctx, cfg, snapshotSource(srv.URL, manifest)); err != nil {
+		t.Fatal(err)
+	}
+	if peak.Load() != 8 || count.Load() != 24 {
+		t.Fatalf("parallel downloads peak=%d total=%d", peak.Load(), count.Load())
 	}
 }

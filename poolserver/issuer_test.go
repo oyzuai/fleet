@@ -61,7 +61,7 @@ func TestPoolJobTokenCreatorClaimsAndJWKS(t *testing.T) {
 				owner = ""
 			}
 			if kind == "snapshot" {
-				data := []byte("snapshot archive")
+				data, _ := sourceTestManifest(t, f, "snapshot file")
 				digest := "sha256:" + hash(data)
 				if status := uploadSource(t, f, digest, data); status != 201 {
 					t.Fatalf("upload: %d", status)

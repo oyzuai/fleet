@@ -20,8 +20,8 @@ governed implementation of the same APIs.
 
 ## Shape
 
-- New command `cmd/pool-server`, package `poolserver`. Go standard library
-  only, like the rest of Fleet.
+- New command `cmd/pool-server`, package `poolserver`. Source uploads use the
+  Go `github.com/klauspost/compress/zstd` decoder; no external decoder is needed.
 - One process with one plain-HTTP listener on loopback (default
   `127.0.0.1:8480`). TLS and tailnet identity come from `tailscale serve`
   in front of it. The runner API is under `/runner/v1/` and the runs API under
@@ -39,7 +39,7 @@ governed implementation of the same APIs.
 ## Configuration
 
 `/etc/oyzu-pool/server.json`, owned by root, mode 0600 (JSON because Fleet has
-no TOML parser and takes no dependencies):
+no TOML parser):
 
 ```json
 {
@@ -47,6 +47,8 @@ no TOML parser and takes no dependencies):
   "listen": "127.0.0.1:8480",
   "public_url": "https://pool.taild79a0f.ts.net",
   "state_dir": "/var/lib/oyzu-pool",
+  "source_retention": "7d",
+  "source_quota": 21474836480,
   "repositories": ["oyzuai/oyzu", "oyzuai/platform", "oyzuai/fleet"],
   "enrollment_token_sha256": "<hex of the single-use manager enrollment token>",
   "callers": {
@@ -142,19 +144,38 @@ The `Job` the server builds:
 
 ### Working-tree snapshots
 
-`PUT /api/v1alpha1/accounts/{account}/sources/{digest}` accepts
-`application/vnd.oyzu.source.v1alpha1+tar+zstd` from an authenticated caller.
-The server streams at most 512 MiB to private storage under `state_dir/sources`,
-checks the compressed bytes' SHA-256, and atomically publishes the immutable
-digest name. It answers 201 for a new archive, 200 for existing content,
-413 `SOURCE_TOO_LARGE`, or 422 `SOURCE_DIGEST_MISMATCH` /
-`SOURCE_KIND_UNSUPPORTED`. Archives remain in the operator-owned state store;
-automatic source retention and size tuning are follow-ups.
+Authenticated callers first send `POST /api/v1alpha1/accounts/{account}/sources/missing`
+with `{"blobs":["sha256:…",…]}` (at most 10,000 digests per request). The response
+is `{"missing":[…]}`. They PUT absent files to `…/blobs/{digest}` with
+`application/octet-stream`, optionally using `Content-Encoding: zstd`. The server
+verifies SHA-256 over the decoded bytes and caps each blob at 512 MiB. Blob bytes
+live in `state_dir/blobs/<hex>`; publication is temp-then-link and immutable.
+
+`PUT …/sources/{digest}` accepts `application/vnd.oyzu.source.v1alpha1+json`.
+The digest covers the original canonical JSON bytes, whose root is
+`{"entries":[…]}`. Entries are sorted by unique portable relative paths. Files
+carry `path`, `kind: "file"`, integer Unix `mode`, `mtime` in Unix nanoseconds,
+`size` and `digest`; directories carry `path`, `kind: "directory"`, `mode` and
+`mtime`; symlinks carry `path`, `kind: "symlink"` and `target`. Unknown, duplicate
+or missing fields, `.git`, absolute/traversing paths, escaping links and
+non-directory ancestors are refused. Limits are 200,000 entries, 512 MiB of
+logical file content (including repeated blobs), and 512 MiB of manifest bytes.
+The complete manifest is stored at `state_dir/sources/<hex>` only when every
+listed blob is present with the declared size. Otherwise 422
+`SOURCE_BLOBS_MISSING` includes a top-level `missing` digest list for reupload.
+Both PUT routes answer 201 for new content and 200 for existing content after
+verification. Other failures include 413 `SOURCE_TOO_LARGE`, 422
+`SOURCE_DIGEST_MISMATCH`, `SOURCE_INVALID` or `SOURCE_KIND_UNSUPPORTED`, and
+400 `REQUEST_INVALID` for unreadable or malformed compressed bodies.
 
 Upload authorization is persisted by account and caller separately from the
 deduplicated bytes. A caller can reference a digest only after submitting its
-complete verified archive, including when the bytes already exist. Knowing
+complete verified manifest, including when the bytes already exist. Knowing
 another caller's digest grants no run or download access.
+
+File blobs are shared within the configured account: permitted callers may learn
+whether a blob already exists, while run access remains tied to ownership of
+the complete source manifest.
 
 `RunCreate` requires exactly one of `commit` and
 `source: {kind: snapshot, digest, base_commit?}`. The uploaded digest must exist;
@@ -165,14 +186,30 @@ snapshot runs.
 
 For a snapshot, `job/source` returns `{kind: snapshot, url, digest}` instead of
 a GitHub token. The download grant lasts at most five minutes, names one source
-and live job attempt, and sends no job bearer to the download endpoint. The
+manifest and its listed blobs for one live job attempt, and sends no job bearer
+to the download endpoint. Blob URLs replace `/sources/{manifest-digest}` with
+`/blobs/{blob-digest}` and reuse the grant query. The
 executor uses its configured HTTP transport (including gateway proxy and trust),
-verifies the compressed digest, then invokes `zstd -d --stdout` and safely reads
-the tar stream. Executor images must provide `zstd` on PATH. Cancellation and
-decoder failures reap the child. Extraction refuses `.git`, absolute/traversing
-paths, hard links and special files; relative symlinks are created last and must
-resolve inside the source. Regular-file modes and modification times are kept.
-Expanded source is bounded at 10 GiB.
+verifies the manifest digest and contract, then downloads and verifies files
+with at most eight requests in parallel. Optional zstd blob responses decode in
+Go. No tar stream, decoder subprocess or sibling staging directory is used.
+The destination must be empty. Relative symlinks are created last and must
+resolve inside the source. File and directory permission modes and nanosecond
+modification times are restored; links have no timestamp field in this contract.
+
+The server records each manifest's `last_used` on upload and run creation. At
+startup and hourly it removes manifests unused for `source_retention` (default
+`7d`), then evicts the least recently used unreferenced manifests as needed for
+`source_quota` (default 20 GiB, configured in bytes). Retention accepts a positive
+day count with `d` or a Go duration such as `168h`; quota must be positive.
+Queued and running runs protect their source regardless of retention or quota,
+so protected content can keep usage over quota. Unreferenced blobs are deleted
+only after a one-hour grace from their upload. Shared blobs remain while any
+retained manifest references them. Metadata and owner removal occur under the
+server lock; filesystem deletion occurs outside it, serialized with uploads.
+Each sweep emits one `source sweep manifests=… blobs=… bytes_freed=… error=…`
+log line. Rerunning a cleaned source uploads missing files again through the same
+lookup/upload path. This cleanup covers source storage only, not the action cache.
 
 Commands remain chosen by the server with isolation and full build checks.
 The executor sets `OYZU_REMOTE_SOURCE_DIGEST` for the branch CLI: this disables
