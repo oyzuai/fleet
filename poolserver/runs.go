@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -129,12 +130,13 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 				outputs = append(outputs, Output{Path: o.Path, Kind: o.Kind, MediaType: o.MediaType, Digest: o.Digest, Size: o.Size})
 			}
 			respond(w, 200, struct {
-				Run      string   `json:"run"`
-				State    string   `json:"state"`
-				ExitCode *int     `json:"exit_code,omitempty"`
-				Reason   *Reason  `json:"reason,omitempty"`
-				Outputs  []Output `json:"outputs"`
-			}{rr.Run.ID, rr.Run.State, rr.Run.ExitCode, rr.Run.Reason, outputs})
+				Run      string          `json:"run"`
+				State    string          `json:"state"`
+				ExitCode *int            `json:"exit_code,omitempty"`
+				Reason   *Reason         `json:"reason,omitempty"`
+				Outputs  []Output        `json:"outputs"`
+				Source   *SnapshotSource `json:"source,omitempty"`
+			}{rr.Run.ID, rr.Run.State, rr.Run.ExitCode, rr.Run.Reason, outputs, rr.Run.Source})
 			return
 		case "outputs":
 			problem(w, 404, "OUTPUT_NOT_FOUND", "Output bytes are not stored by this pool.")
@@ -245,7 +247,21 @@ func validateCreate(in RunCreate, raw []byte) []fieldError {
 			}
 		}
 	}
-	check("", top, []string{"repository", "commit", "ref", "operation"}, []string{"repository", "commit", "operation"})
+	check("", top, []string{"repository", "commit", "source", "ref", "operation"}, []string{"repository", "operation"})
+	_, hasCommit := top["commit"]
+	_, hasSource := top["source"]
+	if hasCommit == hasSource {
+		add("/source", "CONFLICTING_FIELDS")
+	}
+	if hasSource {
+		var source map[string]json.RawMessage
+		_ = json.Unmarshal(top["source"], &source)
+		check("/source", source, []string{"kind", "digest", "base_commit"}, []string{"kind", "digest"})
+		_, hasBase := source["base_commit"]
+		if in.Source == nil || in.Source.Kind != "snapshot" || !validSourceDigest(in.Source.Digest) || (hasBase && !commitRE.MatchString(in.Source.BaseCommit)) {
+			add("/source", "INVALID_FORMAT")
+		}
+	}
 	var repo, operation map[string]json.RawMessage
 	_ = json.Unmarshal(top["repository"], &repo)
 	_ = json.Unmarshal(top["operation"], &operation)
@@ -254,7 +270,7 @@ func validateCreate(in RunCreate, raw []byte) []fieldError {
 	if in.Repository.Provider != "github" || !repositoryRE.MatchString(in.Repository.Name) {
 		add("/repository", "INVALID_FORMAT")
 	}
-	if !commitRE.MatchString(in.Commit) {
+	if hasCommit && !commitRE.MatchString(in.Commit) {
 		add("/commit", "INVALID_FORMAT")
 	}
 	if !utf8.ValidString(in.Ref) || utf8.RuneCountInString(in.Ref) > 255 || strings.ContainsAny(in.Ref, "\x00\r\n") {
@@ -335,7 +351,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, c caller) {
 		problem(w, 403, "PERMISSION_DENIED", "Repository is not allowed by this pool.")
 		return
 	}
-	if c.Claims != nil && (c.Claims.Repository != in.Repository.Name || c.Claims.SHA != in.Commit || c.Claims.Ref != in.Ref) {
+	if c.Claims != nil && (in.Source != nil || c.Claims.Repository != in.Repository.Name || c.Claims.SHA != in.Commit || c.Claims.Ref != in.Ref) {
 		problem(w, 403, "PERMISSION_DENIED", "Run source must equal the Actions token claims.")
 		return
 	}
@@ -351,14 +367,32 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, c caller) {
 		s.mu.Unlock()
 		return
 	}
+	if in.Source != nil && !s.state.Meta.SourceOwners[in.Source.Digest][s.cfg.Account+"\x00"+c.ID] {
+		s.mu.Unlock()
+		problem(w, 403, "PERMISSION_DENIED", "Upload this source as the current caller before starting a run.")
+		return
+	}
 	s.mu.Unlock()
-	exists, e := s.source.CommitExists(r.Context(), in.Repository.Name, in.Commit)
+	exists := false
+	if in.Source != nil {
+		_, e = os.Stat(s.sourcePath(in.Source.Digest))
+		exists = e == nil
+		if os.IsNotExist(e) {
+			e = nil
+		}
+	} else {
+		exists, e = s.source.CommitExists(r.Context(), in.Repository.Name, in.Commit)
+	}
 	if e != nil {
 		w.Header().Set("Retry-After", "5")
 		problem(w, 503, "SERVICE_UNAVAILABLE", "Repository source is unavailable.")
 		return
 	}
 	if !exists {
+		if in.Source != nil {
+			problem(w, 422, "SOURCE_UNAVAILABLE", "Upload the source archive before starting a run.")
+			return
+		}
 		problem(w, 422, "COMMIT_NOT_FOUND", "The commit must be pushed before starting a run.")
 		return
 	}
@@ -377,7 +411,11 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, c caller) {
 	rid := randomToken()[:32]
 	now := s.now()
 	self := "/api/v1alpha1/accounts/" + s.cfg.Account + "/runs/" + rid
+	if in.Source != nil {
+		in.Commit = in.Source.BaseCommit
+	}
 	run := Run{ID: rid, Account: s.cfg.Account, Project: projectID(in.Repository.Name), Repository: in.Repository, Commit: in.Commit, Ref: in.Ref, Operation: in.Operation, Trigger: Trigger{Kind: "manual", Actor: c.Actor}, State: "queued", CreatedAt: now, Links: Links{Self: self, Logs: self + "/logs", Result: self + "/result"}}
+	run.Source = in.Source
 	command := []string{"oyzu", "build", "--isolated", "--full"}
 	if in.Operation.Kind == "run" {
 		command = []string{"oyzu", "run", "--isolated", in.Operation.Task}

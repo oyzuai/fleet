@@ -140,6 +140,50 @@ The `Job` the server builds:
 
 ## Runs API
 
+### Working-tree snapshots
+
+`PUT /api/v1alpha1/accounts/{account}/sources/{digest}` accepts
+`application/vnd.oyzu.source.v1alpha1+tar+zstd` from an authenticated caller.
+The server streams at most 512 MiB to private storage under `state_dir/sources`,
+checks the compressed bytes' SHA-256, and atomically publishes the immutable
+digest name. It answers 201 for a new archive, 200 for existing content,
+413 `SOURCE_TOO_LARGE`, or 422 `SOURCE_DIGEST_MISMATCH` /
+`SOURCE_KIND_UNSUPPORTED`. Archives remain in the operator-owned state store;
+automatic source retention and size tuning are follow-ups.
+
+Upload authorization is persisted by account and caller separately from the
+deduplicated bytes. A caller can reference a digest only after submitting its
+complete verified archive, including when the bytes already exist. Knowing
+another caller's digest grants no run or download access.
+
+`RunCreate` requires exactly one of `commit` and
+`source: {kind: snapshot, digest, base_commit?}`. The uploaded digest must exist;
+the optional base commit need not be pushed. The run echoes `source` and exposes
+its base commit as `commit` when present. Results also identify snapshot source.
+Actions workload callers remain bound to their signed commit and cannot create
+snapshot runs.
+
+For a snapshot, `job/source` returns `{kind: snapshot, url, digest}` instead of
+a GitHub token. The download grant lasts at most five minutes, names one source
+and live job attempt, and sends no job bearer to the download endpoint. The
+executor uses its configured HTTP transport (including gateway proxy and trust),
+verifies the compressed digest, then invokes `zstd -d --stdout` and safely reads
+the tar stream. Executor images must provide `zstd` on PATH. Cancellation and
+decoder failures reap the child. Extraction refuses `.git`, absolute/traversing
+paths, hard links and special files; relative symlinks are created last and must
+resolve inside the source. Regular-file modes and modification times are kept.
+Expanded source is bounded at 10 GiB.
+
+Commands remain chosen by the server with isolation and full build checks.
+The executor sets `OYZU_REMOTE_SOURCE_DIGEST` for the branch CLI: this disables
+remote-cache writes and publication even when project settings request them.
+The CLI records snapshot source in its build manifest and refuses to publish
+that manifest later. Deploy the snapshot-capable CLI with the executor; updating
+only the caller or server is insufficient. Snapshot runs retain read access to
+configured shared caches. Git-source jobs keep their existing checkout path.
+
+### Run lifecycle
+
 Implements `createRun`, `getRun` (ETag and `wait` long poll), `cancelRun`,
 `getRunLogs` (cursor = base64 of the last sequence, `wait` up to 30 seconds,
 `complete` once finished and drained), `getRunResult` and `getRunOutput`.

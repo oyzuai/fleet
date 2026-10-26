@@ -323,6 +323,11 @@ func (s *Server) jobRoute(w http.ResponseWriter, r *http.Request, route, digest 
 			respond(w, 200, map[string]any{"expires_at": j.Lease, "cancel": rr.Run.CancelRequestedAt != nil})
 		}
 	case "job/source":
+		if rr.Run.Source != nil {
+			source := s.snapshotDownload(j, rr.Run.Source.Digest)
+			respond(w, 200, map[string]string{"kind": source.Kind, "url": source.URL, "digest": source.Digest})
+			return
+		}
 		// Release the state lock while reaching GitHub, then re-check the lease.
 		s.mu.Unlock()
 		source, e := s.source.Source(r.Context(), j.Job.Repository)

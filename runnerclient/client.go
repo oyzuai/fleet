@@ -293,15 +293,31 @@ func (c *Client) Heartbeat(ctx context.Context, job string) error {
 
 // Source is a read-only token for the job's repository.
 type Source struct {
-	Token      string    `json:"token"`
-	Expires    time.Time `json:"expires_at"`
-	Repository string    `json:"repository"`
+	Kind       string    `json:"kind,omitempty"`
+	URL        string    `json:"url,omitempty"`
+	Digest     string    `json:"digest,omitempty"`
+	Token      string    `json:"token,omitempty"`
+	Expires    time.Time `json:"expires_at,omitempty"`
+	Repository string    `json:"repository,omitempty"`
 }
 
 // Source asks for the job's repository token.
 func (c *Client) Source(ctx context.Context, job string) (Source, error) {
 	var out Source
 	return out, c.do(ctx, "job/source", job, nil, &out)
+}
+
+// DownloadSource uses the runner's configured control transport and proxy/trust
+// settings, without sending its job bearer or following credential redirects.
+func (c *Client) DownloadSource(ctx context.Context, target string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	hc := *c.http
+	hc.Timeout = 15 * time.Minute
+	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return hc.Do(req)
 }
 
 // IDToken is an OIDC ID token naming the job, for one audience.

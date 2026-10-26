@@ -331,7 +331,7 @@ func execute(ctx context.Context, cfg Config, token, startup string, job runnerc
 // build checks out the commit and runs the oyzu command.
 func build(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger, completion *nativeCompletion) (outcome runnerclient.Outcome, capture *logCapture) {
 	_, name, _ := strings.Cut(job.Repository, "/")
-	if !shaPattern.MatchString(job.HeadSHA) || !repoPattern.MatchString(job.Repository) || strings.Trim(name, ".") == "" ||
+	if (job.HeadSHA != "" && !shaPattern.MatchString(job.HeadSHA)) || !repoPattern.MatchString(job.Repository) || strings.Trim(name, ".") == "" ||
 		(job.AffectedBase != "" && !shaPattern.MatchString(job.AffectedBase)) {
 		return failedWith("INVALID_JOB", "The job names an invalid repository or commit."), nil
 	}
@@ -353,7 +353,7 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	if err != nil {
 		return failedWith("SOURCE_UNAVAILABLE", "Could not get a token to read the repository: "+err.Error()), nil
 	}
-	secrets := []string{token, startup, src.Token, "x-access-token:" + src.Token}
+	secrets := []string{token, startup, src.Token, "x-access-token:" + src.Token, src.URL}
 	forms := maskForms(secrets...)
 	capture = newLogCapture(ctx, cfg, token, job, log)
 	capture.system("Checking out source.\n", &runnerclient.LogEvent{Kind: "task", State: "running"})
@@ -363,7 +363,15 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		capture.system("Job command finished.\n", &runnerclient.LogEvent{Kind: "finished", Status: outcome.State, ExitCode: outcome.ExitCode, DurationMS: &duration})
 		capture.finish()
 	}()
-	if err := checkout(ctx, cfg, src.Token, job); err != nil {
+	var sourceErr error
+	if src.Kind == "snapshot" {
+		sourceErr = restoreSnapshot(ctx, cfg, src)
+	} else if src.Kind != "" || !shaPattern.MatchString(job.HeadSHA) {
+		sourceErr = errors.New("unsupported source kind or invalid commit")
+	} else {
+		sourceErr = checkout(ctx, cfg, src.Token, job)
+	}
+	if err := sourceErr; err != nil {
 		msg := replaceForms(err.Error(), forms)
 		log.Warn("checkout failed", "error", msg)
 		return failedWith("SOURCE_UNAVAILABLE", "Could not check out "+job.HeadSHA+": "+msg), capture
@@ -389,6 +397,9 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		errSink.close()
 	}()
 	env := buildEnv(os.Environ())
+	if src.Kind == "snapshot" {
+		env = withEnv(env, []string{"OYZU_REMOTE_SOURCE_DIGEST=" + src.Digest})
+	}
 	var runtime *runtimeInputs
 	if job.Kind != "plan" && len(job.Secrets) > 0 {
 		secretEnv, cleanup, err := pullSecrets(ctx, cfg, token, job.Secrets, func(v string) {
@@ -650,7 +661,7 @@ func freshNativeCompletion(previous, current []byte) bool {
 func buildEnv(environ []string) []string {
 	out := make([]string, 0, len(environ))
 	for _, kv := range environ {
-		if strings.HasPrefix(kv, EnvIDTokenURL+"=") || strings.HasPrefix(kv, EnvIDTokenRequestToken+"=") || telemetry.IsTelemetryVar(kv) {
+		if strings.HasPrefix(kv, "OYZU_REMOTE_SOURCE_DIGEST=") || strings.HasPrefix(kv, EnvIDTokenURL+"=") || strings.HasPrefix(kv, EnvIDTokenRequestToken+"=") || telemetry.IsTelemetryVar(kv) {
 			continue
 		}
 		out = append(out, kv)

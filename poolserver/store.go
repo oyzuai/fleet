@@ -54,13 +54,14 @@ type accessRecord struct {
 	Expires time.Time `json:"expires"`
 }
 type metadata struct {
-	Version         int                      `json:"version"`
-	NextID          int64                    `json:"next_id"`
-	NextKey         int64                    `json:"next_key"`
-	EnrollmentSpent bool                     `json:"enrollment_spent"`
-	Managers        map[int64]*managerRecord `json:"managers"`
-	Access          map[string]accessRecord  `json:"access"`
-	Assertions      map[string]time.Time     `json:"assertions"`
+	Version         int                        `json:"version"`
+	NextID          int64                      `json:"next_id"`
+	NextKey         int64                      `json:"next_key"`
+	EnrollmentSpent bool                       `json:"enrollment_spent"`
+	Managers        map[int64]*managerRecord   `json:"managers"`
+	Access          map[string]accessRecord    `json:"access"`
+	Assertions      map[string]time.Time       `json:"assertions"`
+	SourceOwners    map[string]map[string]bool `json:"source_owners,omitempty"`
 }
 type diskState struct {
 	Meta metadata              `json:"meta"`
