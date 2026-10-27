@@ -71,33 +71,28 @@ reference = "go/app"
 profile = "app"
 package = "oyzu/go"
 major = 0
-version = "0.1.0-preview.1"
-release = "sha256:25f830bd740620e6a54a5eac922d1a9505e12f1e1db732f8538152447ba1f9bf"
+version = "0.1.0-preview.2"
+release = "sha256:177c30e705202a92966529f2c3ebb276eb99a8d4f37c86eec79623e8aca16d45"
 
 [[plugin.payloads]]
 os = "darwin"
 arch = "amd64"
-digest = "sha256:93c198e49885f1c2b3ea7e8e6dabc348492682e792ab2bbf279c84a00cbaa7f9"
-
-[[plugin.payloads]]
-os = "darwin"
-arch = "arm64"
-digest = "sha256:7eb741328f162e10de543c2e5c11b5d73936af6efa4c9713efea8b65cdaf5130"
+digest = "sha256:9b05af61332fd4a3b8f0df30ed0bc54df2eed6818733097c8916328bbb680126"
 
 [[plugin.payloads]]
 os = "linux"
 arch = "amd64"
 abi = "musl"
-digest = "sha256:5add077b2409b27ff3d2bc9177eaf6a288997f4fae19539f73dbe49cc6f7724c"
+digest = "sha256:a027a0bfb260b8f3cf152f065d358d48cf28b17483b11b88c4afb3ee16199789"
 
 [[plugin.payloads]]
 os = "linux"
 arch = "arm64"
 abi = "musl"
-digest = "sha256:3adf5a255cd3fe10bb94e908298b828666ce00cc472869b712ddbf71756c3613"
+digest = "sha256:95fd3fd79ffaca3ea8eead8f4c215fadf58504a5e40738795c8d7e01b24f798d"
 
 [[plugin.payloads]]
 os = "windows"
 arch = "amd64"
 abi = "msvc"
-digest = "sha256:ad263799f8a1ebee3832fa2e604a5873af891c2fc7d75be4c955ab6764ddbbf0"
+digest = "sha256:eb3694ed899fb949b52d8356856f36fff1fcb32876ce654223ce318b828b09c6"

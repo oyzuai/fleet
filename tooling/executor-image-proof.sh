@@ -129,10 +129,16 @@ run uid-and-versions docker run --rm --name "$container_name" --entrypoint /bin/
   test "$(id -u)" = 1000
   printf "RESULT container uid: %s\n" "$(id -u)"
   test -w /work && test -w "$XDG_DATA_HOME"
+  printf "RUN oyzu --version (uid 1000)\n"
   oyzu --version
-  test "$(oyzu-executor --version)" = "oyzu-executor 0.1.0"
+  printf "RESULT oyzu-version: PASS\n"
+  printf "RUN oyzu-executor --version (uid 1000)\n"
   oyzu-executor --version
+  test "$(oyzu-executor --version)" = "oyzu-executor 0.1.0"
+  printf "RESULT executor-version: PASS\n"
+  printf "RUN crun --version (uid 1000)\n"
   crun --version
+  printf "RESULT crun-version: PASS\n"
 '
 example=/srv/dev/repos/oyzu/examples/builds/go-app/project
 [[ -f $example/go.mod && -f $example/main.go ]]
@@ -140,7 +146,8 @@ mkdir "$scratch/go-app"
 run copy-go-app cp -a "$example/." "$scratch/go-app/"
 # No --privileged, extra capabilities, unconfined policies, Docker socket,
 # host toolchain mounts or fallback to an unisolated build.
-# On failure, print the original diagnostic and stop; EXIT still cleans up.
+# Keep stdout/stderr attached: crun diagnostics pass through verbatim.
+# On failure, stop without retrying; EXIT still cleans up.
 run isolated-go-app docker run --rm --name "$container_name" \
   --mount "type=bind,src=$scratch/go-app,dst=/input,readonly" \
   --entrypoint /bin/sh "$loaded_id" -ec '

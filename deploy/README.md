@@ -2,9 +2,11 @@
 
 `ghcr.io/oyzuai/oyzu-pool-executor:<version>` is built from
 [executor.Containerfile](executor.Containerfile) using the published `docker/image`
-plugin, pinned together with `go/app` in `oyzu.lock`. Locked replay does not
-require machine preview opt-in in CI. It is linux/amd64 until the public oyzu
-release provides an arm64 CLI.
+plugin, pinned together with `go/app` in `oyzu.lock`. The Go builder is
+`0.1.0-preview.2`, whose captured-plan support handles builds outside the
+single-main native host lane. This release has no Darwin arm64 plugin payload.
+Locked replay does not require machine preview opt-in in CI. It is linux/amd64
+until the public oyzu release provides an arm64 CLI.
 Use the digest in the release notes for the manager's `--image`.
 
 The base is Ubuntu 24.04, pinned by OCI index digest: it supplies glibc for the
