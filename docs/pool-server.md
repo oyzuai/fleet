@@ -23,8 +23,8 @@ governed implementation of the same APIs.
 - New command `cmd/pool-server`, package `poolserver`. Source uploads use the
   Go `github.com/klauspost/compress/zstd` decoder; no external decoder is needed.
 - One process with one plain-HTTP listener on loopback (default
-  `127.0.0.1:8480`). TLS and tailnet identity come from `tailscale serve`
-  in front of it. The runner API is under `/runner/v1/` and the runs API under
+  `127.0.0.1:8480`). TLS comes from a reverse proxy such as Caddy or nginx, or from
+  `tailscale serve` (which can also supply tailnet identity). The runner API is under `/runner/v1/` and the runs API under
   `/api/v1alpha1/`, the paths `runnerclient.New` and oyzu's `src/remote/api.rs`
   already use.
 - One account (its configured name, so `/accounts/{account}/...` paths stay
@@ -68,15 +68,82 @@ no TOML parser):
 }
 ```
 
+A minimal no-App configuration for a public repository is:
+
+```json
+{
+  "account": "personal",
+  "public_url": "https://pool.example.com",
+  "repositories": ["owner/public-repo"],
+  "enrollment_token_sha256": "<64 lowercase hex characters>",
+  "callers": { "tokens": [] },
+  "egress_allow": [
+    { "host": "github.com", "port": 443 },
+    { "host": "*.githubusercontent.com", "port": 443 }
+  ]
+}
+```
+
+Save the config as a private 0600 file, then create a caller before starting:
+
+```sh
+pool-server token create --config /etc/oyzu-pool/server.json --name alice
+pool-server token list --config /etc/oyzu-pool/server.json
+pool-server token revoke --config /etc/oyzu-pool/server.json --name alice
+```
+
+Create prints a cryptographically random `oyzp_` token once; save it securely.
+Only its SHA-256 hash is stored in `callers.tokens`, as
+`{"name":"alice","sha256":"<64 lowercase hex characters>"}`. Names must be
+unique and match `[a-z0-9-]{1,64}`. List prints names only. Administrative edits
+must be serialized. Create and revoke atomically replace the configuration,
+preserving owner and mode. Restart the server after a change; there is no hot
+reload. Startup refuses configurations with no callers and names the create
+command in its error.
+
+On the laptop, configure the origin, account and environment authentication:
+
+```sh
+oyzu config set --global platform.url https://pool.example.com
+oyzu config set --global platform.account personal
+oyzu config set --global platform.authentication.provider environment
+```
+
+Set `OYZU_PLATFORM_TOKEN` to the caller token in the laptop's environment. `oyzu build --remote` builds a pushed
+commit; `oyzu build --remote --worktree` uploads a snapshot. Enroll a Fleet
+manager and isolated executors as described below; the server itself does not
+execute builds. A generic reverse proxy must terminate HTTPS and forward to the
+loopback listener. Leave `tailnet_users` empty when using tokens alone: the
+server ignores `Tailscale-User-Login` in that configuration.
+
+Without an App, commit runs support public GitHub repositories only. The server
+first looks up the repository anonymously; a private response or 404 returns
+403 `PERMISSION_DENIED` with detail
+"commit runs of private repositories need a GitHub App (see docs/pool-server.md)".
+Commit existence and repository IDs use the same anonymous API; the executor
+fetches over HTTPS with no source token. Anonymous GitHub API access is limited
+to 60 requests/hour per IP. Repository lookups (including private/404 results)
+are cached for ten minutes; commit lookups are not cached. Snapshot source
+uploads and checkout need no GitHub access and work with or
+without an App. At run creation, repository facts are looked up on a best-effort
+basis for job-token cache authorization; an unavailable lookup does not block
+a snapshot run.
+
+The preceding App configuration remains supported, including App ID 5467712.
+Use your own App ID and private key to enable private sources and per-stage
+checks; install it on each listed repository with contents read and checks write
+permissions.
+
 The installation id is looked up per repository
 (`GET /repos/{owner}/{repo}/installation` with the app JWT) and cached.
 
 Build `./cmd/pool-server` and start `pool-server --config
 /etc/oyzu-pool/server.json`. The configured listener must be a numeric loopback
 address and `public_url` an HTTPS origin. `GET /healthz` answers 204 while
-state storage is available and discloses no pool metadata. An absent or invalid
+state storage is available and discloses no pool metadata. When `github_app` is configured, an absent or invalid
 App key fails startup; the process never runs jobs or falls back to the host.
-The App ID is fixed to 5467712. Repository names that normalize to the same
+The App ID may be any positive integer; omit `github_app` entirely to run
+without an App. Repository names that normalize to the same
 project identifier are rejected at startup.
 
 Run exactly one process per state directory. State files are private (0600),
@@ -104,7 +171,7 @@ exactly.
 | `release` | Requeues a claimed job whose executor never started, without using an attempt. |
 | `job/start` | Spends the startup bearer once; answers `Started` with a job bearer (lease 2 minutes, `heartbeat_seconds` 30) and the `Job`. |
 | `job/heartbeat` | Renews the lease; answers `cancel: true` once the run's cancel was requested. |
-| `job/source` | Mints a GitHub App installation token for `job.repository` only, with `permissions: {"contents": "read"}`, and answers `Source`. Slice 2 adds the snapshot answer. |
+| `job/source` | Without an App, answers an anonymous source with no token. With an App, mints an installation token for `job.repository` only, with `permissions: {"contents": "read"}`, and answers `Source`. Snapshot runs receive a download grant. |
 | `job/logs`, `job/logs/finish` | Stores chunks (base64 gzip NDJSON, hash-checked, gapless `seq`) as `runnerclient.LogChunk` and `LogFinish` describe. The finishing bearer keeps log authority for 15 minutes after `job/finish`. |
 | `job/finish` | Records the `Outcome`; sets the run's state, exit code, reason and outputs. |
 | `job/id-token` | Requires a live job bearer; answers an Ed25519-signed JWT (`iss` = `public_url`, `aud` from the request, `sub` = `repo:<repository>:ref:<ref>`, plus `repository`, `sha`, `ref`, `run_id`, `source_kind`), valid for 10 minutes. JWKS at `/.well-known/jwks.json`. |
@@ -230,7 +297,8 @@ branches on `code`.
 
 `createRun` checks, in order: the caller (below), the repository is in
 `repositories`, the commit exists (`GET /repos/{owner}/{repo}/commits/{sha}`
-with an installation token; 404 → `COMMIT_NOT_FOUND`), then queues the run and
+with an installation token when an App is configured, anonymously otherwise;
+404 → `COMMIT_NOT_FOUND`), then queues the run and
 its job. `Idempotency-Key` behaves as the contract says (same key and body →
 200 with the first run).
 
@@ -241,8 +309,15 @@ output metadata only, so `--download` is a named follow-up (see the proposal).
 
 | Caller | Proves it with | May |
 | --- | --- | --- |
-| A person | `Tailscale-User-Login`, set by `tailscale serve`. Trusted only when the TCP peer is loopback. Must be in `callers.tailnet_users`. | Create runs for any listed repository; read and cancel their own runs. |
+| A person | `Tailscale-User-Login`, set by `tailscale serve`. Honored only when `callers.tailnet_users` is non-empty and the TCP peer is loopback. Must be in `callers.tailnet_users`. | Create runs for any listed repository; read and cancel their own runs. |
+| A person with a caller token | `Authorization: Bearer <token>` matching a SHA-256 hash in `callers.tokens`; identity is `token:<name>`. | Create runs for any listed repository; read and cancel their own runs. |
 | A GitHub Actions job | `Authorization: Bearer <GitHub OIDC ID token>`. Verify RS256 against `https://token.actions.githubusercontent.com/.well-known/jwks` (cache keys, refetch on unknown `kid`), `iss`, `aud` = `public_url`, `exp`/`nbf`. Reuse the verifier in platform `deploy/ovh-farm/cache-gate/oidc.go`. | Create a run only when `repository` and `sha` equal the token's claims and `ref` matches a listed pattern for that repository; read and cancel only runs it created. |
+
+While `callers.tailnet_users` is empty, the server ignores
+`Tailscale-User-Login` entirely. If you later add tailnet users behind a generic
+reverse proxy, that proxy must strip incoming `Tailscale-User-Login` headers;
+only a trusted identity proxy may set them. The loopback peer check alone does
+not authenticate a header forwarded by a generic proxy.
 
 Anything else is 401 `UNAUTHENTICATED`. A known caller asking for an unlisted
 repository is 403 `PERMISSION_DENIED`.
@@ -289,11 +364,13 @@ Actions-created runs persist the verified creator's `repository`,
 `repository_id`, `repository_owner_id`, `ref`, `ref_type`, `event_name` and
 `job_workflow_ref` when present, and copy those values into job tokens without
 deriving missing claims. This authority survives server restarts and creator
-token expiry. At creation, terminal/tailnet runs look up `repository_id` and
-`repository_owner_id` through the pool's GitHub App and persist them separately
-as repository source facts. Their job tokens include those IDs when available,
+token expiry. At creation, person-created commit and snapshot runs look up
+`repository_id` and `repository_owner_id` through the GitHub API (anonymously
+without an App), and persist them separately as repository source facts. Without an App, private or missing repositories
+yield no facts for snapshots and do not produce a lookup error log.
+Person-created job tokens include those IDs when available,
 but never gain `event_name`, `ref_type` or `job_workflow_ref`; they remain
-read-only. A failed lookup is logged without failing the run, and its tokens
+read-only. Other lookup failures are logged without failing the run, and its tokens
 omit the IDs. Tokens reuse persisted facts without another lookup. Older
 terminal runs without these facts still omit the IDs and Actions-only claims.
 Every token separately identifies the pool run with
@@ -315,6 +392,9 @@ and gate authorization are owned by platform `deploy/ovh-farm`; issuing a
 token alone does not demonstrate a cache write or cache hit.
 
 ## Slice 4: per-stage checks
+
+Without a GitHub App, per-stage checks are skipped; the server logs this once
+at startup. Adding your own App enables private commit sources and checks.
 
 For commit runs, the first log entry with a `<target>:<stage>` scope queues a
 GitHub check named `oyzu / <target> / <stage>` on the run's commit, initially

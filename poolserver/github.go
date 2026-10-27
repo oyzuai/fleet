@@ -89,7 +89,9 @@ func (a *GitHubApp) request(ctx context.Context, method, path, token string, bod
 	if e != nil {
 		return 0, e
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	if body != nil {

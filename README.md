@@ -7,7 +7,7 @@ executor/engine file binding and controlled Unix-socket proxy integration in
 progress. Native qualification is pending.
 
 A single-tenant [pool server](docs/pool-server.md) that serves remote builds
-without the platform is designed but not implemented.
+without the platform is implemented and experimental.
 
 Manager and executor authentication have separate
 [lifecycles](docs/authentication.md). A manager enrolls

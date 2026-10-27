@@ -1,11 +1,13 @@
 package poolserver
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -92,7 +94,8 @@ func TestTerminalJobTokenRepositoryFacts(t *testing.T) {
 				if status, _, _ = f.request(t, "POST", runsPath, "micah@example.com", body, headers); status != 200 {
 					t.Fatalf("idempotent run creation: %d", status)
 				}
-				if calls.Load() != 1 {
+				expectedLookups := int64(1)
+				if calls.Load() != expectedLookups {
 					t.Fatalf("repository looked up %d times at creation", calls.Load())
 				}
 				// Reopen with a source provider that cannot look up IDs. Tokens
@@ -135,10 +138,82 @@ func TestTerminalJobTokenRepositoryFacts(t *testing.T) {
 						t.Fatalf("run source claims changed: %#v", claims)
 					}
 				}
-				if calls.Load() != 1 {
+				if calls.Load() != expectedLookups {
 					t.Fatal("token issuance repeated repository lookup")
 				}
 			})
 		}
+	}
+}
+
+func TestAnonymousPrivateSnapshotJobToken(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusNotFound} {
+		t.Run(fmt.Sprintf("lookup-%d", status), func(t *testing.T) {
+			f := newFixture(t)
+			var calls atomic.Int64
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.URL.Path != "/repos/oyzuai/fleet" || r.Header.Get("Authorization") != "" {
+					t.Error("unexpected anonymous facts request", r.URL.Path)
+				}
+				if status == http.StatusNotFound {
+					w.WriteHeader(status)
+					return
+				}
+				respond(w, 200, map[string]any{"private": true})
+			}))
+			defer api.Close()
+			f.cfg.GitHubApp.AppID = 0
+			s, err := New(f.cfg, Options{HTTPClient: api.Client(), Now: f.s.now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.source.(*anonymousGitHub).api.base = api.URL
+			f.s, f.ts.Config.Handler = s, s
+			var logs bytes.Buffer
+			previous := log.Writer()
+			log.SetOutput(&logs)
+			defer log.SetOutput(previous)
+			data, _ := sourceTestManifest(t, f, "private snapshot source")
+			digest := "sha256:" + hash(data)
+			if status := uploadSource(t, f, digest, data); status != 201 {
+				t.Fatalf("upload %d", status)
+			}
+			body := createBody()
+			body.Commit = ""
+			body.Source = &SnapshotSource{Kind: "snapshot", Digest: digest, BaseCommit: testSHA}
+			code, raw, _ := f.request(t, "POST", runsPath, "micah@example.com", body, nil)
+			if code != 201 {
+				t.Fatalf("snapshot creation %d %s", code, raw)
+			}
+			var run Run
+			if err = json.Unmarshal(raw, &run); err != nil {
+				t.Fatal(err)
+			}
+			if s.state.Runs[run.ID].RepositoryFacts != nil {
+				t.Fatal("private snapshot acquired repository facts")
+			}
+			started := f.start(t, f.login(t).access)
+			token, err := f.c.IDToken(context.Background(), started.JobToken, "https://cache.example.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			parts := strings.Split(token.Token, ".")
+			var claims map[string]any
+			if len(parts) != 3 || decodeJWT(parts[1], &claims) != nil {
+				t.Fatal("invalid job token")
+			}
+			for _, key := range []string{"repository_id", "repository_owner_id"} {
+				if _, present := claims[key]; present {
+					t.Fatalf("private snapshot acquired %s", key)
+				}
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("repository lookups %d, want 1", calls.Load())
+			}
+			if logs.Len() != 0 {
+				t.Fatalf("private/missing snapshot logged an error: %s", logs.String())
+			}
+		})
 	}
 }

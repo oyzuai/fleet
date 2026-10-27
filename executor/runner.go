@@ -702,12 +702,16 @@ func failedWith(code, summary string) runnerclient.Outcome {
 func checkout(ctx context.Context, cfg Config, token string, job runnerclient.Job) error {
 	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	remote := strings.TrimRight(cfg.GitURL, "/") + "/" + job.Repository + ".git"
-	env := append(telemetry.Scrub(os.Environ()),
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=http."+strings.TrimRight(cfg.GitURL, "/")+"/.extraHeader",
-		"GIT_CONFIG_VALUE_0=Authorization: Basic "+auth,
-	)
+	env := append(telemetry.Scrub(os.Environ()), "GIT_TERMINAL_PROMPT=0")
+	if token != "" {
+		env = append(env,
+			"GIT_CONFIG_COUNT=1",
+			"GIT_CONFIG_KEY_0=http."+strings.TrimRight(cfg.GitURL, "/")+"/.extraHeader",
+			"GIT_CONFIG_VALUE_0=Authorization: Basic "+auth,
+		)
+	} else {
+		env = append(env, "GIT_CONFIG_COUNT=0")
+	}
 	steps := [][]string{
 		{"init", "--quiet"},
 		{"fetch", "--quiet", "--depth", "1", "--no-tags", remote, job.HeadSHA},
@@ -748,7 +752,10 @@ func checkout(ctx context.Context, cfg Config, token string, job runnerclient.Jo
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
-			msg := strings.ReplaceAll(strings.TrimSpace(stderr.String()), token, "***")
+			msg := strings.TrimSpace(stderr.String())
+			if token != "" {
+				msg = strings.ReplaceAll(msg, token, "***")
+			}
 			return fmt.Errorf("git %s: %w: %s", args[0], err, msg)
 		}
 	}
