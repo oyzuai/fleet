@@ -83,7 +83,14 @@ jobs:
       - name: Acquire fleet's locked plugins and build requirements
         # Non-frozen builds acquire missing published plugins. Frozen exec
         # cannot bootstrap an empty store; do not replace the committed lock.
-        run: oyzu build fleet
+        run: oyzu build pool-server manager executor
+
+      - name: Verify all three collected Go binaries
+        run: |
+          for target in pool-server manager executor; do
+            artifact=$(jq -er --arg target "$target" '[.artifacts[] | select(.target == $target and .name == "primary") | .path] | if length == 1 then .[0] else error("expected one binary per main") end' dist/manifest.json)
+            test -x "dist/$artifact"
+          done
 
       - name: Resolve fleet's locked Go environment
         run: oyzu exec -- go version

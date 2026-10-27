@@ -97,9 +97,13 @@ oyzu_env() {
 run released-cli oyzu_env --version
 lock_before=$(sha256sum oyzu.lock)
 run preview-opt-in oyzu_env config set --global plugins.preview true
-run acquire-fleet oyzu_env build --store "$plugin_store" fleet
+run acquire-fleet oyzu_env build --store "$plugin_store" pool-server manager executor
 run fleet-go oyzu_env exec --store "$plugin_store" -- go version
-run fleet-build oyzu_env build --store "$plugin_store" fleet
+run fleet-build oyzu_env build --store "$plugin_store" pool-server manager executor
+for target in pool-server manager executor; do
+  artifact=$(jq -er --arg target "$target" '[.artifacts[] | select(.target == $target and .name == "primary") | .path] | if length == 1 then .[0] else error("expected one binary per main") end' dist/manifest.json)
+  run "binary-$target" test -x "dist/$artifact"
+done
 run fleet-vet oyzu_env exec --store "$plugin_store" -- go vet ./cmd/pool-server ./cmd/manager ./cmd/executor
 run fleet-tests oyzu_env exec --store "$plugin_store" -- go test ./cmd/pool-server ./cmd/manager ./cmd/executor
 run fleet-format oyzu_env exec --store "$plugin_store" -- bash -ec 'test -z "$(gofmt -l cmd/pool-server/main.go cmd/manager/main.go cmd/executor/main.go)"'

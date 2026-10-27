@@ -33,7 +33,7 @@ on PATH:
 
 ```bash
 oyzu config set --global plugins.preview true
-oyzu build fleet
+oyzu build pool-server manager executor
 oyzu exec -- go version
 oyzu exec -- bash tooling/release-build.sh 0.1.0 build/release
 bash tooling/prepare-executor-image.sh 0.1.0
@@ -46,9 +46,10 @@ It uses fleet's own `oyzu.toml` and `oyzu.lock` for every Go command. The
 workflow and image-proof helper enable `plugins.preview` in a job-scoped
 HOME/config before acquisition, so the public preview catalog can supply the
 locked Go and Docker releases without changing the lock or host configuration.
-Before frozen `oyzu exec` commands, a non-frozen `oyzu build fleet` acquires
-the missing published plugins and build requirements without replacing the locked plugin
-selections. An acquisition failure stops the release with oyzu's diagnostic.
+The three application targets select `cmd/pool-server`, `cmd/manager` and
+`cmd/executor` within the root module. Before frozen `oyzu exec` commands,
+a non-frozen build of those targets acquires the missing published plugins and
+build requirements without replacing the locked plugin selections. An acquisition failure stops the release with oyzu's diagnostic.
 It never falls back to another repository's toolset or builds plugins from source.
 
 Release archives, SBOMs and checksums go to `build/release`; `dist` is reserved

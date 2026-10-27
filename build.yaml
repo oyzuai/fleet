@@ -1,10 +1,15 @@
 # Build targets for fleet. `oyzu build` builds them all.
 builds:
-  # The Go module: one binary per cmd/ directory, `manager` (released as
-  # oyzu-pool-manager), `executor` and `pool-server`.
-  fleet:
+  # One application target per shipped main, all in the root Go module.
+  pool-server:
     uses: go/app
-    path: .
+    path: cmd/pool-server
+  manager:
+    uses: go/app
+    path: cmd/manager
+  executor:
+    uses: go/app
+    path: cmd/executor
 
   # Prepare this context with tooling/prepare-executor-image.sh first.
   executor-image:
