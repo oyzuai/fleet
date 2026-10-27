@@ -3,8 +3,9 @@
 set -euo pipefail
 source_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 mkdir -p /srv/dev/worktrees/.rc-proofs
-scratch=$(mktemp -d /srv/dev/worktrees/.rc-proofs/fleet-executor-review1.XXXXXX)
-container_name="fleet-executor-review1-${scratch##*.}"
+scratch=$(mktemp -d /srv/dev/worktrees/.rc-proofs/fleet-executor-review2.XXXXXX)
+container_name="fleet-executor-review2-${scratch##*.}"
+plugin_store="$scratch/data/oyzu/tools"
 loaded_id=
 image_snapshot=
 image_snapshot_taken=false
@@ -52,7 +53,7 @@ cleanup() {
 import os, pathlib, shutil, stat, sys
 p = pathlib.Path(sys.argv[1]).resolve()
 assert p.parent == pathlib.Path('/srv/dev/worktrees/.rc-proofs')
-assert p.name.startswith('fleet-executor-review1.')
+assert p.name.startswith('fleet-executor-review2.')
 for root, _, _ in os.walk(p):
     os.chmod(root, stat.S_IRWXU)
 shutil.rmtree(p)
@@ -63,7 +64,7 @@ PY
   exit "$result"
 }
 trap cleanup EXIT
-mkdir -p "$scratch"/{fleet,tmp,bin,go-path,go-mod,go-cache}
+mkdir -p "$scratch"/{fleet,tmp,bin,home,go-path,go-mod,go-cache}
 export TMPDIR="$scratch/tmp" GOPATH="$scratch/go-path"
 export GOMODCACHE="$scratch/go-mod" GOCACHE="$scratch/go-cache"
 export GOTOOLCHAIN=local
@@ -84,19 +85,31 @@ run verify-oyzu sha256sum --check <<CHECKSUMS
 7d3284db39d96e8b817f8a244b8cd6a9d01c540a4501552c3b9dc4c0618cf653  $scratch/bin/oyzu-shim
 CHECKSUMS
 chmod +x "$scratch/bin/oyzu" "$scratch/bin/oyzu-shim"
-run released-cli oyzu --version
-# Use the host's admitted installations and fleet's own lock. Fail explicitly
-# rather than installing a host toolchain or falling back to another repository.
-run fleet-go oyzu exec --offline -- go version
-run sbom-helper env GOBIN="$scratch/bin" oyzu exec --offline -- go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.9.0
-run release-archives oyzu exec --offline -- bash tooling/release-build.sh 0.1.0 dist/release
+# All oyzu commands use one initially empty HOME/store. The explicit empty
+# user-config location excludes inherited host user bindings without changing
+# machine policy. Do not add development/source bindings or re-pin the lock.
+oyzu_env() {
+  env HOME="$scratch/home" \
+    XDG_CONFIG_HOME="$scratch/home/.config" XDG_DATA_HOME="$scratch/data" \
+    XDG_CACHE_HOME="$scratch/cache" OYZU_USER_CONFIG="$scratch/home/.config/oyzu/config.toml" \
+    "$scratch/bin/oyzu" "$@"
+}
+run released-cli oyzu_env --version
+lock_before=$(sha256sum oyzu.lock)
+run acquire-fleet oyzu_env build --store "$plugin_store" fleet
+run fleet-go oyzu_env exec --store "$plugin_store" -- go version
+run fleet-build oyzu_env build --store "$plugin_store" fleet
+run fleet-vet oyzu_env exec --store "$plugin_store" -- go vet ./cmd/pool-server ./cmd/manager ./cmd/executor
+run fleet-tests oyzu_env exec --store "$plugin_store" -- go test ./cmd/pool-server ./cmd/manager ./cmd/executor
+run fleet-format oyzu_env exec --store "$plugin_store" -- bash -ec 'test -z "$(gofmt -l cmd/pool-server/main.go cmd/manager/main.go cmd/executor/main.go)"'
+run fleet-config oyzu_env config validate
+run sbom-helper oyzu_env exec --store "$plugin_store" -- env GOBIN="$scratch/bin" go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.9.0
+run release-archives oyzu_env exec --store "$plugin_store" -- bash tooling/release-build.sh 0.1.0 build/release
 run prepare-context bash tooling/prepare-executor-image.sh 0.1.0
-# Image build acquisition is confined to this disposable store. Preview opt-in
-# admits only catalog releases, with normal signature and withdrawal checks.
-printf '[plugins]\npreview = true\n' > "$scratch/oyzu-config.toml"
-export OYZU_USER_CONFIG="$scratch/oyzu-config.toml"
-export XDG_DATA_HOME="$scratch/data" XDG_CACHE_HOME="$scratch/cache"
-run image-build oyzu build --store "$scratch/plugin-store" executor-image
+# The image build reuses the acquired store; archives never occupy dist/.
+run image-build oyzu_env build --store "$plugin_store" executor-image
+test "$(sha256sum oyzu.lock)" = "$lock_before"
+printf 'RESULT unchanged-lock: PASS\n'
 archive=$(jq -er '[.artifacts[] | select(.name == "image") | .path] | if length == 1 then .[0] else error("expected one image") end' dist/manifest.json)
 digest=$(jq -er '.artifacts[] | select(.name == "image") | .ociDigest' dist/manifest.json)
 [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]

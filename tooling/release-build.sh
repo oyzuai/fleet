@@ -2,7 +2,7 @@
 # Run inside fleet's `oyzu exec -- bash ...`.
 set -euo pipefail
 version=${1:?usage: release-build.sh VERSION [OUTPUT_DIRECTORY]}
-out=${2:-dist/release}
+out=${2:-build/release}
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
 mkdir -p "$out"
 out=$(cd "$out" && pwd)

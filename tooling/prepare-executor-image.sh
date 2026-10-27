@@ -2,7 +2,7 @@
 # Prepare a secret-free Docker context using only verified public release bytes.
 set -euo pipefail
 version=${1:?usage: prepare-executor-image.sh VERSION [RELEASE_DIRECTORY]}
-release=${2:-dist/release}
+release=${2:-build/release}
 context=deploy/executor-image
 [[ ! -e $context/rootfs && ! -e $context/downloads ]] || { echo "$context already exists; remove the generated context files first" >&2; exit 1; }
 mkdir -p "$context/downloads" "$context/rootfs"

@@ -32,18 +32,24 @@ Build from the repository root with a released oyzu and cyclonedx-gomod v1.9.0
 on PATH:
 
 ```bash
-oyzu exec -- bash tooling/release-build.sh 0.1.0 dist/release
+oyzu build fleet
+oyzu exec -- go version
+oyzu exec -- bash tooling/release-build.sh 0.1.0 build/release
 bash tooling/prepare-executor-image.sh 0.1.0
 oyzu build executor-image
 ```
 
 The release workflow installs the pinned CLI, companion shim and notices directly
 from the public `oyzuai/oyzu-releases` assets and verifies their SHA-256 values.
-It uses fleet's own `oyzu.toml` and `oyzu.lock` for every Go command. A lock
-selects plugins but does not install them: a fresh runner without admitted
-plugin bytes or a configured acquisition route fails with oyzu's diagnostic.
+It uses fleet's own `oyzu.toml` and `oyzu.lock` for every Go command. Before
+frozen `oyzu exec` commands, a non-frozen `oyzu build fleet` acquires the missing
+published plugins and build requirements without replacing the locked plugin
+selections. An acquisition failure stops the release with oyzu's diagnostic.
 It never falls back to another repository's toolset or builds plugins from source.
 
+Release archives, SBOMs and checksums go to `build/release`; `dist` is reserved
+for oyzu's build bundle. Keeping the archives outside `dist` lets both the
+initial fleet build and the later image build manage a valid bundle there.
 The image is built with `oyzu build executor-image`. As an explicit image-only
 stopgap, Docker loads the OCI archive and pushes it using the version tag as
 transport. The workflow requires the remote manifest digest to match the digest
