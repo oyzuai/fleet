@@ -31,7 +31,17 @@ archive, and ca-certificates copyright notices are retained under
 retaining its notices.
 
 Build from the repository root with a released oyzu and cyclonedx-gomod v1.9.0
-on PATH:
+on PATH. Release archive generation requires a real Git checkout for Go's VCS
+stamping. The image-proof helper clones the committed HEAD into a disposable
+checkout under `/srv/dev/tmp`; commit changes before running it. This checkout
+requirement belongs to release archive generation, not the isolated `fleet`
+build or its vet, test and SBOM tooling.
+
+```bash
+bash tooling/executor-image-proof.sh
+```
+
+The equivalent build sequence is:
 
 ```bash
 oyzu config set --global plugins.preview true

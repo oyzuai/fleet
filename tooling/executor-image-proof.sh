@@ -2,9 +2,9 @@
 # Run on dev01 outside the sandbox. Receipts go to the terminal, never files.
 set -euo pipefail
 source_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-mkdir -p /srv/dev/worktrees/.rc-proofs
+mkdir -p /srv/dev/tmp
 # Keep Go test Unix-socket paths below the kernel path-length limit.
-scratch=$(mktemp -d /srv/dev/worktrees/.rc-proofs/f6.XXXXXX)
+scratch=$(mktemp -d /srv/dev/tmp/f8.XXXXXX)
 container_name="fleet-executor-proof-${scratch##*.}"
 plugin_store="$scratch/data/oyzu/tools"
 loaded_id=
@@ -53,8 +53,8 @@ cleanup() {
   run cleanup-scratch /usr/bin/python3 - "$scratch" <<'PY'
 import os, pathlib, shutil, stat, sys
 p = pathlib.Path(sys.argv[1]).resolve()
-assert p.parent == pathlib.Path('/srv/dev/worktrees/.rc-proofs')
-assert p.name.startswith('f6.')
+assert p.parent == pathlib.Path('/srv/dev/tmp')
+assert p.name.startswith('f8.')
 for root, _, _ in os.walk(p):
     os.chmod(root, stat.S_IRWXU)
 shutil.rmtree(p)
@@ -71,12 +71,13 @@ export GOMODCACHE="$scratch/go-mod" GOCACHE="$scratch/go-cache"
 export GOTOOLCHAIN=local
 export PATH="$scratch/bin:$PATH"
 run docker-access docker info
-run copy-source bash -o pipefail -c '
-  tar -C "$1" --exclude=./.git --exclude=./.oyzu --exclude=./build --exclude=./dist \
-    --exclude=./deploy/executor-image -cf - . | tar -C "$2" -xf -
-' bash "$source_root" "$scratch/fleet"
-# The generated context was excluded entirely, including any prior preparation.
-mkdir -p "$scratch/fleet/deploy/executor-image"
+# Clone the committed PR head, as the pool does. Release archives need real
+# Git metadata for Go's VCS stamping; never disable stamping to mask a failure.
+source_head=$(git -C "$source_root" rev-parse HEAD)
+run clone-source git clone --no-hardlinks --no-checkout "$source_root" "$scratch/fleet"
+run checkout-source git -C "$scratch/fleet" checkout --detach "$source_head"
+run verify-source-head test "$(git -C "$scratch/fleet" rev-parse HEAD)" = "$source_head"
+run source-status git -C "$scratch/fleet" status --porcelain
 cd "$scratch/fleet"
 base=https://github.com/oyzuai/oyzu-releases/releases/download/oyzu/v0.2.3
 run download-oyzu curl -fsSL --retry 3 "$base/oyzu-linux-x86_64" -o "$scratch/bin/oyzu"
