@@ -2,8 +2,12 @@ package poolserver
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -41,6 +45,9 @@ func New(c Config, o Options) (*Server, error) {
 		o.HTTPClient = &http.Client{Timeout: 15 * time.Second}
 	}
 	source := o.Source
+	if source == nil && c.GitHubApp.AppID == 0 {
+		source = newAnonymousGitHub(o)
+	}
 	if source == nil {
 		app, err := newGitHubApp(c, o)
 		if err != nil {
@@ -58,6 +65,9 @@ func New(c Config, o Options) (*Server, error) {
 	}
 	s := &Server{cfg: c, now: o.Now, source: source, state: d, changed: make(chan struct{}), downloads: map[string]sourceDownload{}}
 	s.checks, _ = source.(*GitHubApp)
+	if c.GitHubApp.AppID == 0 {
+		log.Print("pool: GitHub App not configured; per-stage checks disabled")
+	}
 	s.dirtyChecks = map[string]struct{}{}
 	s.checkWake = make(chan struct{}, 1)
 	s.issuer = issuer
@@ -182,6 +192,14 @@ type caller struct {
 func (s *Server) caller(r *http.Request) (caller, error) {
 	// An explicit bearer must authenticate itself, even on a tailnet request.
 	if r.Header.Get("Authorization") != "" {
+		token := bearer(r)
+		digest := sha256.Sum256([]byte(token))
+		for _, configured := range s.cfg.Callers.Tokens {
+			expected, _ := hex.DecodeString(configured.SHA256)
+			if subtle.ConstantTimeCompare(digest[:], expected) == 1 && token != "" {
+				return caller{ID: "token:" + configured.Name, Actor: "token:" + configured.Name}, nil
+			}
+		}
 		c, err := s.oidc.verify(r.Context(), bearer(r))
 		if err != nil {
 			return caller{}, err

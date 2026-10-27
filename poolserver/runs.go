@@ -2,8 +2,10 @@ package poolserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"mime"
@@ -22,7 +24,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 	c, err := s.caller(r)
 	if err != nil {
 		w.Header().Set("WWW-Authenticate", "Bearer")
-		problem(w, 401, "UNAUTHENTICATED", "A permitted tailnet identity or GitHub Actions token is required.")
+		problem(w, 401, "UNAUTHENTICATED", "A permitted caller token, tailnet identity or GitHub Actions token is required.")
 		return
 	}
 	p := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1alpha1/"), "/")
@@ -384,6 +386,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, c caller) {
 	} else {
 		exists, e = s.source.CommitExists(r.Context(), in.Repository.Name, in.Commit)
 	}
+	if errors.Is(e, errPrivateRepository) {
+		problem(w, 403, "PERMISSION_DENIED", errPrivateRepository.Error())
+		return
+	}
 	if e != nil {
 		w.Header().Set("Retry-After", "5")
 		problem(w, 503, "SERVICE_UNAVAILABLE", "Repository source is unavailable.")
@@ -399,7 +405,9 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, c caller) {
 	}
 	var sourceFacts *repositoryFacts
 	if c.Claims == nil {
-		if app, ok := s.source.(*GitHubApp); ok {
+		if app, ok := s.source.(interface {
+			repositoryFacts(context.Context, string) (*repositoryFacts, error)
+		}); ok && in.Source == nil {
 			var err error
 			sourceFacts, err = app.repositoryFacts(r.Context(), in.Repository.Name)
 			if err != nil {

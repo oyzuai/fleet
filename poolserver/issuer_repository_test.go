@@ -92,7 +92,11 @@ func TestTerminalJobTokenRepositoryFacts(t *testing.T) {
 				if status, _, _ = f.request(t, "POST", runsPath, "micah@example.com", body, headers); status != 200 {
 					t.Fatalf("idempotent run creation: %d", status)
 				}
-				if calls.Load() != 1 {
+				expectedLookups := int64(1)
+				if kind == "snapshot" {
+					expectedLookups = 0
+				}
+				if calls.Load() != expectedLookups {
 					t.Fatalf("repository looked up %d times at creation", calls.Load())
 				}
 				// Reopen with a source provider that cannot look up IDs. Tokens
@@ -103,7 +107,7 @@ func TestTerminalJobTokenRepositoryFacts(t *testing.T) {
 				}
 				f.s, f.ts.Config.Handler = reopened, reopened
 				rr := reopened.state.Runs[run.ID]
-				if rr.Creator != nil || (rr.RepositoryFacts != nil) != (lookupStatus == http.StatusOK) {
+				if rr.Creator != nil || (rr.RepositoryFacts != nil) != (lookupStatus == http.StatusOK && kind == "commit") {
 					t.Fatal("repository source facts changed creator authority or did not persist")
 				}
 				st := f.start(t, f.login(t).access)
@@ -118,7 +122,7 @@ func TestTerminalJobTokenRepositoryFacts(t *testing.T) {
 						t.Fatal("invalid job token")
 					}
 					for key, value := range map[string]string{"repository_id": "1234", "repository_owner_id": "5678"} {
-						if lookupStatus == http.StatusOK {
+						if lookupStatus == http.StatusOK && kind == "commit" {
 							if claims[key] != value {
 								t.Fatalf("%s=%v, want %s", key, claims[key], value)
 							}
@@ -135,7 +139,7 @@ func TestTerminalJobTokenRepositoryFacts(t *testing.T) {
 						t.Fatalf("run source claims changed: %#v", claims)
 					}
 				}
-				if calls.Load() != 1 {
+				if calls.Load() != expectedLookups {
 					t.Fatal("token issuance repeated repository lookup")
 				}
 			})
