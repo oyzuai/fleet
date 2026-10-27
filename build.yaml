@@ -1,7 +1,15 @@
 # Build targets for fleet. `oyzu build` builds them all.
 builds:
   # The Go module: one binary per cmd/ directory, `manager` (released as
-  # oyzu-pool-manager) and `executor` (released as oyzu-executor).
+  # oyzu-pool-manager), `executor` and `pool-server`.
   fleet:
     uses: go/app
     path: .
+
+  # Prepare this context with tooling/prepare-executor-image.sh first.
+  executor-image:
+    uses: docker/image
+    path: deploy/executor-image
+    platforms: [linux/amd64]
+    with:
+      repository: ghcr.io/oyzuai/oyzu-pool-executor

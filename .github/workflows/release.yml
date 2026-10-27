@@ -26,6 +26,7 @@ permissions:
   contents: write      # gh release create
   id-token: write      # the OIDC token for cosign and attestations
   attestations: write  # SLSA provenance
+  packages: write      # public executor image
 
 concurrency:
   group: release-${{ github.ref }}
@@ -38,16 +39,25 @@ jobs:
     runs-on: ubuntu-24.04
     environment: release
     timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: fleet
     env:
       CGO_ENABLED: "0"
       GOFLAGS: -trimpath -mod=readonly
     steps:
+      # setup-oyzu runs its released bootstrap from GITHUB_WORKSPACE.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
-          cache: false
+          repository: oyzuai/oyzu
+          ref: 57a1766d795c145b59ada95733c86efde38846fd
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: fleet
+      - name: Set up released oyzu (no CLI or plugin source builds on Linux)
+        uses: oyzuai/oyzu/.github/actions/setup-oyzu@57a1766d795c145b59ada95733c86efde38846fd
+        with:
+          install-tools: 'false'
 
       - name: Check the tag is a release version
         run: |
@@ -55,30 +65,37 @@ jobs:
             echo "::error::$GITHUB_REF_NAME is not a vMAJOR.MINOR.PATCH tag"; exit 1; }
 
       - name: Install cyclonedx-gomod
-        run: go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.9.0
-
-      # Linux first (platform IMPL-115); Windows and macOS executors follow.
-      - name: Build
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          mkdir -p dist
-          for prog in manager:oyzu-pool-manager executor:oyzu-executor; do
-            dir="${prog%%:*}"; name="${prog##*:}"
-            for platform in linux/amd64 linux/arm64; do
-              export GOOS="${platform%/*}" GOARCH="${platform#*/}"
-              stem="${name}_${version}_${GOOS}_${GOARCH}"
-              mkdir -p "build/$stem"
-              go build -ldflags "-s -w -X main.version=$version" -o "build/$stem/$name" "./cmd/$dir"
-              cp LICENSE.md THIRD_PARTY_NOTICES.md "build/$stem/"
-              mkdir -p "build/$stem/third-party/moby-profiles" "build/$stem/third-party/runner-v1"
-              cp manager/container/profiles/LICENSE manager/container/profiles/docker-default.json "build/$stem/third-party/moby-profiles/"
-              cp readiness/schema/LICENSE "build/$stem/third-party/runner-v1/"
-              tar -C build -czf "dist/$stem.tar.gz" "$stem"
-              cyclonedx-gomod app -json -licenses -main "cmd/$dir" -output "dist/$stem.cdx.json" .
-            done
-          done
-          (cd dist && sha256sum -- * > SHA256SUMS)
-          cat dist/SHA256SUMS
+          GOBIN="$RUNNER_TEMP/release-tools" oyzu -C "$GITHUB_WORKSPACE" --toolset go-test exec -- go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.9.0
+          echo "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+
+      - name: Build all release archives and SBOMs
+        run: |
+          oyzu -C "$GITHUB_WORKSPACE" --toolset go-test exec -- bash -c 'cd fleet && bash tooling/release-build.sh "${GITHUB_REF_NAME#v}" dist/release'
+
+      - name: Prepare and build public executor image with oyzu
+        run: |
+          bash tooling/prepare-executor-image.sh "${GITHUB_REF_NAME#v}"
+          oyzu build executor-image
+
+      - name: Sign image build witness and configure keyless subject signer
+        run: node tooling/sign-executor-image.mjs
+
+      - name: Publish and verify image with oyzu
+        id: image
+        env:
+          OYZU_IMAGE_REGISTRY_USERNAME: ${{ github.actor }}
+          OYZU_IMAGE_REGISTRY_PASSWORD: ${{ github.token }}
+        run: |
+          oyzu --json publish --destination executor > "$RUNNER_TEMP/executor-receipt.json"
+          digest=$(jq -er '.destinations[0].entries[0].manifestDigest' "$RUNNER_TEMP/executor-receipt.json")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          # oyzu publishes and signs by digest; only alias the verified image.
+          image=ghcr.io/oyzuai/oyzu-pool-executor
+          echo "$OYZU_IMAGE_REGISTRY_PASSWORD" | docker login ghcr.io -u "$OYZU_IMAGE_REGISTRY_USERNAME" --password-stdin
+          docker buildx imagetools create --prefer-index=false -t "$image:${GITHUB_REF_NAME#v}" "$image@$digest"
+          test "$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$image:${GITHUB_REF_NAME#v}" | jq -r .digest)" = "$digest"
 
       - name: Install cosign
         # v4.1.2
@@ -87,11 +104,11 @@ jobs:
           cosign-release: v3.1.3
 
       - name: Sign the checksums
-        working-directory: dist
+        working-directory: fleet/dist/release
         run: cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
 
       - name: Verify as a user will
-        working-directory: dist
+        working-directory: fleet/dist/release
         run: |
           cosign verify-blob --bundle SHA256SUMS.sigstore.json \
             --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}" \
@@ -102,12 +119,30 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-checksums: dist/SHA256SUMS
+          subject-checksums: fleet/dist/release/SHA256SUMS
 
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           prerelease=$([[ "$GITHUB_REF_NAME" == *-* ]] && echo --prerelease || true)
+          cat > "$RUNNER_TEMP/release-notes.md" <<NOTES
+          Linux amd64 and arm64 archives (each with notices and a CycloneDX SBOM):
+          - oyzu-pool-server_${GITHUB_REF_NAME#v}_linux_<arch>.tar.gz
+          - oyzu-pool-manager_${GITHUB_REF_NAME#v}_linux_<arch>.tar.gz
+          - oyzu-executor_${GITHUB_REF_NAME#v}_linux_<arch>.tar.gz
+
+          Executor image (linux/amd64): ghcr.io/oyzuai/oyzu-pool-executor:${GITHUB_REF_NAME#v}
+          Pinned manager --image: ghcr.io/oyzuai/oyzu-pool-executor@${{ steps.image.outputs.digest }}
+
+          Verify downloads:
+          \`\`\`bash
+          cosign verify-blob --bundle SHA256SUMS.sigstore.json --certificate-identity 'https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}' --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+          sha256sum --check --ignore-missing SHA256SUMS
+          gh attestation verify oyzu-pool-server_${GITHUB_REF_NAME#v}_linux_amd64.tar.gz --repo oyzuai/fleet
+          cosign verify --new-bundle-format --certificate-identity 'https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}' --certificate-oidc-issuer https://token.actions.githubusercontent.com ghcr.io/oyzuai/oyzu-pool-executor@${{ steps.image.outputs.digest }}
+          \`\`\`
+          The image subject was signed and read back by oyzu publish's configured Sigstore signer.
+          NOTES
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
-            --generate-notes $prerelease dist/*
+            --generate-notes --notes-file "$RUNNER_TEMP/release-notes.md" $prerelease dist/release/*

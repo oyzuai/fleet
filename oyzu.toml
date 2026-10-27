@@ -15,3 +15,14 @@ argv = ["bash", "tooling/container-runtime-proof.sh"]
 [tasks.runtime-inputs-proof]
 argv = ["go", "test", "./executor", "-run", "^TestNativeRuntimeInputs$", "-count=1", "-v"]
 env = { FLEET_RUNTIME_PROOF_REQUIRED = "1" }
+
+[publish.destinations.executor]
+kind = "oci"
+registry = "https://ghcr.io"
+repository = "oyzuai/oyzu-pool-executor"
+artifacts = ["executor-image/image"]
+usernameEnv = "OYZU_IMAGE_REGISTRY_USERNAME"
+passwordEnv = "OYZU_IMAGE_REGISTRY_PASSWORD"
+
+# The workflow writes per-run evidence and matching ephemeral public keys into
+# the job checkout's oyzu.toml. Subject signing always uses the release workflow's OIDC identity.

@@ -45,3 +45,59 @@ components = []
 [resolution."sha256:ff28b4b7c4cbc47e49f53873e8e6517e32ff80a026c3729be7e0e978bbecef6e".inputs.archive]
 url = "https://dl.google.com/go/go1.24.13.darwin-arm64.tar.gz"
 digest = "sha256:f282d882c3353485e2fc6c634606d85caf36e855167d59b996dbeae19fa7629a"
+
+[[plugin]]
+reference = "docker/image"
+profile = "image"
+package = "oyzu/docker"
+major = 0
+version = "0.1.0-preview.1"
+release = "sha256:2a6ed659831726bb77e051ed4b7c97f4dc1c6e3b9fad64698e2712902bda65ea"
+
+[[plugin.payloads]]
+os = "linux"
+arch = "amd64"
+abi = "musl"
+digest = "sha256:67f717b2cb86ef94fbb44a103733205d1651ecb5ba2a4fca7c5933f3750f9aca"
+
+[[plugin.payloads]]
+os = "linux"
+arch = "arm64"
+abi = "musl"
+digest = "sha256:4a2609db39cae8314f53e6df1abb3b7c6225e8c02e97b99657f49a62dba3ceba"
+
+[[plugin]]
+reference = "go/app"
+profile = "app"
+package = "oyzu/go"
+major = 0
+version = "0.1.0-preview.1"
+release = "sha256:25f830bd740620e6a54a5eac922d1a9505e12f1e1db732f8538152447ba1f9bf"
+
+[[plugin.payloads]]
+os = "darwin"
+arch = "amd64"
+digest = "sha256:93c198e49885f1c2b3ea7e8e6dabc348492682e792ab2bbf279c84a00cbaa7f9"
+
+[[plugin.payloads]]
+os = "darwin"
+arch = "arm64"
+digest = "sha256:7eb741328f162e10de543c2e5c11b5d73936af6efa4c9713efea8b65cdaf5130"
+
+[[plugin.payloads]]
+os = "linux"
+arch = "amd64"
+abi = "musl"
+digest = "sha256:5add077b2409b27ff3d2bc9177eaf6a288997f4fae19539f73dbe49cc6f7724c"
+
+[[plugin.payloads]]
+os = "linux"
+arch = "arm64"
+abi = "musl"
+digest = "sha256:3adf5a255cd3fe10bb94e908298b828666ce00cc472869b712ddbf71756c3613"
+
+[[plugin.payloads]]
+os = "windows"
+arch = "amd64"
+abi = "msvc"
+digest = "sha256:ad263799f8a1ebee3832fa2e604a5873af891c2fc7d75be4c955ab6764ddbbf0"

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -16,6 +17,9 @@ import (
 	"github.com/oyzuai/fleet/poolserver"
 )
 
+// version is set by the release build (-X main.version).
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		log.Print(err)
@@ -24,7 +28,12 @@ func main() {
 }
 func run() error {
 	config := flag.String("config", "/etc/oyzu-pool/server.json", "root-owned private JSON configuration (or systemd credential mount)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("oyzu-pool-server %s\n", version)
+		return nil
+	}
 	c, err := poolserver.LoadConfig(*config)
 	if err != nil {
 		return err
