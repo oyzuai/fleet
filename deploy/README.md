@@ -35,11 +35,11 @@ on PATH:
 
 ```bash
 oyzu config set --global plugins.preview true
-oyzu build pool-server manager executor
+oyzu build --isolated fleet
 oyzu exec -- go version
 oyzu exec -- bash tooling/release-build.sh 0.1.0 build/release
 bash tooling/prepare-executor-image.sh 0.1.0
-oyzu build executor-image
+oyzu build --isolated executor-image
 ```
 
 The release workflow installs the pinned CLI, companion shim and notices directly
@@ -48,18 +48,22 @@ It uses fleet's own `oyzu.toml` and `oyzu.lock` for every Go command. The
 workflow and image-proof helper enable `plugins.preview` in a job-scoped
 HOME/config before acquisition, so the public preview catalog can supply the
 locked Go and Docker releases without changing the lock or host configuration.
-The three application targets select `cmd/pool-server`, `cmd/manager` and
-`cmd/executor` within the root module. Before frozen `oyzu exec` commands,
-a non-frozen build of those targets acquires the missing published plugins and
-build requirements without replacing the locked plugin selections. An acquisition failure stops the release with oyzu's diagnostic.
+The single `fleet` target selects the root Go module. Preview.2 plans a captured
+build action per main and collects the named `pool-server`, `manager` and
+`executor` binaries. Always use `oyzu build --isolated fleet`: the host lane
+still refuses multi-main modules. Before frozen `oyzu exec` commands, this
+non-frozen isolated build acquires the missing published plugins and build
+requirements without replacing the locked plugin selections. Acquisition or
+isolation failures stop the release with oyzu's diagnostic; there is no host-lane
+fallback.
 It never falls back to another repository's toolset or builds plugins from source.
 
 Release archives, SBOMs and checksums go to `build/release`; `dist` is reserved
 for oyzu's build bundle. Keeping the archives outside `dist` lets both the
 initial fleet build and the later image build manage a valid bundle there.
-The image is built with `oyzu build executor-image`. As an explicit image-only
-stopgap, Docker loads the OCI archive and pushes it using the version tag as
-transport. The workflow requires the remote manifest digest to match the digest
+The image is built with `oyzu build --isolated executor-image`. As an explicit
+image-only stopgap, Docker loads the OCI archive and pushes it using the
+version tag as transport. The workflow requires the remote manifest digest to match the digest
 oyzu built, then signs that immutable digest keylessly with `cosign sign` and
 checks it with `cosign verify` against the release workflow and tag identity.
 It does not manufacture build-provenance evidence or configure an ephemeral

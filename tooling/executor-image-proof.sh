@@ -3,8 +3,9 @@
 set -euo pipefail
 source_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 mkdir -p /srv/dev/worktrees/.rc-proofs
-scratch=$(mktemp -d /srv/dev/worktrees/.rc-proofs/fleet-executor-review2.XXXXXX)
-container_name="fleet-executor-review2-${scratch##*.}"
+# Keep Go test Unix-socket paths below the kernel path-length limit.
+scratch=$(mktemp -d /srv/dev/worktrees/.rc-proofs/f6.XXXXXX)
+container_name="fleet-executor-proof-${scratch##*.}"
 plugin_store="$scratch/data/oyzu/tools"
 loaded_id=
 image_snapshot=
@@ -53,7 +54,7 @@ cleanup() {
 import os, pathlib, shutil, stat, sys
 p = pathlib.Path(sys.argv[1]).resolve()
 assert p.parent == pathlib.Path('/srv/dev/worktrees/.rc-proofs')
-assert p.name.startswith('fleet-executor-review2.')
+assert p.name.startswith('f6.')
 for root, _, _ in os.walk(p):
     os.chmod(root, stat.S_IRWXU)
 shutil.rmtree(p)
@@ -64,8 +65,8 @@ PY
   exit "$result"
 }
 trap cleanup EXIT
-mkdir -p "$scratch"/{fleet,tmp,bin,home,go-path,go-mod,go-cache}
-export TMPDIR="$scratch/tmp" GOPATH="$scratch/go-path"
+mkdir -p "$scratch"/{fleet,t,bin,home,go-path,go-mod,go-cache}
+export TMPDIR="$scratch/t" GOPATH="$scratch/go-path"
 export GOMODCACHE="$scratch/go-mod" GOCACHE="$scratch/go-cache"
 export GOTOOLCHAIN=local
 export PATH="$scratch/bin:$PATH"
@@ -97,12 +98,12 @@ oyzu_env() {
 run released-cli oyzu_env --version
 lock_before=$(sha256sum oyzu.lock)
 run preview-opt-in oyzu_env config set --global plugins.preview true
-run acquire-fleet oyzu_env build --store "$plugin_store" pool-server manager executor
+run acquire-fleet oyzu_env build --isolated --store "$plugin_store" fleet
 run fleet-go oyzu_env exec --store "$plugin_store" -- go version
-run fleet-build oyzu_env build --store "$plugin_store" pool-server manager executor
-for target in pool-server manager executor; do
-  artifact=$(jq -er --arg target "$target" '[.artifacts[] | select(.target == $target and .name == "primary") | .path] | if length == 1 then .[0] else error("expected one binary per main") end' dist/manifest.json)
-  run "binary-$target" test -x "dist/$artifact"
+run fleet-build oyzu_env build --isolated --store "$plugin_store" fleet
+for binary in pool-server manager executor; do
+  artifact=$(jq -er --arg binary "$binary" '[.artifacts[] | select(.target == "fleet" and .name == $binary) | .path] | if length == 1 then .[0] else error("expected one binary per main") end' dist/manifest.json)
+  run "binary-$binary" test -x "dist/$artifact"
 done
 run fleet-vet oyzu_env exec --store "$plugin_store" -- go vet ./cmd/pool-server ./cmd/manager ./cmd/executor
 run fleet-tests oyzu_env exec --store "$plugin_store" -- go test ./cmd/pool-server ./cmd/manager ./cmd/executor
@@ -112,7 +113,7 @@ run sbom-helper oyzu_env exec --store "$plugin_store" -- env GOBIN="$scratch/bin
 run release-archives oyzu_env exec --store "$plugin_store" -- bash tooling/release-build.sh 0.1.0 build/release
 run prepare-context bash tooling/prepare-executor-image.sh 0.1.0
 # The image build reuses the acquired store; archives never occupy dist/.
-run image-build oyzu_env build --store "$plugin_store" executor-image
+run image-build oyzu_env build --isolated --store "$plugin_store" executor-image
 test "$(sha256sum oyzu.lock)" = "$lock_before"
 printf 'RESULT unchanged-lock: PASS\n'
 archive=$(jq -er '[.artifacts[] | select(.name == "image") | .path] | if length == 1 then .[0] else error("expected one image") end' dist/manifest.json)

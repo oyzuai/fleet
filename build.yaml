@@ -1,15 +1,10 @@
-# Build targets for fleet. `oyzu build` builds them all.
+# Build targets for fleet. Prepare the executor context before selecting it.
 builds:
-  # One application target per shipped main, all in the root Go module.
-  pool-server:
+  # One root module; preview.2 captures a build action for each main package.
+  # Multi-main builds require `oyzu build --isolated fleet`.
+  fleet:
     uses: go/app
-    path: cmd/pool-server
-  manager:
-    uses: go/app
-    path: cmd/manager
-  executor:
-    uses: go/app
-    path: cmd/executor
+    path: .
 
   # Prepare this context with tooling/prepare-executor-image.sh first.
   executor-image:

@@ -83,12 +83,13 @@ jobs:
       - name: Acquire fleet's locked plugins and build requirements
         # Non-frozen builds acquire missing published plugins. Frozen exec
         # cannot bootstrap an empty store; do not replace the committed lock.
-        run: oyzu build pool-server manager executor
+        # Multi-main Go builds must stay on the captured lane.
+        run: oyzu build --isolated fleet
 
       - name: Verify all three collected Go binaries
         run: |
-          for target in pool-server manager executor; do
-            artifact=$(jq -er --arg target "$target" '[.artifacts[] | select(.target == $target and .name == "primary") | .path] | if length == 1 then .[0] else error("expected one binary per main") end' dist/manifest.json)
+          for binary in pool-server manager executor; do
+            artifact=$(jq -er --arg binary "$binary" '[.artifacts[] | select(.target == "fleet" and .name == $binary) | .path] | if length == 1 then .[0] else error("expected one binary per main") end' dist/manifest.json)
             test -x "dist/$artifact"
           done
 
@@ -112,7 +113,7 @@ jobs:
       - name: Prepare and build public executor image with oyzu
         run: |
           bash tooling/prepare-executor-image.sh "${GITHUB_REF_NAME#v}"
-          oyzu build executor-image
+          oyzu build --isolated executor-image
 
       - name: Install cosign
         # v4.1.2
