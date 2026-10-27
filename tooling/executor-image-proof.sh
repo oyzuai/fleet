@@ -109,26 +109,25 @@ PYLOCK
 run released-cli oyzu_env --version
 pins_before=$(lock_pins)
 run preview-opt-in oyzu_env config set --global plugins.preview true
-# Acquire all locked plugins before exec. The image context needs release
-# archives, so building executor-image cannot bootstrap this environment.
+# Acquire all locked plugins before exec, without changing their pins.
 run acquire-plugins oyzu_env install --store "$plugin_store"
 test "$(lock_pins)" = "$pins_before"
 printf 'RESULT unchanged-tool-and-plugin-pins-after-install: PASS\n'
 run fleet-go oyzu_env exec --store "$plugin_store" -- go version
-run fleet-build oyzu_env build --isolated --store "$plugin_store" fleet
+run fleet-and-image-build oyzu_env build --isolated --store "$plugin_store" fleet executor-image
 for binary in pool-server manager executor; do
   artifact=$(jq -er --arg binary "$binary" '[.artifacts[] | select(.target == "fleet" and .name == $binary) | .path] | if length == 1 then .[0] else error("expected one binary per main") end' dist/manifest.json)
   run "binary-$binary" test -x "dist/$artifact"
 done
+executor_artifact=$(jq -er '.artifacts[] | select(.target == "fleet" and .name == "executor") | .path' dist/manifest.json)
+executor_expected=$("dist/$executor_artifact" --version)
+printf 'RESULT captured-executor-version: %s\n' "$executor_expected"
 run fleet-vet oyzu_env exec --store "$plugin_store" -- go vet ./cmd/pool-server ./cmd/manager ./cmd/executor
 run fleet-tests oyzu_env exec --store "$plugin_store" -- go test ./cmd/pool-server ./cmd/manager ./cmd/executor
 run fleet-format oyzu_env exec --store "$plugin_store" -- bash -ec 'test -z "$(gofmt -l cmd/pool-server/main.go cmd/manager/main.go cmd/executor/main.go)"'
 run fleet-config oyzu_env config validate
 run sbom-helper oyzu_env exec --store "$plugin_store" -- env GOBIN="$scratch/bin" go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.9.0
 run release-archives oyzu_env exec --store "$plugin_store" -- bash tooling/release-build.sh 0.1.0 build/release
-run prepare-context bash tooling/prepare-executor-image.sh 0.1.0
-# The image build reuses the acquired store; archives never occupy dist/.
-run image-build oyzu_env build --isolated --store "$plugin_store" executor-image
 test "$(lock_pins)" = "$pins_before"
 printf 'RESULT unchanged-tool-and-plugin-pins-after-build: PASS\n'
 archive=$(jq -er '[.artifacts[] | select(.name == "image") | .path] | if length == 1 then .[0] else error("expected one image") end' dist/manifest.json)
@@ -141,7 +140,8 @@ image_snapshot=$(docker image ls --no-trunc --format '{{.Repository}}:{{.Tag}} {
 image_snapshot_taken=true
 run image-load docker load --input "dist/$archive"
 run image-config docker image inspect "$loaded_id"
-run uid-and-versions docker run --rm --name "$container_name" --entrypoint /bin/sh "$loaded_id" -ec '
+run uid-and-versions docker run --rm --name "$container_name" \
+  --env "EXECUTOR_EXPECTED=$executor_expected" --entrypoint /bin/sh "$loaded_id" -ec '
   test "$(id -u)" = 1000
   printf "RESULT container uid: %s\n" "$(id -u)"
   test -w /work && test -w "$XDG_DATA_HOME"
@@ -150,7 +150,7 @@ run uid-and-versions docker run --rm --name "$container_name" --entrypoint /bin/
   printf "RESULT oyzu-version: PASS\n"
   printf "RUN oyzu-executor --version (uid 1000)\n"
   oyzu-executor --version
-  test "$(oyzu-executor --version)" = "oyzu-executor 0.1.0"
+  test "$(oyzu-executor --version)" = "$EXECUTOR_EXPECTED"
   printf "RESULT executor-version: PASS\n"
   printf "RUN crun --version (uid 1000)\n"
   crun --version

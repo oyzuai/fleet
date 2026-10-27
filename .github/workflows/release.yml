@@ -86,8 +86,8 @@ jobs:
         # Install may record host-specific build requirement selections.
         run: oyzu install
 
-      - name: Build fleet on the captured lane
-        run: oyzu build --isolated fleet
+      - name: Build fleet and the public executor image on the captured lane
+        run: oyzu build --isolated fleet executor-image
 
       - name: Verify all three collected Go binaries
         run: |
@@ -112,11 +112,6 @@ jobs:
       - name: Build all release archives and SBOMs
         run: |
           oyzu exec -- bash tooling/release-build.sh "${GITHUB_REF_NAME#v}" build/release
-
-      - name: Prepare and build public executor image with oyzu
-        run: |
-          bash tooling/prepare-executor-image.sh "${GITHUB_REF_NAME#v}"
-          oyzu build --isolated executor-image
 
       - name: Install cosign
         # v4.1.2

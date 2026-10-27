@@ -1,7 +1,7 @@
 # Public executor image
 
 `ghcr.io/oyzuai/oyzu-pool-executor:<version>` is built from
-[executor.Containerfile](executor.Containerfile) using the published `docker/image`
+[executor-image/Dockerfile](executor-image/Dockerfile) using the published `docker/image`
 plugin, pinned together with `go/app` in `oyzu.lock`. The Go builder is
 `0.1.0-preview.2`, whose captured-plan support handles builds outside the
 single-main native host lane. This release has no Darwin arm64 plugin payload.
@@ -18,76 +18,77 @@ The CLI and companion shim live under that data root and are linked from
 no plugins or language toolchains are built into the image. No private trust
 roots or cache configuration are included.
 
-`tooling/prepare-executor-image.sh` pins oyzu `oyzu/v0.2.3`, its shim and notices
-against the release asset API's SHA-256 values (this release does not provide a
-separate checksum file). It pins upstream static crun `1.30.1` and its source
-archive by SHA-256 and exposes it as `OYZU_CRUN`. It extracts Ubuntu's pinned
-`ca-certificates` package into the context to obtain only public Mozilla roots
-and their copyright notices. It verifies the fleet release checksums and copies
-the already-built executor from its archive. Upstream oyzu notices, fleet license
-and third-party notices, crun COPYING/COPYING.libcrun and corresponding source
-archive, and ca-certificates copyright notices are retained under
-`/usr/share/doc`. Updating a dependency requires updating its checksum and
-retaining its notices.
+The `executor-image` target in `build.yaml` declares every download by public
+HTTPS URL and SHA-256: oyzu `oyzu/v0.2.3`, its companion shim and notices,
+upstream static crun `1.30.1` and its corresponding source archive, and Ubuntu's
+`ca-certificates` package. Raw fetches keep their URL filename; the Dockerfile
+reads them through `oyzu-fetch-<name>` contexts. Version and digest updates
+belong in `build.yaml`. The build runs offline after these inputs are captured.
 
-Build from the repository root with a released oyzu and cyclonedx-gomod v1.9.0
-on PATH. Release archive generation requires a real Git checkout for Go's VCS
-stamping. The image-proof helper clones the committed HEAD into a disposable
-checkout under `/srv/dev/tmp`; commit changes before running it. This checkout
-requirement belongs to release archive generation, not the isolated `fleet`
-build or its vet, test and SBOM tooling.
+The Dockerfile, preview configuration and fleet notices are tracked source.
+The notices under `executor-image/rootfs/usr/share/doc/oyzu-pool-executor`
+retain fleet's license, additional notices, Moby profile and runner schema
+licenses. Keep these copies in sync when their originals change. The build
+also retains upstream oyzu notices, crun COPYING/COPYING.libcrun and complete
+corresponding source, and ca-certificates copyright notices. Only the public
+Mozilla roots from that package enter the trust bundle.
+
+The image receives the `fleet` target's named `executor` artifact through
+`materialize`, into `rootfs/usr/local/bin`. The Dockerfile renames the versioned
+file to `oyzu-executor` without rebuilding it. No prepared context or release
+archive supplies that binary. Image `--version` matches the captured artifact;
+the separate release archive build injects its requested `main.version`.
+
+Build from the repository root with the released oyzu:
+
+```bash
+oyzu config set --global plugins.preview true
+oyzu install
+oyzu build --isolated fleet executor-image
+oyzu exec -- go version
+```
+
+The release workflow and image-proof helper use that same single isolated build
+for both targets. The root Go module produces named `pool-server`, `manager`
+and `executor` binaries; materialization orders the image after its compatible
+Go producer. There is no host-lane fallback. Docker image preparation and its
+BuildKit worker require a Linux Docker engine, the provisioned digest-pinned
+Ubuntu base, and permission to run the isolated workers.
+
+The release workflow downloads the pinned public CLI, companion shim and notices
+and verifies their SHA-256 values. It uses fleet's own `oyzu.toml` and `oyzu.lock`
+for every Go command. The workflow and helper enable `plugins.preview` in a
+job-scoped HOME/config before acquisition. Non-frozen `oyzu install` acquires
+both locked plugins and pinned tools before frozen `oyzu exec` needs them.
+Install can record host-specific `resolved_environment` entries; the helper
+checks that all other lock fields, including recipes and plugin pins, stay
+unchanged. It never builds plugins from source.
+
+Run the complete image proof outside the sandbox:
 
 ```bash
 bash tooling/executor-image-proof.sh
 ```
 
-The equivalent build sequence is:
+The helper clones committed HEAD under `/srv/dev/tmp`; commit changes first.
+Release archive generation needs this real Git checkout for Go's VCS stamping.
+The isolated `fleet` build and its vet, test and SBOM tooling also support source
+snapshots without `.git`. Archive generation additionally requires
+cyclonedx-gomod v1.9.0 on PATH (the helper installs it through fleet's Go tools):
 
 ```bash
-oyzu config set --global plugins.preview true
-oyzu install
-oyzu build --isolated fleet
-oyzu exec -- go version
 oyzu exec -- bash tooling/release-build.sh 0.1.0 build/release
-bash tooling/prepare-executor-image.sh 0.1.0
-oyzu build --isolated executor-image
 ```
 
-The release workflow installs the pinned CLI, companion shim and notices directly
-from the public `oyzuai/oyzu-releases` assets and verifies their SHA-256 values.
-It uses fleet's own `oyzu.toml` and `oyzu.lock` for every Go command. The
-workflow and image-proof helper enable `plugins.preview` in a job-scoped
-HOME/config before acquisition, so the public preview catalog can supply the
-locked Go and Docker releases without changing their pins or host configuration.
-The single `fleet` target selects the root Go module. Preview.2 plans a captured
-build action per main and collects the named `pool-server`, `manager` and
-`executor` binaries. Always use `oyzu build --isolated fleet`: the host lane
-still refuses multi-main modules. Before any frozen `oyzu exec` commands,
-non-frozen `oyzu install` discovers all targets and acquires both locked builder
-plugins and the pinned tools. Building only `fleet` does not acquire
-`docker/image`, which `exec` also needs. Install can record host-specific
-`resolved_environment` entries; the proof script checks that all other lock
-fields, including tool recipes and plugin pins, remain unchanged.
-
-Acquiring through install avoids a circular dependency: the executor image
-context needs a verified release archive, and archive generation needs `exec`.
-After installation, build fleet in isolation, generate the archives outside
-`dist`, prepare the real image context, then build the image in isolation.
-Acquisition or isolation failures stop the release with oyzu's diagnostic;
-there is no host-lane fallback.
-It never falls back to another repository's toolset or builds plugins from source.
-
-Release archives, SBOMs and checksums go to `build/release`; `dist` is reserved
-for oyzu's build bundle. Keeping the archives outside `dist` lets both the
-initial fleet build and the later image build manage a valid bundle there.
-The image is built with `oyzu build --isolated executor-image`. As an explicit
-image-only stopgap, Docker loads the OCI archive and pushes it using the
-version tag as transport. The workflow requires the remote manifest digest to match the digest
-oyzu built, then signs that immutable digest keylessly with `cosign sign` and
-checks it with `cosign verify` against the release workflow and tag identity.
-It does not manufacture build-provenance evidence or configure an ephemeral
-key as an accepted provenance authority. Tarball signing and GitHub build
-attestations stay in place.
+Archives, SBOMs and checksums go to `build/release`; `dist` is reserved for
+oyzu's build bundle. The image build is independent of these archives.
+As an explicit image-only stopgap, Docker loads the OCI archive and pushes it
+using the version tag as transport. The workflow requires the remote manifest
+digest to match the digest oyzu built, signs that immutable digest keylessly
+with `cosign sign`, then checks it with `cosign verify` against the release
+workflow and tag identity. It does not manufacture build-provenance evidence
+or configure an ephemeral key as an accepted provenance authority. Tarball
+signing and GitHub build attestations stay in place.
 
 Planned follow-up: switch to `oyzu publish` with keyless intent once oyzu row 23 ships.
 
