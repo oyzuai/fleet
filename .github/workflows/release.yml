@@ -80,10 +80,13 @@ jobs:
       - name: Enable published plugin previews for this job
         run: oyzu config set --global plugins.preview true
 
-      - name: Acquire fleet's locked plugins and build requirements
-        # Non-frozen builds acquire missing published plugins. Frozen exec
-        # cannot bootstrap an empty store; do not replace the committed lock.
-        # Multi-main Go builds must stay on the captured lane.
+      - name: Acquire every locked plugin and the pinned tools
+        # Non-frozen install discovers all targets, including docker/image.
+        # Selecting fleet alone leaves Docker unavailable to frozen exec.
+        # Install may record host-specific build requirement selections.
+        run: oyzu install
+
+      - name: Build fleet on the captured lane
         run: oyzu build --isolated fleet
 
       - name: Verify all three collected Go binaries

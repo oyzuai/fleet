@@ -35,6 +35,7 @@ on PATH:
 
 ```bash
 oyzu config set --global plugins.preview true
+oyzu install
 oyzu build --isolated fleet
 oyzu exec -- go version
 oyzu exec -- bash tooling/release-build.sh 0.1.0 build/release
@@ -47,15 +48,23 @@ from the public `oyzuai/oyzu-releases` assets and verifies their SHA-256 values.
 It uses fleet's own `oyzu.toml` and `oyzu.lock` for every Go command. The
 workflow and image-proof helper enable `plugins.preview` in a job-scoped
 HOME/config before acquisition, so the public preview catalog can supply the
-locked Go and Docker releases without changing the lock or host configuration.
+locked Go and Docker releases without changing their pins or host configuration.
 The single `fleet` target selects the root Go module. Preview.2 plans a captured
 build action per main and collects the named `pool-server`, `manager` and
 `executor` binaries. Always use `oyzu build --isolated fleet`: the host lane
-still refuses multi-main modules. Before frozen `oyzu exec` commands, this
-non-frozen isolated build acquires the missing published plugins and build
-requirements without replacing the locked plugin selections. Acquisition or
-isolation failures stop the release with oyzu's diagnostic; there is no host-lane
-fallback.
+still refuses multi-main modules. Before any frozen `oyzu exec` commands,
+non-frozen `oyzu install` discovers all targets and acquires both locked builder
+plugins and the pinned tools. Building only `fleet` does not acquire
+`docker/image`, which `exec` also needs. Install can record host-specific
+`resolved_environment` entries; the proof script checks that all other lock
+fields, including tool recipes and plugin pins, remain unchanged.
+
+Acquiring through install avoids a circular dependency: the executor image
+context needs a verified release archive, and archive generation needs `exec`.
+After installation, build fleet in isolation, generate the archives outside
+`dist`, prepare the real image context, then build the image in isolation.
+Acquisition or isolation failures stop the release with oyzu's diagnostic;
+there is no host-lane fallback.
 It never falls back to another repository's toolset or builds plugins from source.
 
 Release archives, SBOMs and checksums go to `build/release`; `dist` is reserved

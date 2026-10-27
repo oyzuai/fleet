@@ -95,10 +95,24 @@ oyzu_env() {
     XDG_CACHE_HOME="$scratch/cache" OYZU_USER_CONFIG="$scratch/home/.config/oyzu/config.toml" \
     "$scratch/bin/oyzu" "$@"
 }
+# Non-frozen install can record this host's resolved environments. Preserve
+# every other lock field, including exact plugin payloads and tool recipes.
+lock_pins() {
+  /usr/bin/python3 - <<'PYLOCK'
+import hashlib, json, pathlib, tomllib
+lock = tomllib.loads(pathlib.Path('oyzu.lock').read_text())
+lock.pop('resolved_environment', None)
+print(hashlib.sha256(json.dumps(lock, sort_keys=True, separators=(',', ':')).encode()).hexdigest())
+PYLOCK
+}
 run released-cli oyzu_env --version
-lock_before=$(sha256sum oyzu.lock)
+pins_before=$(lock_pins)
 run preview-opt-in oyzu_env config set --global plugins.preview true
-run acquire-fleet oyzu_env build --isolated --store "$plugin_store" fleet
+# Acquire all locked plugins before exec. The image context needs release
+# archives, so building executor-image cannot bootstrap this environment.
+run acquire-plugins oyzu_env install --store "$plugin_store"
+test "$(lock_pins)" = "$pins_before"
+printf 'RESULT unchanged-tool-and-plugin-pins-after-install: PASS\n'
 run fleet-go oyzu_env exec --store "$plugin_store" -- go version
 run fleet-build oyzu_env build --isolated --store "$plugin_store" fleet
 for binary in pool-server manager executor; do
@@ -114,8 +128,8 @@ run release-archives oyzu_env exec --store "$plugin_store" -- bash tooling/relea
 run prepare-context bash tooling/prepare-executor-image.sh 0.1.0
 # The image build reuses the acquired store; archives never occupy dist/.
 run image-build oyzu_env build --isolated --store "$plugin_store" executor-image
-test "$(sha256sum oyzu.lock)" = "$lock_before"
-printf 'RESULT unchanged-lock: PASS\n'
+test "$(lock_pins)" = "$pins_before"
+printf 'RESULT unchanged-tool-and-plugin-pins-after-build: PASS\n'
 archive=$(jq -er '[.artifacts[] | select(.name == "image") | .path] | if length == 1 then .[0] else error("expected one image") end' dist/manifest.json)
 digest=$(jq -er '.artifacts[] | select(.name == "image") | .ociDigest' dist/manifest.json)
 [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
