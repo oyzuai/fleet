@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run inside `oyzu exec -- bash ...` (or its go-test toolset).
+# Run inside fleet's `oyzu exec -- bash ...`.
 set -euo pipefail
 version=${1:?usage: release-build.sh VERSION [OUTPUT_DIRECTORY]}
 out=${2:-dist/release}

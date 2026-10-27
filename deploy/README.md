@@ -3,7 +3,8 @@
 `ghcr.io/oyzuai/oyzu-pool-executor:<version>` is built from
 [executor.Containerfile](executor.Containerfile) using the published `docker/image`
 plugin, pinned together with `go/app` in `oyzu.lock`. Locked replay does not
-require machine preview opt-in in CI. It is linux/amd64 until the public oyzu release provides an arm64 CLI.
+require machine preview opt-in in CI. It is linux/amd64 until the public oyzu
+release provides an arm64 CLI.
 Use the digest in the release notes for the manager's `--image`.
 
 The base is Ubuntu 24.04, pinned by OCI index digest: it supplies glibc for the
@@ -36,14 +37,24 @@ bash tooling/prepare-executor-image.sh 0.1.0
 oyzu build executor-image
 ```
 
-The release workflow installs oyzu through its pinned `setup-oyzu` action and
-uses only published CLI and plugin releases. It builds the image with oyzu,
-signs an ephemeral Ed25519 build witness and publication intent, then uses
-`oyzu publish` with its configured keyless Sigstore subject signer. The witness
-keys are job-local; consumer trust is the GitHub OIDC subject signature checked
-against the release workflow and tag, not a durable witness key. Oyzu publishes
-by digest and reads the image and signature back. Docker only moves the version
-tag to that verified digest and checks that the alias resolves unchanged.
+The release workflow installs the pinned CLI, companion shim and notices directly
+from the public `oyzuai/oyzu-releases` assets and verifies their SHA-256 values.
+It uses fleet's own `oyzu.toml` and `oyzu.lock` for every Go command. A lock
+selects plugins but does not install them: a fresh runner without admitted
+plugin bytes or a configured acquisition route fails with oyzu's diagnostic.
+It never falls back to another repository's toolset or builds plugins from source.
+
+The image is built with `oyzu build executor-image`. As an explicit image-only
+stopgap, Docker loads the OCI archive and pushes it using the version tag as
+transport. The workflow requires the remote manifest digest to match the digest
+oyzu built, then signs that immutable digest keylessly with `cosign sign` and
+checks it with `cosign verify` against the release workflow and tag identity.
+It does not manufacture build-provenance evidence or configure an ephemeral
+key as an accepted provenance authority. Tarball signing and GitHub build
+attestations stay in place.
+
+Planned follow-up: switch to `oyzu publish` with keyless intent once oyzu row 23 ships.
+
 The first GHCR package must be made public by its owner if organization defaults
 create private packages; the workflow token cannot set package visibility.
 
@@ -51,7 +62,7 @@ Verify tarballs with the release notes' `cosign verify-blob`, `sha256sum` and
 `gh attestation verify` commands. Verify the image's subject signature with:
 
 ```bash
-cosign verify --new-bundle-format \
+cosign verify \
   --certificate-identity 'https://github.com/oyzuai/fleet/.github/workflows/release.yml@refs/tags/v0.1.0' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   ghcr.io/oyzuai/oyzu-pool-executor@sha256:<release-digest>

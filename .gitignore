@@ -1,5 +1,2 @@
 /build/
 /dist/
-
-/deploy/executor-image/*
-!/deploy/executor-image/.gitkeep
