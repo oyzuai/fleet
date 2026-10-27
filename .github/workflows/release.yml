@@ -45,11 +45,23 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Scope oyzu configuration and tools to this job
+        run: |
+          job_home="$RUNNER_TEMP/fleet-release/home"
+          mkdir -p "$job_home/.config"
+          {
+            echo "HOME=$job_home"
+            echo "XDG_CONFIG_HOME=$job_home/.config"
+            echo "XDG_DATA_HOME=$RUNNER_TEMP/fleet-release/data"
+            echo "XDG_CACHE_HOME=$RUNNER_TEMP/fleet-release/cache"
+            echo "OYZU_USER_CONFIG=$job_home/.config/oyzu/config.toml"
+          } >> "$GITHUB_ENV"
+
       - name: Install pinned public oyzu release
         run: |
           set -euo pipefail
           install_dir="$RUNNER_TEMP/oyzu-release"
-          mkdir -p "$install_dir"
+          mkdir -p "$install_dir" "$HOME" "$XDG_CONFIG_HOME"
           base=https://github.com/oyzuai/oyzu-releases/releases/download/oyzu/v0.2.3
           # SHA-256 values from the public release asset API.
           curl -fsSL --retry 3 "$base/oyzu-linux-x86_64" -o "$install_dir/oyzu"
@@ -64,6 +76,9 @@ jobs:
           chmod +x "$install_dir/oyzu" "$install_dir/oyzu-shim"
           "$install_dir/oyzu" --version
           echo "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Enable published plugin previews for this job
+        run: oyzu config set --global plugins.preview true
 
       - name: Acquire fleet's locked plugins and build requirements
         # Non-frozen builds acquire missing published plugins. Frozen exec

@@ -96,6 +96,7 @@ oyzu_env() {
 }
 run released-cli oyzu_env --version
 lock_before=$(sha256sum oyzu.lock)
+run preview-opt-in oyzu_env config set --global plugins.preview true
 run acquire-fleet oyzu_env build --store "$plugin_store" fleet
 run fleet-go oyzu_env exec --store "$plugin_store" -- go version
 run fleet-build oyzu_env build --store "$plugin_store" fleet
