@@ -123,8 +123,11 @@ first looks up the repository anonymously; a private response or 404 returns
 Commit existence and repository IDs use the same anonymous API; the executor
 fetches over HTTPS with no source token. Anonymous GitHub API access is limited
 to 60 requests/hour per IP. Repository lookups (including private/404 results)
-are cached for ten minutes; commit lookups are not cached. Snapshot runs need
-no GitHub access and work with or without an App.
+are cached for ten minutes; commit lookups are not cached. Snapshot source
+uploads and checkout need no GitHub access and work with or
+without an App. At run creation, repository facts are looked up on a best-effort
+basis for job-token cache authorization; an unavailable lookup does not block
+a snapshot run.
 
 The preceding App configuration remains supported, including App ID 5467712.
 Use your own App ID and private key to enable private sources and per-stage
@@ -310,6 +313,12 @@ output metadata only, so `--download` is a named follow-up (see the proposal).
 | A person with a caller token | `Authorization: Bearer <token>` matching a SHA-256 hash in `callers.tokens`; identity is `token:<name>`. | Create runs for any listed repository; read and cancel their own runs. |
 | A GitHub Actions job | `Authorization: Bearer <GitHub OIDC ID token>`. Verify RS256 against `https://token.actions.githubusercontent.com/.well-known/jwks` (cache keys, refetch on unknown `kid`), `iss`, `aud` = `public_url`, `exp`/`nbf`. Reuse the verifier in platform `deploy/ovh-farm/cache-gate/oidc.go`. | Create a run only when `repository` and `sha` equal the token's claims and `ref` matches a listed pattern for that repository; read and cancel only runs it created. |
 
+While `callers.tailnet_users` is empty, the server ignores
+`Tailscale-User-Login` entirely. If you later add tailnet users behind a generic
+reverse proxy, that proxy must strip incoming `Tailscale-User-Login` headers;
+only a trusted identity proxy may set them. The loopback peer check alone does
+not authenticate a header forwarded by a generic proxy.
+
 Anything else is 401 `UNAUTHENTICATED`. A known caller asking for an unlisted
 repository is 403 `PERMISSION_DENIED`.
 
@@ -355,13 +364,13 @@ Actions-created runs persist the verified creator's `repository`,
 `repository_id`, `repository_owner_id`, `ref`, `ref_type`, `event_name` and
 `job_workflow_ref` when present, and copy those values into job tokens without
 deriving missing claims. This authority survives server restarts and creator
-token expiry. At creation, person-created commit runs look up `repository_id` and
-`repository_owner_id` through the GitHub API (anonymously without an App),
-and persist them separately
-as repository source facts. Snapshots make no GitHub lookup and omit these
-source facts. Person-created commit job tokens include those IDs when available,
+token expiry. At creation, person-created commit and snapshot runs look up
+`repository_id` and `repository_owner_id` through the GitHub API (anonymously
+without an App), and persist them separately as repository source facts. Without an App, private or missing repositories
+yield no facts for snapshots and do not produce a lookup error log.
+Person-created job tokens include those IDs when available,
 but never gain `event_name`, `ref_type` or `job_workflow_ref`; they remain
-read-only. A failed lookup is logged without failing the run, and its tokens
+read-only. Other lookup failures are logged without failing the run, and its tokens
 omit the IDs. Tokens reuse persisted facts without another lookup. Older
 terminal runs without these facts still omit the IDs and Actions-only claims.
 Every token separately identifies the pool run with

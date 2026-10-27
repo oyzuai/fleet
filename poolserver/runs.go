@@ -407,10 +407,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, c caller) {
 	if c.Claims == nil {
 		if app, ok := s.source.(interface {
 			repositoryFacts(context.Context, string) (*repositoryFacts, error)
-		}); ok && in.Source == nil {
+		}); ok {
 			var err error
 			sourceFacts, err = app.repositoryFacts(r.Context(), in.Repository.Name)
-			if err != nil {
+			if err != nil && !errors.Is(err, errPrivateRepository) {
 				// Never include credential-bearing errors or GitHub response bodies.
 				log.Printf("pool repository facts: repository %s: GitHub lookup unavailable", in.Repository.Name)
 			}

@@ -702,13 +702,15 @@ func failedWith(code, summary string) runnerclient.Outcome {
 func checkout(ctx context.Context, cfg Config, token string, job runnerclient.Job) error {
 	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	remote := strings.TrimRight(cfg.GitURL, "/") + "/" + job.Repository + ".git"
-	env := append(telemetry.Scrub(os.Environ()), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_COUNT=0")
+	env := append(telemetry.Scrub(os.Environ()), "GIT_TERMINAL_PROMPT=0")
 	if token != "" {
 		env = append(env,
 			"GIT_CONFIG_COUNT=1",
 			"GIT_CONFIG_KEY_0=http."+strings.TrimRight(cfg.GitURL, "/")+"/.extraHeader",
 			"GIT_CONFIG_VALUE_0=Authorization: Basic "+auth,
 		)
+	} else {
+		env = append(env, "GIT_CONFIG_COUNT=0")
 	}
 	steps := [][]string{
 		{"init", "--quiet"},
