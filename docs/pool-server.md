@@ -437,6 +437,42 @@ annotations, checks for snapshot runs, and Windows/macOS pools are later work.
 A repository maintainer can mark an individual stage check as required in
 branch protection. The pool never changes branch protection settings.
 
+## Git providers
+
+The pool server supports GitHub only today. That is a limitation of this
+version, not a design choice: the pool must not become a product that only works
+with GitHub. Teams host code on GitLab, Bitbucket, Azure DevOps, Gitea or
+Forgejo, often self-managed, and the server should serve them the same way.
+
+GitHub is assumed in five places:
+
+| Concern | Today | Where |
+| --- | --- | --- |
+| Repository identity | A run must name provider `github` and an `owner/name` repository. | `poolserver/runs.go`, `types.go` |
+| CI callers | Only GitHub Actions OIDC tokens are verified. | `poolserver/oidc.go` |
+| Repository facts | `repository_id` and `repository_owner_id` come from the GitHub API. | `poolserver/github.go`, `anonymous.go` |
+| Clone credential | A GitHub App installation token, or anonymous HTTPS for public repositories. | `poolserver/github.go`, `executor/` |
+| Stage results | GitHub check runs. | `poolserver/checks_github.go` |
+
+Working-tree snapshot runs only need a git provider for facts and checks,
+because the source bytes come from the caller.
+
+Planned shape (not implemented): one narrow provider interface in
+`poolserver` with four operations: verify a CI caller's ID token, look up
+repository facts, issue a short-lived read-only clone credential, and report a
+stage status on a commit. Each provider gets its own implementation and config
+block, beside `github_app`. GitHub is the first implementation and GitLab the
+second (GitLab and self-managed GitLab: `id_tokens` OIDC, project or group
+access tokens, commit statuses). After those come Bitbucket Cloud and Data Center,
+Azure DevOps, and Gitea/Forgejo. A provider without OIDC for CI callers uses caller
+tokens. A provider without a status API skips stage results and says so once,
+as the server already does when no App is configured.
+
+The wire side is owned by the public runs contract. Its `Repository.provider`
+enum and `name` pattern (`owner/name`, which excludes GitLab subgroups and Azure
+DevOps `org/project/repo`) are edited in place when the second provider lands. See the
+[standalone remote pool proposal](https://github.com/oyzuai/oyzu/blob/main/docs/proposals/OEP-draft-standalone-remote-pool/README.md#git-providers).
+
 ## Deployment on build01
 
 Configured in platform `deploy/ovh-farm` (Ansible), not in this repository:
