@@ -280,6 +280,9 @@ needs a network plugin that enforces it (the self-test checks).
 
 ## Building
 
+See [execution trust and proxies](executor/README.md) for the typed
+`execution_config` job field, supported projections, evidence and current limits.
+
 Build and test with [Oyzu](https://github.com/oyzuai/oyzu): `oyzu build`. The
 manager's end-to-end tests run against the real runs service, so they live in
 the platform repository and import these packages.

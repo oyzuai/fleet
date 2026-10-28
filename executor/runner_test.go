@@ -45,6 +45,12 @@ func TestMain(m *testing.M) {
 // fakeGit records its arguments and the auth header it was given, and on
 // checkout writes the commit's oyzu.toml.
 func fakeGit() {
+	if path := os.Getenv("FAKE_GIT_TRUST_REPORT"); path != "" {
+		raw, _ := json.Marshal(map[string]string{"count": os.Getenv("GIT_CONFIG_COUNT"), "header": os.Getenv("GIT_CONFIG_VALUE_0"), "trust": os.Getenv("GIT_SSL_CAINFO")})
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			os.Exit(7)
+		}
+	}
 	args := os.Args[1:]
 	rec, _ := json.Marshal(map[string]any{"args": args, "header": os.Getenv("GIT_CONFIG_VALUE_0")})
 	f, _ := os.OpenFile(os.Getenv("FAKE_GIT_LOG"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
@@ -76,6 +82,9 @@ func fakeGit() {
 }
 
 func fakeOyzu() {
+	if os.Getenv("FAKE_TRUST_REPORT") != "" {
+		reportTrust()
+	}
 	if path := os.Getenv("FAKE_OYZU_TASK_ARGS"); path != "" {
 		b, _ := json.Marshal(os.Args[1:])
 		_ = os.WriteFile(path, b, 0600)

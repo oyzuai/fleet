@@ -26,6 +26,17 @@ func TestHelperProcess(t *testing.T) {
 		return
 	}
 	switch mode {
+	case "execution-args":
+		for i, arg := range os.Args {
+			if arg == "--" {
+				raw, _ := json.Marshal(os.Args[i+1:])
+				if err := os.WriteFile(os.Getenv("POOLMANAGER_ARGS_FILE"), raw, 0o600); err != nil {
+					os.Exit(1)
+				}
+				os.Exit(0)
+			}
+		}
+		os.Exit(1)
 	case "decision-echo":
 		args := slices.Index(os.Args, "--")
 		if args < 0 || !errors.Is(executor.Command(os.Args[args+1:], quiet()), runnerclient.ErrUnauthenticated) {
