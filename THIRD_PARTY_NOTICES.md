@@ -31,13 +31,13 @@ No Wardyn source, assets or dependency is included.
 
 ## Zstandard source-blob decoder
 
-Module: `github.com/klauspost/compress v1.19.2`
+Module: `github.com/klauspost/compress v1.20.3`
 
-Source: https://github.com/klauspost/compress/tree/v1.19.2
+Source: https://github.com/klauspost/compress/tree/v1.20.3
 
 The pool server and executor use the Go Zstandard decoder for optional
 `Content-Encoding: zstd` source blobs. This avoids a separate decoder process.
-The module requires Go 1.24 and retains its upstream licenses and authorship;
+The module requires Go 1.25 and retains its upstream licenses and authorship;
 no upstream implementation is copied into Fleet. Existing release archives
 include this notice file. The original module LICENSE follows, including its
 subpackage notices.
@@ -347,4 +347,36 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+### Vendored xxHash checksum
+
+The Zstandard decoder includes `zstd/internal/xxhash`, derived from
+`github.com/cespare/xxhash`. Its separate MIT license is retained below.
+
+Source: https://github.com/klauspost/compress/blob/v1.20.3/zstd/internal/xxhash/LICENSE.txt
+
+```text
+Copyright (c) 2016 Caleb Spare
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```

@@ -2,7 +2,7 @@
 # Run `oyzu pin` on a machine that can reach the download hosts and commit
 # the regenerated oyzu.lock.
 [tools]
-go = "1.24"
+go = "1.27"
 
 # Real Linux container diagnostic, using disposable secret-free controls.
 [tasks.readiness-container-proof]
