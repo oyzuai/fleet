@@ -284,6 +284,10 @@ Build and test with [Oyzu](https://github.com/oyzuai/oyzu): `oyzu build`. The
 manager's end-to-end tests run against the real runs service, so they live in
 the platform repository and import these packages.
 
+The build and release compiler is Go 1.27.3, pinned in `oyzu.lock`; the module
+minimum is Go 1.25. Go 1.27 requires macOS 13 or later on macOS build hosts.
+Published Fleet binaries target Linux amd64 and arm64.
+
 ## Releases
 
 Each `v*` tag publishes `oyzu-pool-manager` and `oyzu-executor` for Linux

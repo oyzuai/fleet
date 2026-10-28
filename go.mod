@@ -1,10 +1,9 @@
 module github.com/oyzuai/fleet
 
-go 1.24.0
+go 1.25
 
 require (
-	github.com/klauspost/compress v1.19.2
-	github.com/pelletier/go-toml/v2 v2.4.3
+	github.com/klauspost/compress v1.20.3
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 )
 
