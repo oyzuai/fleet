@@ -200,6 +200,9 @@ func (p *Process) start(ctx context.Context, pr *proc, c runnerclient.Claim) err
 	}
 	args := append(append([]string{}, p.Args...),
 		"--server", p.Server, "--startup-token-file", tokenFile, "--work-dir", filepath.Join(jobDir, "work"), "--secrets-dir", filepath.Join(jobDir, "kind-tmp"), "--job-dir", jobDir)
+	if c.ExecutionTrustDecision != "" {
+		args = append(args, "--execution-trust-decision", c.ExecutionTrustDecision)
+	}
 	cmd := exec.Command(p.Runner, args...)
 	cmd.Dir = pr.dir
 	cmd.Env = append(p.env(), p.Telemetry.Env(telemetry.Traceparent(ctx))...)

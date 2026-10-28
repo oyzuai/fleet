@@ -3,3 +3,15 @@
 # the regenerated oyzu.lock.
 [tools]
 go = "1.24"
+
+# Real Linux container diagnostic, using disposable secret-free controls.
+[tasks.readiness-container-proof]
+argv = ["bash", "tooling/readiness-container-proof.sh"]
+
+[tasks.container-runtime-proof]
+argv = ["bash", "tooling/container-runtime-proof.sh"]
+
+# Requires FLEET_NATIVE_CLI pointing at the compiled runtime-input candidate.
+[tasks.runtime-inputs-proof]
+argv = ["go", "test", "./executor", "-run", "^TestNativeRuntimeInputs$", "-count=1", "-v"]
+env = { FLEET_RUNTIME_PROOF_REQUIRED = "1" }

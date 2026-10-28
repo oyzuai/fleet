@@ -32,7 +32,7 @@ func TestCreateBodyIsolatesTheJob(t *testing.T) {
 	})
 	hc := b.HostConfig
 	if hc.Privileged || !slices.Equal(hc.CapDrop, []string{"ALL"}) ||
-		!slices.Equal(hc.SecurityOpt, []string{"no-new-privileges:true"}) {
+		!hc.sandbox().applied() {
 		t.Fatalf("privileges: %+v", hc)
 	}
 	if len(hc.Mounts) != 1 || hc.Mounts[0] != (mount{Type: "volume", Source: "v-work", Target: "/work"}) {

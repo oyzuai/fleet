@@ -1,0 +1,18 @@
+{
+  "fingerprint": {
+    "boundary": {
+      "support": "supported",
+      "driver": "container",
+      "host": "host-proof",
+      "node": "",
+      "image": "executor@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "runtime": "runtime-proof",
+      "network": "network-proof",
+      "gateway": "gateway-proof",
+      "mode": "enforce",
+      "ipv6": false,
+      "extra_networks": false
+    },
+    "sha256": "b48a6b5a4cb919e2e3f74f5c1c10b816bc0b84613081c570adfa64aa1476736d"
+  }
+}

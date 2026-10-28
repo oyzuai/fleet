@@ -29,10 +29,11 @@ type exitRequest struct {
 
 // assignmentResponse gives an instance its one job.
 type assignmentResponse struct {
-	JobID          int64     `json:"job_id"`
-	Attempt        int       `json:"attempt"`
-	StartupToken   string    `json:"startup_token"`
-	StartupExpires time.Time `json:"startup_expires_at"`
+	ExecutionTrustDecision string    `json:"execution_trust_decision,omitempty"`
+	JobID                  int64     `json:"job_id"`
+	Attempt                int       `json:"attempt"`
+	StartupToken           string    `json:"startup_token"`
+	StartupExpires         time.Time `json:"startup_expires_at"`
 }
 
 // Handler serves this pool's instance agents. The manager listens on it
@@ -77,6 +78,7 @@ func (d *Driver) Handler() http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		if err := json.NewEncoder(w).Encode(assignmentResponse{
 			JobID: c.JobID, Attempt: c.Attempt, StartupToken: c.StartupToken, StartupExpires: c.StartupExpires,
+			ExecutionTrustDecision: c.ExecutionTrustDecision,
 		}); err != nil {
 			// Not acknowledged, so the agent can collect it again.
 			d.log().Warn("sending an assignment failed; the instance may collect it again", "remote", r.RemoteAddr, "error", err)

@@ -52,6 +52,8 @@ type logCapture struct {
 	ctx                          context.Context
 	cancel                       context.CancelFunc
 	wake                         chan struct{}
+	postFinish                   chan struct{}
+	postFinishOnce               sync.Once
 	done                         chan struct{}
 	tickDone                     chan struct{}
 	closed                       bool
@@ -70,10 +72,11 @@ type logCapture struct {
 func newLogCapture(ctx context.Context, cfg Config, token string, job runnerclient.Job, log *slog.Logger) *logCapture {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	c := &logCapture{log: log, client: cfg.Client, token: token, attempt: job.Attempt,
-		ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{}), tickDone: make(chan struct{}), digest: sha256.New(), capBytes: logCapBytes}
-	// WorkDir is the checkout; its private sibling belongs to this attempt.
+		ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1), postFinish: make(chan struct{}), done: make(chan struct{}), tickDone: make(chan struct{}), digest: sha256.New(), capBytes: logCapBytes}
+	// The checkout's parent may be / in a non-root container. Use the
+	// executor's private temporary area, separate from captured source.
 	var err error
-	c.dir, err = os.MkdirTemp(filepath.Dir(cfg.WorkDir), ".oyzu-log-")
+	c.dir, err = os.MkdirTemp(cfg.SecretsDir, ".oyzu-log-")
 	if err == nil {
 		c.file, err = os.OpenFile(filepath.Join(c.dir, "entries.ndjson"), os.O_CREATE|os.O_RDWR|os.O_EXCL, 0o600)
 	}
@@ -232,6 +235,14 @@ func (c *logCapture) finish() {
 	c.mu.Unlock()
 }
 
+// beginPostFinishDrain gives the newly started log-only token window one
+// prompt retry, even if delivery accumulated a long backoff while running.
+// This is separate from ordinary entry notifications, which must not defeat
+// retry backoff during a log outage.
+func (c *logCapture) beginPostFinishDrain() {
+	c.postFinishOnce.Do(func() { close(c.postFinish) })
+}
+
 // wait does not cancel delivery: Run may report the outcome between waits.
 func (c *logCapture) wait(drain time.Duration) bool {
 	t := time.NewTimer(drain)
@@ -263,6 +274,7 @@ func (c *logCapture) upload() {
 	defer close(c.done)
 	next := int64(1)
 	backoff := 100 * time.Millisecond
+	postFinish := c.postFinish
 	for {
 		c.mu.Lock()
 		count, closed := int64(len(c.parts)), c.closed
@@ -331,6 +343,11 @@ func (c *logCapture) upload() {
 		case <-c.ctx.Done():
 			t.Stop()
 			return
+		case <-postFinish:
+			t.Stop()
+			postFinish = nil // Consume the transition once, not every retry.
+			backoff = 100 * time.Millisecond
+			continue
 		case <-t.C:
 		}
 		backoff = min(backoff*2, 5*time.Second)

@@ -5,8 +5,8 @@
 //
 // A job's container gets a fresh workspace volume as its only mount, the
 // claim's startup token as its only credential, CPU, memory and process
-// limits, no capabilities, no privilege escalation and the engine's default
-// seccomp and AppArmor profiles. It never gets the engine's socket and never
+// limits, no capabilities, no privilege escalation, the fixed daemonless OCI
+// syscall/proc policy and the engine's AppArmor configuration. It never gets the engine's socket and never
 // runs a daemon, so container pools do not advertise oyzu.io/docker and take
 // no build that needs a RUN step (IMPL-114).
 package container
@@ -21,12 +21,16 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"encoding/json"
 	"github.com/oyzuai/fleet/manager"
+	"github.com/oyzuai/fleet/readiness"
 	"github.com/oyzuai/fleet/runnerclient"
 )
 
@@ -108,12 +112,31 @@ type Driver struct {
 	testing, tested, egressOK, factsDirty bool
 	lastTest                              time.Time
 
-	gwMu sync.Mutex
-	gw   *gateway
+	readinessPoisoned        bool
+	readinessPassedChallenge string
+	managedReadiness         bool
+	activeMode               EgressMode
+	localBinding             *readiness.Binding
+	gwMu                     sync.Mutex
+	gw                       *gateway
+	anchor                   *namespaceAnchor // guarded by gwMu
+	pairFault                error            // guarded by gwMu
+	anchorInvalid            bool             // guarded by mu
+	closing                  bool
+	probeCtx                 context.Context
+	stopProbes               context.CancelFunc
+	probes                   sync.WaitGroup
+	activeProbes             int
+	// ipv6Available is set once a probe has shown the engine's kernel has
+	// IPv6; ipv6Probing names the probes running now. See ipv6Sysctls.
+	ipv6Available atomic.Bool
+	ipv6Seq       atomic.Int64
+	ipv6Probing   map[string]bool
 }
 
 // job is one job's container.
 type job struct {
+	dns    []string
 	name   string
 	volume string
 	id     string
@@ -122,6 +145,7 @@ type job struct {
 	// The job's sandbox, when egress is controlled: its network, the gateway
 	// it was joined to and whether the gateway knows the job.
 	network    string
+	networkID  string
 	gateway    *gateway
 	registered bool
 }
@@ -179,6 +203,9 @@ func (d *Driver) managerLabel() string { return strconv.FormatInt(d.Manager, 10)
 // Facts implements manager.Driver from the engine host, bounded by the
 // per-job limits.
 func (d *Driver) Facts(ctx context.Context) (manager.Facts, error) {
+	// Observation failure revokes local authority even when the engine can
+	// still report ordinary host facts.
+	_ = d.checkPair(ctx)
 	info, err := d.Engine.Info(ctx)
 	if err != nil {
 		return nil, err
@@ -215,10 +242,16 @@ func (d *Driver) Facts(ctx context.Context) (manager.Facts, error) {
 // Capacity implements manager.Driver. Until the image is present no
 // slot is ready and all of them count as provisioning; the first call
 // starts the pull.
-func (d *Driver) Capacity(context.Context) (manager.Capacity, error) {
+func (d *Driver) Capacity(ctx context.Context) (manager.Capacity, error) {
+	if err := d.checkPair(ctx); err != nil {
+		return manager.Capacity{Max: d.slots()}, err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	c := manager.Capacity{Max: d.slots(), Running: len(d.inUse)}
+	if d.closing || d.anchorInvalid {
+		return c, errors.New("container boundary is unavailable")
+	}
 	if !d.pulled {
 		if !d.pulling && (d.lastPull.IsZero() || d.now().Sub(d.lastPull) >= pullRetry) {
 			d.pulling, d.lastPull = true, d.now()
@@ -229,7 +262,7 @@ func (d *Driver) Capacity(context.Context) (manager.Capacity, error) {
 		}
 		return c, d.pullError
 	}
-	if d.Egress == EgressEnforce && !d.tested {
+	if !d.managedReadiness && d.modeLocked() == EgressEnforce && !d.tested {
 		// Not ready until the self-test says whether the pool enforces.
 		if !d.testing {
 			d.testing, d.lastTest = true, d.now()
@@ -238,7 +271,7 @@ func (d *Driver) Capacity(context.Context) (manager.Capacity, error) {
 		c.Provisioning = c.Max - c.Running
 		return c, nil
 	}
-	if d.Egress == EgressEnforce && !d.egressOK && !d.testing && d.now().Sub(d.lastTest) >= pullRetry {
+	if !d.managedReadiness && d.modeLocked() == EgressEnforce && !d.egressOK && !d.testing && d.now().Sub(d.lastTest) >= pullRetry {
 		d.testing, d.lastTest = true, d.now()
 		go d.selfTest(context.Background())
 	}
@@ -278,11 +311,18 @@ func (d *Driver) Provision(context.Context, int) error { return nil }
 // Start implements manager.Driver: a fresh workspace volume, then the
 // container, then the startup token copied in, then start.
 func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.Claim) (manager.Handle, error) {
+	if err := d.CheckReadiness(ctx, c.Readiness); err != nil {
+		return manager.Handle{}, err
+	}
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
 	name := fmt.Sprintf("oyzu-%d-job-%d-%d-%s", d.Manager, c.JobID, c.Attempt, hex.EncodeToString(suffix))
 	j := &job{name: name, volume: name + "-work", token: c.StartupToken}
 	d.mu.Lock()
+	if d.closing || d.anchorInvalid {
+		d.mu.Unlock()
+		return manager.Handle{}, errors.New("container boundary is unavailable")
+	}
 	if !d.pulled {
 		d.mu.Unlock()
 		return manager.Handle{}, errors.New("the executor image is not present yet")
@@ -314,16 +354,28 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 		}
 		network = j.network
 	}
+	j.dns = slices.Clone(dns)
 	pids := d.PidsLimit
 	if pids <= 0 {
 		pids = defaultPidsLimit
 	}
 	cmd := append(append([]string{}, d.Command...),
 		"--server", d.Server, "--startup-token-file", TokenDir+"/"+tokenFile, "--work-dir", WorkDir)
+	if c.ExecutionTrustDecision != "" {
+		cmd = append(cmd, "--execution-trust-decision", c.ExecutionTrustDecision)
+	}
+	if c.Readiness != nil {
+		raw, _ := json.Marshal(c.Readiness)
+		cmd = append(cmd, "--readiness-binding", string(raw), "--wait-for-startup-token")
+	}
+	sysctls, err := d.ipv6Sysctls(ctx, labels)
+	if err != nil {
+		return h, err
+	}
 	id, err := d.Engine.CreateContainer(ctx, name, Spec{
 		Image: d.Image, Cmd: cmd, User: d.user(), Labels: labels, Volume: j.volume, WorkDir: WorkDir,
 		NanoCPUs: int64(d.CPUs * 1e9), MemoryBytes: d.MemoryBytes, PidsLimit: pids, Network: network,
-		Env: env, DNS: dns,
+		Env: env, DNS: dns, Sysctls: sysctls,
 	})
 	if err != nil {
 		return h, fmt.Errorf("create the container: %w", err)
@@ -331,15 +383,31 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 	d.mu.Lock()
 	j.id = id
 	d.mu.Unlock()
-	archive, err := tokenArchive(d.user(), c.StartupToken)
+	archive, err := tokenArchiveWithReady(d.user(), c.StartupToken, c.Readiness != nil)
 	if err != nil {
 		return h, err
 	}
-	if err := d.Engine.CopyFiles(ctx, id, "/", archive); err != nil {
-		return h, fmt.Errorf("copy the startup token in: %w", err)
+	if c.Readiness == nil {
+		if err = d.Engine.CopyFiles(ctx, id, "/", archive); err != nil {
+			return h, fmt.Errorf("copy the startup token in: %w", err)
+		}
 	}
-	if err := d.Engine.StartContainer(ctx, id); err != nil {
+	if err = d.Engine.StartContainer(ctx, id); err != nil {
 		return h, fmt.Errorf("start the container: %w", err)
+	}
+	if c.Readiness != nil {
+		// Only the trusted executor bootstrap is running. It cannot spend a
+		// startup token until the actual namespace is observed and this archive's
+		// final ready marker is delivered. No job code or source runs beforehand.
+		if err = d.checkAllocation(ctx, id, dns, j.networkID, false); err != nil {
+			return h, err
+		}
+		if err = d.CheckReadiness(ctx, c.Readiness); err != nil {
+			return h, err
+		}
+		if err = d.Engine.CopyFiles(ctx, id, "/", archive); err != nil {
+			return h, fmt.Errorf("handoff the startup token after allocation check: %w", err)
+		}
 	}
 	return h, nil
 }
@@ -347,6 +415,10 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 // tokenArchive is a tar holding TokenDir, owned by the job's user and
 // closed to anyone else, with the startup token in it.
 func tokenArchive(user, token string) ([]byte, error) {
+	return tokenArchiveWithReady(user, token, false)
+}
+
+func tokenArchiveWithReady(user, token string, ready bool) ([]byte, error) {
 	uidS, gidS, _ := strings.Cut(user, ":")
 	uid, _ := strconv.Atoi(uidS)
 	gid, err := strconv.Atoi(gidS)
@@ -368,6 +440,11 @@ func tokenArchive(user, token string) ([]byte, error) {
 	}
 	if _, err := tw.Write([]byte(token)); err != nil {
 		return nil, err
+	}
+	if ready {
+		if err := tw.WriteHeader(&tar.Header{Name: dir + "/" + tokenFile + ".ready", Typeflag: tar.TypeReg, Mode: 0o400, Uid: uid, Gid: gid, Size: 0, ModTime: now}); err != nil {
+			return nil, err
+		}
 	}
 	if err := tw.Close(); err != nil {
 		return nil, err
@@ -469,6 +546,8 @@ func (d *Driver) Teardown(ctx context.Context, h manager.Handle) error {
 // or not: unlike a process, a container is addressed by an id that is
 // never reused, so a crashed predecessor's runner can be stopped safely.
 func (d *Driver) Reap(ctx context.Context, live []manager.JobID) error {
+	d.gwMu.Lock()
+	defer d.gwMu.Unlock()
 	keepJob := map[string]bool{}
 	for _, j := range live {
 		keepJob[strconv.FormatInt(j, 10)] = true
@@ -488,17 +567,33 @@ func (d *Driver) Reap(ctx context.Context, live []manager.JobID) error {
 	if err != nil {
 		return err
 	}
-	d.gwMu.Lock()
 	gwID := ""
 	if d.gw != nil {
 		gwID = d.gw.id
 	}
-	d.gwMu.Unlock()
+	anchorID := ""
+	if d.anchor != nil {
+		anchorID = d.anchor.id
+	}
+	var staleAnchors []Summary
 	for _, c := range containers {
-		if keep[c.Name] || isLive(c.Labels[LabelJob]) || c.ID == gwID {
+		d.mu.Lock()
+		probing := d.ipv6Probing[c.Name]
+		d.mu.Unlock()
+		if keep[c.Name] || isLive(c.Labels[LabelJob]) || c.ID == gwID || c.ID == anchorID || probing {
 			continue
 		}
-		if err := d.Engine.RemoveContainer(ctx, c.ID); err != nil {
+		if c.Labels[LabelRole] == roleAnchor || c.Labels[LabelRole] == roleGateway {
+			if c.Labels[LabelPool] != d.Pool || c.Labels[LabelManager] != d.managerLabel() ||
+				(c.Labels[LabelRole] == roleAnchor && c.Name != d.anchorName()) || (c.Labels[LabelRole] == roleGateway && c.Name != d.gatewayName()) {
+				return errors.New("unrecognized stale gateway pair; refusing cleanup")
+			}
+			if c.Labels[LabelRole] == roleAnchor {
+				staleAnchors = append(staleAnchors, c)
+				continue
+			}
+		}
+		if err := d.removeConfirmed(ctx, c.ID); err != nil {
 			errs = append(errs, err)
 			continue
 		}
@@ -513,11 +608,20 @@ func (d *Driver) Reap(ctx context.Context, live []manager.JobID) error {
 		if keep[n.Name] || isLive(n.Labels[LabelJob]) {
 			continue
 		}
-		if err := d.removeNetwork(ctx, n.Name); err != nil {
+		if err := d.removeNetworkLocked(ctx, n.Name, true); err != nil {
 			errs = append(errs, err)
 			continue
 		}
 		d.log().Info("reaped a network", "network", n.Name, "job", n.Labels[LabelJob])
+	}
+	// A stale anchor is the last shared namespace holder. Never release it
+	// if any earlier gateway/network removal was uncertain.
+	if len(errs) == 0 {
+		for _, c := range staleAnchors {
+			if err := d.removeConfirmed(ctx, c.ID); err != nil {
+				errs = append(errs, err)
+			}
+		}
 	}
 	volumes, err := d.Engine.ListVolumes(ctx, mine)
 	if err != nil {

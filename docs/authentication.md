@@ -46,6 +46,27 @@ shipped binary selects container, Kubernetes or process; cloud VM adapters remai
 library code requiring integration. A configured infrastructure role does not
 replace Oyzu enrollment.
 
+## Execution decision reference
+
+The [runner-v1 startup contract](https://github.com/oyzuai/oyzu/blob/main/docs/contracts/runner-v1/startup-decision.md)
+adds the server-issued opaque `execution_trust_decision` reference. A
+trust-governed build claim supplies a canonical lowercase, nonzero UUID. Fleet
+carries it through the driver to the executor and echoes it without constructing
+decision facts. Its typed startup request carries readiness alongside the
+reference. Shape validation happens before spending startup material; a server
+refusal has no fallback that drops the reference. An assignment whose claim
+carries no reference, such as a kind job, omits it.
+
+The reference grants no execution, resource-use or credential authority. Current
+one-use startup, assignment and readiness checks remain mandatory. The server
+must reject missing, unknown, substituted, stale or wrong-attempt required
+references before issuing a job credential.
+
+The VM handover serves the reference with each assignment; the instance agent
+that turns it into executor flags is outside this repository. The container and
+Kubernetes drivers pass it as a command argument: it is correlation metadata,
+not a credential.
+
 ## Renewal and rotation
 
 Executors heartbeat every 30 seconds. The running lease is two minutes, and the

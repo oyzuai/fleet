@@ -461,12 +461,14 @@ func TestHandlerServesTheAssignment(t *testing.T) {
 	if w := post("/v1/ready", addr, readyRequest{Proof: Proof{Document: []byte("i-1"), Signature: []byte("forged")}}); w.Code != http.StatusForbidden {
 		t.Fatalf("forged proof: %d", w.Code)
 	}
-	if _, err := d.Start(context.Background(), "i-1", claim(21)); err != nil {
+	assigned := claim(21)
+	assigned.ExecutionTrustDecision = "11111111-2222-4333-8444-555555555555"
+	if _, err := d.Start(context.Background(), "i-1", assigned); err != nil {
 		t.Fatal(err)
 	}
 	w := post("/v1/assignment", addr, readyRequest{Proof: proof("i-1")})
 	var got assignmentResponse
-	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.StartupToken != "startup-21" {
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.StartupToken != "startup-21" || got.ExecutionTrustDecision != assigned.ExecutionTrustDecision {
 		t.Fatalf("assignment: %d %s", w.Code, w.Body)
 	}
 	if w := post("/v1/assignment", addr, readyRequest{Proof: proof("i-1")}); w.Code != http.StatusOK {

@@ -14,10 +14,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/oyzuai/fleet/assertion"
+	"github.com/oyzuai/fleet/readiness"
 	"github.com/oyzuai/fleet/telemetry"
 )
 
@@ -113,14 +115,18 @@ func (c *Client) RegisterKey(ctx context.Context, signedRotation string) (int64,
 
 // Claim is a job claimed for this manager.
 type Claim struct {
-	JobID          int64     `json:"job_id"`
-	Attempt        int       `json:"attempt"`
-	StartupToken   string    `json:"startup_token"`
-	StartupExpires time.Time `json:"startup_expires_at"`
+	// ExecutionTrustDecision is server-issued correlation metadata. It grants
+	// no authority and must reach startup unchanged when present.
+	ExecutionTrustDecision string    `json:"execution_trust_decision,omitempty"`
+	JobID                  int64     `json:"job_id"`
+	Attempt                int       `json:"attempt"`
+	StartupToken           string    `json:"startup_token"`
+	StartupExpires         time.Time `json:"startup_expires_at"`
 	// Egress is where the job may connect, enforced by the manager's
 	// gateway. A runs that predates it sends none, which allows only the
 	// runs server.
-	Egress ClaimEgress `json:"egress"`
+	Egress    ClaimEgress        `json:"egress"`
+	Readiness *readiness.Binding `json:"readiness,omitempty"`
 }
 
 // ClaimEgress is a job's network allow list.
@@ -138,10 +144,19 @@ type EgressAllow struct {
 // Claim takes the next job in the manager's pool, or returns nil when there
 // is none.
 func (c *Client) Claim(ctx context.Context, access string) (*Claim, error) {
+	return c.ClaimSession(ctx, access, "")
+}
+
+func (c *Client) ClaimSession(ctx context.Context, access, session string) (*Claim, error) {
 	var out Claim
 	found := false
-	err := c.doStatus(ctx, "claim", access, nil, &out, func(status int) { found = status == http.StatusOK })
+	err := c.doStatus(ctx, "claim", access, struct {
+		Session string `json:"session,omitempty"`
+	}{session}, &out, func(status int) { found = status == http.StatusOK })
 	if err != nil || !found {
+		return nil, err
+	}
+	if err := (StartupAssignment{ExecutionTrustDecision: out.ExecutionTrustDecision}).Validate(); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -166,8 +181,10 @@ func (c *Client) Demand(ctx context.Context, access string) (Demand, error) {
 // Report is what a manager tells runs about itself: the oyzu.io/ facts its
 // driver discovered and its slots.
 type Report struct {
-	Facts map[string]string `json:"facts"`
-	Slots Slots             `json:"slots"`
+	Facts    map[string]string   `json:"facts"`
+	Slots    Slots               `json:"slots"`
+	Session  string              `json:"session,omitempty"`
+	Boundary *readiness.Boundary `json:"boundary,omitempty"`
 }
 
 // Slots counts a manager's executor slots.
@@ -244,10 +261,31 @@ type Started struct {
 	Job              Job       `json:"job"`
 }
 
-// Start spends the startup token.
-func (c *Client) Start(ctx context.Context, startup string) (Started, error) {
+// StartupAssignment echoes only server-selected assignment metadata. The
+// server still validates the exact current startup credential and attempt.
+type StartupAssignment struct {
+	Readiness              *readiness.Binding `json:"readiness,omitempty"`
+	ExecutionTrustDecision string             `json:"execution_trust_decision,omitempty"`
+}
+
+var executionDecisionReference = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// Validate checks wire shape only, never decision facts or current authority.
+// An absent reference is meaningful only when the server did not require one.
+func (a StartupAssignment) Validate() error {
+	if a.ExecutionTrustDecision != "" && (!executionDecisionReference.MatchString(a.ExecutionTrustDecision) || a.ExecutionTrustDecision == "00000000-0000-0000-0000-000000000000") {
+		return errors.New("invalid server execution decision reference")
+	}
+	return nil
+}
+
+// Start spends the startup token once, preserving the claimed assignment.
+func (c *Client) Start(ctx context.Context, startup string, assignment StartupAssignment) (Started, error) {
 	var out Started
-	return out, c.do(ctx, "job/start", startup, nil, &out)
+	if err := assignment.Validate(); err != nil {
+		return out, err
+	}
+	return out, c.do(ctx, "job/start", startup, assignment, &out)
 }
 
 // Heartbeat renews the job's lease and token.
@@ -257,15 +295,31 @@ func (c *Client) Heartbeat(ctx context.Context, job string) error {
 
 // Source is a read-only token for the job's repository.
 type Source struct {
-	Token      string    `json:"token"`
-	Expires    time.Time `json:"expires_at"`
-	Repository string    `json:"repository"`
+	Kind       string    `json:"kind,omitempty"`
+	URL        string    `json:"url,omitempty"`
+	Digest     string    `json:"digest,omitempty"`
+	Token      string    `json:"token,omitempty"`
+	Expires    time.Time `json:"expires_at,omitempty"`
+	Repository string    `json:"repository,omitempty"`
 }
 
 // Source asks for the job's repository token.
 func (c *Client) Source(ctx context.Context, job string) (Source, error) {
 	var out Source
 	return out, c.do(ctx, "job/source", job, nil, &out)
+}
+
+// DownloadSource uses the runner's configured control transport and proxy/trust
+// settings, without sending its job bearer or following credential redirects.
+func (c *Client) DownloadSource(ctx context.Context, target string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	hc := *c.http
+	hc.Timeout = 15 * time.Minute
+	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return hc.Do(req)
 }
 
 // IDToken is an OIDC ID token naming the job, for one audience.
@@ -352,6 +406,21 @@ type Outcome struct {
 	// Outputs are what a succeeded build's manifest lists: the manifest
 	// itself and every artifact, by digest (IMPL-450).
 	Outputs []Output `json:"outputs,omitempty"`
+	// TestFailures are bounded JUnit failures from this build's manifest,
+	// including when the native build failed. At most 200 are sent, with
+	// messages bounded to 1024 UTF-8 bytes.
+	TestFailures []TestFailure `json:"test_failures,omitempty"`
+}
+
+// TestFailure is one JUnit failure or error associated with a target's test
+// stage. Path and Line are optional checkout-relative source coordinates.
+type TestFailure struct {
+	Scope     string `json:"scope"`
+	Name      string `json:"name"`
+	Classname string `json:"classname,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Line      int    `json:"line,omitempty"`
+	Message   string `json:"message"`
 }
 
 // Output is one file a build wrote, as its build manifest records it. Target,

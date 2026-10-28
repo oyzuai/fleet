@@ -57,6 +57,8 @@ corporate proxy and bypass list. With no `execution_config`, the legacy proxy,
 environment and CA-file behavior are unchanged.
 
 Build, checkout and maintenance processes receive the same projected environment.
+Anonymous public checkouts retain that trust without adding an Authorization header
+when no source token was issued.
 Build trust files live under the checkout's `.git/oyzu-execution` so source
 capture cannot include them. Kinds use their execution work directory. Image
 kinds bind the trust directory at `/run/oyzu/trust:ro`; built-in kinds receive

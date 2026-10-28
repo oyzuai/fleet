@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,6 +28,8 @@ func (f *fakeRuns) server(t *testing.T) *httptest.Server {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch strings.TrimPrefix(r.URL.Path, "/runner/v1/") {
+		case "readiness/session":
+			_, _ = w.Write([]byte(`{"enabled":false,"session":""}`))
 		case "token":
 			_, _ = w.Write([]byte(`{"access_token":"access","expires_in":3600}`))
 		case "claim":
@@ -71,6 +74,52 @@ type hungDriver struct {
 	startEnded      chan struct{}
 	teardownBounded atomic.Bool
 	teardownEnded   chan struct{}
+}
+
+type finalizingDriver struct {
+	*hungDriver
+	t         *testing.T
+	finalized bool
+	failure   error
+}
+
+func (d *finalizingDriver) Finalize(ctx context.Context) error {
+	if _, ok := ctx.Deadline(); !ok || ctx.Err() != nil {
+		d.t.Error("finalizer needs a live bounded context after manager cancellation")
+	}
+	select {
+	case <-d.teardownEnded:
+	default:
+		d.t.Error("finalizer ran before job teardown")
+	}
+	d.finalized = true
+	return d.failure
+}
+
+func TestRunFinalizesAfterJobDrainAndReportsFailure(t *testing.T) {
+	runs := &fakeRuns{claims: []runnerclient.Claim{{JobID: 42, Attempt: 1, StartupToken: "test"}}}
+	d := &finalizingDriver{hungDriver: &hungDriver{slots: 1, startEnded: make(chan struct{}), teardownEnded: make(chan struct{})}, t: t, failure: errors.New("gateway removal uncertain; anchor retained")}
+	m := openTestManager(t, runs.server(t), d, Config{DrainTimeout: 10 * time.Millisecond, TeardownTimeout: 10 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+	deadline := time.After(3 * time.Second)
+	for d.startCalls.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("job never started")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, d.failure) || !d.finalized {
+			t.Fatalf("finalizer outcome lost: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("manager did not finalize")
+	}
 }
 
 func (d *hungDriver) Facts(context.Context) (Facts, error) { return Facts{}, nil }

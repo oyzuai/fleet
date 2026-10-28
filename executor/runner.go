@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -28,9 +27,8 @@ import (
 	"time"
 
 	"github.com/oyzuai/fleet/executionconfig"
-	"github.com/pelletier/go-toml/v2"
-
 	"github.com/oyzuai/fleet/kindrunner"
+	"github.com/oyzuai/fleet/readiness"
 	"github.com/oyzuai/fleet/runnerclient"
 	"github.com/oyzuai/fleet/telemetry"
 )
@@ -44,9 +42,14 @@ const (
 
 // Config configures one run.
 type Config struct {
-	Client *runnerclient.Client
+	ExecutionTrustDecision string
+	Readiness              *readiness.Binding
+	Client                 *runnerclient.Client
 	// StartupTokenFile is read once and deleted.
 	StartupTokenFile string
+	// WaitForStartupToken waits for a final ready marker from the manager,
+	// which is delivered only after the running allocation was verified.
+	WaitForStartupToken bool
 	// StartupTokenEnv, used when StartupTokenFile is empty, names an
 	// environment variable holding the token, for executors whose files are
 	// read-only (a Kubernetes Secret). It is read once and unset, so no
@@ -101,6 +104,10 @@ type Config struct {
 // Run reports the outcome, then drains any pending logs before returning.
 // It also returns when runs says the job is no longer this runner's.
 func Run(ctx context.Context, cfg Config) (runErr error) {
+	assignment := runnerclient.StartupAssignment{Readiness: cfg.Readiness, ExecutionTrustDecision: cfg.ExecutionTrustDecision}
+	if err := assignment.Validate(); err != nil {
+		return err
+	}
 	if cfg.GitURL == "" {
 		cfg.GitURL = "https://github.com"
 	}
@@ -122,7 +129,14 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	var startup string
 	var err error
 	if cfg.StartupTokenFile != "" {
-		startup, err = readOnce(cfg.StartupTokenFile)
+		if cfg.WaitForStartupToken {
+			if cfg.Readiness == nil {
+				return errors.New("allocation handoff needs a readiness binding")
+			}
+			startup, err = readReadinessStartupToken(ctx, cfg.StartupTokenFile)
+		} else {
+			startup, err = readOnce(cfg.StartupTokenFile)
+		}
 	} else {
 		startup, err = readEnvOnce(cfg.StartupTokenEnv)
 	}
@@ -151,7 +165,7 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 			span.End(o, reason)
 		}
 	}()
-	st, err := cfg.Client.Start(ctx, startup)
+	st, err := cfg.Client.Start(ctx, startup, assignment)
 	if err != nil {
 		return fmt.Errorf("start the job: %w", err)
 	}
@@ -232,8 +246,11 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	runnerclient.SetDrainPhase("post_finish")
 	// The server's log-only token window starts at job finish. Keep the
 	// original token and spool alive while the uploader drains that window.
-	if capture != nil && !capture.wait(drain) {
-		log.Warn("log drain window expired; log remains incomplete")
+	if capture != nil {
+		capture.beginPostFinishDrain()
+		if !capture.wait(drain) {
+			log.Warn("log drain window expired; log remains incomplete")
+		}
 	}
 	return nil
 }
@@ -330,7 +347,7 @@ func execute(ctx context.Context, cfg Config, token, startup string, job runnerc
 // build checks out the commit and runs the oyzu command.
 func build(ctx context.Context, cfg Config, token, startup string, job runnerclient.Job, log *slog.Logger, completion *nativeCompletion) (outcome runnerclient.Outcome, capture *logCapture) {
 	_, name, _ := strings.Cut(job.Repository, "/")
-	if !shaPattern.MatchString(job.HeadSHA) || !repoPattern.MatchString(job.Repository) || strings.Trim(name, ".") == "" ||
+	if (job.HeadSHA != "" && !shaPattern.MatchString(job.HeadSHA)) || !repoPattern.MatchString(job.Repository) || strings.Trim(name, ".") == "" ||
 		(job.AffectedBase != "" && !shaPattern.MatchString(job.AffectedBase)) {
 		return failedWith("INVALID_JOB", "The job names an invalid repository or commit."), nil
 	}
@@ -352,7 +369,7 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	if err != nil {
 		return failedWith("SOURCE_UNAVAILABLE", "Could not get a token to read the repository: "+err.Error()), nil
 	}
-	secrets := []string{token, startup, src.Token, "x-access-token:" + src.Token}
+	secrets := []string{token, startup, src.Token, "x-access-token:" + src.Token, src.URL}
 	forms := maskForms(secrets...)
 	capture = newLogCapture(ctx, cfg, token, job, log)
 	capture.system("Checking out source.\n", &runnerclient.LogEvent{Kind: "task", State: "running"})
@@ -362,20 +379,21 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		capture.system("Job command finished.\n", &runnerclient.LogEvent{Kind: "finished", Status: outcome.State, ExitCode: outcome.ExitCode, DurationMS: &duration})
 		capture.finish()
 	}()
-	if err := checkout(ctx, cfg, src.Token, job); err != nil {
+	var sourceErr error
+	if src.Kind == "snapshot" {
+		sourceErr = restoreSnapshot(ctx, cfg, src)
+	} else if src.Kind != "" || !shaPattern.MatchString(job.HeadSHA) {
+		sourceErr = errors.New("unsupported source kind or invalid commit")
+	} else {
+		sourceErr = checkout(ctx, cfg, src.Token, job)
+	}
+	if err := sourceErr; err != nil {
 		msg := replaceForms(err.Error(), forms)
 		log.Warn("checkout failed", "error", msg)
 		return failedWith("SOURCE_UNAVAILABLE", "Could not check out "+job.HeadSHA+": "+msg), capture
 	}
-	if job.Operation == "run" {
-		declared, err := declaresTask(filepath.Join(cfg.WorkDir, "oyzu.toml"), job.Task)
-		if err != nil {
-			return failedWith("RUNNER_ERROR", "Could not read `oyzu.toml` at "+job.HeadSHA+": "+err.Error()), capture
-		}
-		if !declared {
-			return runnerclient.Outcome{State: "skipped", Summary: fmt.Sprintf("`oyzu.toml` at `%s` declares no task `%s`.", job.HeadSHA, job.Task)}, capture
-		}
-	}
+	// Oyzu's resolver owns task discovery, including qualified/native tasks.
+	// A root-TOML precheck cannot determine whether the assigned task exists.
 
 	// Build output goes into the masked tail and log spool, never to the runner's own
 	// stdout: that is the pool host's log, which is for admins and must not
@@ -395,6 +413,10 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		errSink.close()
 	}()
 	env := buildEnv(os.Environ())
+	if src.Kind == "snapshot" {
+		env = withEnv(env, []string{"OYZU_REMOTE_SOURCE_DIGEST=" + src.Digest})
+	}
+	var runtime *runtimeInputs
 	if job.Kind != "plan" && len(job.Secrets) > 0 {
 		secretEnv, cleanup, err := pullSecrets(ctx, cfg, token, job.Secrets, func(v string) {
 			stdout.Add(v)
@@ -406,7 +428,14 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 			log.Warn("build secrets not delivered", "error", msg)
 			return failed("Could not get the job's build secrets: " + msg), capture
 		}
-		env = withEnv(env, secretEnv)
+		if job.Kind == "slice" {
+			if len(secretEnv.Files) != len(job.Secrets) {
+				return failedWith("RUNTIME_INPUT_UNSUPPORTED", "Isolated native runtime inputs require file Secret mappings."), capture
+			}
+			runtime = &runtimeInputs{Assignment: assignmentRef{Job: job.ID, Attempt: job.Attempt}, Directory: secretEnv.Directory, Files: secretEnv.Files}
+		} else {
+			env = withEnv(env, secretEnv.Env)
+		}
 	}
 	if cfg.trust != nil {
 		env = cfg.trust.Env(env, cfg.trust.Dir)
@@ -457,6 +486,22 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 				}
 			}
 			env = proxy.env(env)
+			if job.Kind == "slice" && proxy.gateway != nil {
+				if runtime == nil {
+					directory, err := os.MkdirTemp(cfg.SecretsDir, "oyzu-runtime-")
+					if err != nil {
+						return failedWith("RUNNER_ERROR", "Could not create private runtime directory."), capture
+					}
+					defer os.RemoveAll(directory)
+					runtime = &runtimeInputs{Assignment: assignmentRef{Job: job.ID, Attempt: job.Attempt}, Directory: directory, Files: []string{}}
+				}
+				stop, err := proxy.startRuntimeProxy(runtime.Directory)
+				if err != nil {
+					return failedWith("RUNTIME_INPUT_UNSUPPORTED", "Could not bind the enforced runtime HTTP proxy."), capture
+				}
+				defer stop()
+				runtime.HTTPProxy = true
+			}
 		}
 	}
 	var denials *denialWatcher
@@ -469,6 +514,10 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	args := append([]string{}, job.Command[1:]...)
 	if job.Kind == "slice" {
 		args = []string{"__oyzu-build-worker", "execute"}
+		input, err = sliceInputWithRuntime(cfg.WorkDir, job, runtime)
+		if err != nil {
+			return failedWith("PLAN_MISMATCH", err.Error()), capture
+		}
 	} else if job.Kind != "plan" && (job.Operation == "build" || job.Operation == "run") && !slices.Contains(args, "--json") {
 		args = append([]string{"--json"}, args...)
 	}
@@ -495,6 +544,15 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 		return cmd, cmd.Run()
 	}
 	previous := nativeCompletionRecord(cfg.WorkDir)
+	if job.Operation == "build" {
+		defer func() {
+			failures, err := readTestFailures(cfg.WorkDir, previous, nativeCompletionRecord(cfg.WorkDir), stdout.String)
+			outcome.TestFailures = failures
+			if err != nil {
+				log.Warn("some test failure reports were not read", "error", stdout.String(err.Error()))
+			}
+		}()
+	}
 	cmd, err := runNative(args, input, stdout)
 	var retainedOutputs []runnerclient.Output
 	var retainedCompletion []byte
@@ -527,9 +585,11 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 	}
 	// A signal/WaitDelay-killed CLI is not proof that its native children
 	// cleaned up. Only a normal wait plus its fresh finalized native record
-	// can acknowledge stopping this build invocation.
+	// can acknowledge stopping this native invocation. Isolated tasks use the
+	// same finalized build-manifest contract as isolated builds.
 	stopWithinGrace := interruptedAt.Load() == 0 || time.Since(time.Unix(0, interruptedAt.Load())) < cmd.WaitDelay
-	if job.Operation == "build" && cmd.ProcessState != nil && cmd.ProcessState.Exited() && !forced.Load() && stopWithinGrace {
+	nativeOperation := job.Operation == "build" || (job.Operation == "run" && slices.Contains(job.Command, "--isolated"))
+	if nativeOperation && cmd.ProcessState != nil && cmd.ProcessState.Exited() && !forced.Load() && stopWithinGrace {
 		current := nativeCompletionRecord(cfg.WorkDir)
 		if retainedCompletion != nil {
 			current = retainedCompletion
@@ -604,14 +664,19 @@ type nativeCompletion struct{ confirmed bool }
 func cancellationOutcome(previous runnerclient.Outcome, confirmed bool) runnerclient.Outcome {
 	if !confirmed {
 		return runnerclient.Outcome{State: "failed", ExitCode: previous.ExitCode, ReasonCode: "RUNNER_ERROR",
-			Summary: "Cancellation requested, but native termination was not confirmed by a fresh completed build record.\n\n" + previous.Summary}
+			Summary: "Cancellation requested, but native termination was not confirmed by a fresh completed build record.\n\n" + previous.Summary, TestFailures: previous.TestFailures}
 	}
 	return runnerclient.Outcome{State: "cancelled", ExitCode: previous.ExitCode,
-		Summary: "Native build stopped after cancellation was requested.\n\n" + previous.Summary}
+		Summary: "Native execution stopped after cancellation was requested.\n\n" + previous.Summary, TestFailures: previous.TestFailures}
 }
 
 func nativeCompletionRecord(directory string) []byte {
-	file, err := os.Open(filepath.Join(directory, filepath.FromSlash(ManifestPath)))
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return nil
+	}
+	defer root.Close()
+	file, err := root.Open(filepath.FromSlash(ManifestPath))
 	if err != nil {
 		return nil
 	}
@@ -645,7 +710,7 @@ func freshNativeCompletion(previous, current []byte) bool {
 func buildEnv(environ []string) []string {
 	out := make([]string, 0, len(environ))
 	for _, kv := range environ {
-		if strings.HasPrefix(kv, EnvIDTokenURL+"=") || strings.HasPrefix(kv, EnvIDTokenRequestToken+"=") || telemetry.IsTelemetryVar(kv) {
+		if strings.HasPrefix(kv, "OYZU_REMOTE_SOURCE_DIGEST=") || strings.HasPrefix(kv, EnvIDTokenURL+"=") || strings.HasPrefix(kv, EnvIDTokenRequestToken+"=") || telemetry.IsTelemetryVar(kv) {
 			continue
 		}
 		out = append(out, kv)
@@ -678,22 +743,31 @@ func failedWith(code, summary string) runnerclient.Outcome {
 
 // checkout fetches exactly the job's commit. The token goes to git as an
 // HTTP header through the environment, so it is in neither the process
-// arguments nor the repository's config. Ordinary builds get the commit alone;
+// arguments nor the repository's config. Affected builds fetch exactly the two
+// requested commits with their complete trees and blobs, without ancestry;
 // plans and admitted slices get the same blobless history so native preparation
 // observes the same version context and affected-build merge base.
 func checkout(ctx context.Context, cfg Config, token string, job runnerclient.Job) error {
 	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	remote := strings.TrimRight(cfg.GitURL, "/") + "/" + job.Repository + ".git"
-	env := append(cfg.environ(),
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=http."+strings.TrimRight(cfg.GitURL, "/")+"/.extraHeader",
-		"GIT_CONFIG_VALUE_0=Authorization: Basic "+auth,
-	)
+	env := append(cfg.environ(), "GIT_TERMINAL_PROMPT=0")
+	if token != "" {
+		env = append(env,
+			"GIT_CONFIG_COUNT=1",
+			"GIT_CONFIG_KEY_0=http."+strings.TrimRight(cfg.GitURL, "/")+"/.extraHeader",
+			"GIT_CONFIG_VALUE_0=Authorization: Basic "+auth,
+		)
+	} else {
+		env = append(env, "GIT_CONFIG_COUNT=0")
+	}
 	steps := [][]string{
 		{"init", "--quiet"},
 		{"fetch", "--quiet", "--depth", "1", "--no-tags", remote, job.HeadSHA},
 		{"checkout", "--quiet", "--detach", "FETCH_HEAD"},
+	}
+	if job.Kind == "build" && job.Operation == "build" && job.AffectedBase != "" && job.AffectedBase != job.HeadSHA {
+		steps[1] = append(steps[1], job.AffectedBase)
+		steps[2] = []string{"checkout", "--quiet", "--detach", job.HeadSHA}
 	}
 	if job.Kind == "plan" || job.Kind == "slice" {
 		fetch := []string{"fetch", "--quiet", "--filter=blob:none", "--no-tags", "origin", job.HeadSHA}
@@ -717,10 +791,19 @@ func checkout(ctx context.Context, cfg Config, token string, job runnerclient.Jo
 	for _, args := range steps {
 		cmd := exec.CommandContext(ctx, cfg.Git, args...)
 		cmd.Dir, cmd.Env = cfg.WorkDir, env
+		if args[0] == "fetch" {
+			// Explicit acquisition must not recursively lazy-fetch a missing
+			// tip while initializing a promisor remote. Checkout may still
+			// fetch the assigned tree's promised blobs with this source token.
+			cmd.Env = append(cmd.Env, "GIT_NO_LAZY_FETCH=1")
+		}
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
-			msg := strings.ReplaceAll(strings.TrimSpace(stderr.String()), token, "***")
+			msg := strings.TrimSpace(stderr.String())
+			if token != "" {
+				msg = strings.ReplaceAll(msg, token, "***")
+			}
 			return fmt.Errorf("git %s: %w: %s", args[0], err, msg)
 		}
 	}
@@ -742,27 +825,6 @@ func (c *capped) Write(b []byte) (int, error) {
 		c.n -= k
 	}
 	return len(b), nil
-}
-
-// declaresTask reports whether oyzu.toml declares tasks.<task>. A missing file
-// declares nothing; a file that cannot be read or parsed is an error, so the
-// job fails instead of being skipped for the wrong reason.
-func declaresTask(path, task string) (bool, error) {
-	b, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	var doc struct {
-		Tasks map[string]any `toml:"tasks"`
-	}
-	if err := toml.Unmarshal(b, &doc); err != nil {
-		return false, err
-	}
-	_, ok := doc.Tasks[task]
-	return ok, nil
 }
 
 // tail keeps the last summaryLines lines written to it.
@@ -806,4 +868,35 @@ func (t *tail) String() string {
 		lines = append(append([]string{}, lines...), t.part)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func readReadinessStartupToken(ctx context.Context, path string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		_, err := os.Stat(path + ".ready")
+		if err == nil {
+			token, err := readOnce(path)
+			if err != nil {
+				return "", err
+			}
+			if err = os.Remove(path + ".ready"); err != nil {
+				return "", err
+			}
+			return token, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }

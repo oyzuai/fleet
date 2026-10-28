@@ -122,14 +122,27 @@ const gatewayUsage = `usage:
   oyzu-executor gateway [--mode enforce|report] [--pool NAME] [--proxy :3128] [--dns :53]
                         [--control 127.0.0.1:9091] [--control-token-env NAME]
   oyzu-executor gateway probe --proxy URL [--deny host:port] [--direct host:port,...]
+  oyzu-executor gateway probe-ipv6
 `
 
 // Command runs `oyzu-executor gateway`, args without the word gateway. The
 // pool manager starts it in the executor image: as the gateway itself, or
 // with probe as the startup self-test's job.
 func Command(args []string, log *slog.Logger) error {
+	if len(args) > 0 && args[0] == "probe-control" {
+		return readinessControlCommand(args[1:])
+	}
 	if len(args) > 0 && args[0] == "probe" {
 		return probeCommand(args[1:])
+	}
+	if len(args) > 0 && args[0] == "probe-readiness" {
+		return readinessProbeCommand(args[1:])
+	}
+	if len(args) > 0 && args[0] == "readiness-canary" {
+		return canaryCommand(args[1:])
+	}
+	if len(args) > 0 && args[0] == "probe-ipv6" {
+		return ipv6Command(args[1:])
 	}
 	fs := flag.NewFlagSet("oyzu-executor gateway", flag.ContinueOnError)
 	mode := fs.String("mode", string(ModeEnforce), "enforce, or report to log what enforcing would block and allow it")
@@ -137,14 +150,19 @@ func Command(args []string, log *slog.Logger) error {
 	proxyAddr := fs.String("proxy", fmt.Sprintf(":%d", DefaultProxyPort), "the proxy listen address")
 	dnsAddr := fs.String("dns", fmt.Sprintf(":%d", DefaultDNSPort), "the DNS sinkhole listen address; empty for none")
 	control := fs.String("control", fmt.Sprintf("127.0.0.1:%d", DefaultControlPort), "the control API listen address")
+	controlIF := fs.String("control-interface", "", "bind the control API only to this management interface")
 	tokenEnv := fs.String("control-token-env", TokenEnv, "the variable holding the control token")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w\n\n%s", err, gatewayUsage)
 	}
 	ctx, stop := notifyContext()
 	defer stop()
+	controlAddress, err := controlInterface(*control, *controlIF)
+	if err != nil {
+		return err
+	}
 	return Run(ctx, Options{
-		Mode: Mode(*mode), Pool: *pool, ProxyAddr: *proxyAddr, DNSAddr: *dnsAddr, ControlAddr: *control,
+		Mode: Mode(*mode), Pool: *pool, ProxyAddr: *proxyAddr, DNSAddr: *dnsAddr, ControlAddr: controlAddress,
 		Token: os.Getenv(*tokenEnv), Log: log,
 	})
 }

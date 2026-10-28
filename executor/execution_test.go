@@ -203,3 +203,46 @@ func TestCredentialProxyUsesCorporateTrustAndProxy(t *testing.T) {
 		t.Fatal("corporate proxy failure did not fail closed", resp.StatusCode)
 	}
 }
+
+// An anonymous source still needs the projected corporate trust, while main's
+// no-App checkout must not manufacture an empty-token Authorization header.
+func TestAnonymousCheckoutRetainsProjectedCorporateTrust(t *testing.T) {
+	canonical, digest, err := executionconfig.CanonicalBundle(executionCA(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := executionconfig.Prepare(context.Background(), t.TempDir(), &runnerclient.ExecutionConfig{
+		Version: 1, Revision: "anonymous-checkout", Required: true,
+		Bundles: []runnerclient.ExecutionCABundle{{PEM: canonical, Digest: digest, Required: true}},
+	}, []byte(canonical), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer projection.Close()
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := filepath.Join(t.TempDir(), "git-trust.json")
+	t.Setenv("FAKE_TOOLS", "1")
+	t.Setenv("FAKE_GIT_LOG", filepath.Join(t.TempDir(), "git.jsonl"))
+	t.Setenv("FAKE_GIT_TRUST_REPORT", report)
+	cfg := Config{Git: binary, WorkDir: t.TempDir(), GitURL: "https://github.example", trust: projection}
+	if err := checkout(context.Background(), cfg, "", buildJob("build", "oyzu", "build")); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actual map[string]string
+	if err := json.Unmarshal(raw, &actual); err != nil {
+		t.Fatal(err)
+	}
+	if actual["count"] != "0" || actual["header"] != "" {
+		t.Fatalf("anonymous auth config: %+v", actual)
+	}
+	if actual["trust"] != filepath.Join(projection.Dir, "ca.pem") {
+		t.Fatalf("projected trust missing: %+v", actual)
+	}
+}

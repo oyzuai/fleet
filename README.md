@@ -2,6 +2,13 @@
 
 The Oyzu pool manager and executor.
 
+The [private native-input contract](docs/runtime-inputs.md) describes the current
+executor/engine file binding and controlled Unix-socket proxy integration in
+progress. Native qualification is pending.
+
+A single-tenant [pool server](docs/pool-server.md) that serves remote builds
+without the platform is implemented and experimental.
+
 Manager and executor authentication have separate
 [lifecycles](docs/authentication.md). A manager enrolls
 once and signs login assertions; Oyzu issues the manager, startup and job
@@ -98,6 +105,12 @@ Alongside them:
   assertions a manager logs in and rotates keys with.
 
 ## Executor images
+
+Linux container jobs use the fixed
+[container build sandbox](docs/container-sandbox.md), including its default-deny
+syscall policy, rootless OCI namespace setup and measured proc/sys controls.
+The pinned runtime must be provisioned in an executor image through normal
+Oyzu installation. A working network probe does not install a missing runtime.
 
 The default manager driver changed from `process` to `container`. A manager
 that ran with no `--driver` now needs `--image NAME@sha256:DIGEST` (and a

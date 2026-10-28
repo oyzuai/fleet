@@ -77,6 +77,8 @@ func waitReady(ctx context.Context, jc *JobClient) error {
 	return fmt.Errorf("probe: the gateway is not ready: %w", last)
 }
 
+var errProbeUnexpected = errors.New("proxy answered without refusing")
+
 // probeConnect sends CONNECT to the proxy by hand and wants the gateway's
 // refusal.
 func probeConnect(ctx context.Context, proxyHost, dest string) error {
@@ -99,7 +101,7 @@ func probeConnect(ctx context.Context, proxyHost, dest string) error {
 	if resp.StatusCode == http.StatusForbidden && resp.Header.Get(DeniedHeader) == "denied" {
 		return nil
 	}
-	return fmt.Errorf("probe: CONNECT to %s was answered %s, not refused by the gateway", dest, resp.Status)
+	return fmt.Errorf("%w: CONNECT to %s was answered %s", errProbeUnexpected, dest, resp.Status)
 }
 
 func probeCommand(args []string) error {

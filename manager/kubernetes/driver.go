@@ -307,6 +307,9 @@ func (d *Driver) Start(ctx context.Context, slot manager.SlotID, c runnerclient.
 		return h, fmt.Errorf("create the token secret: %w", err)
 	}
 	pod := d.pod(name, j.secret, labels)
+	if c.ExecutionTrustDecision != "" {
+		pod.Spec.Containers[0].Args = append(pod.Spec.Containers[0].Args, "--execution-trust-decision", c.ExecutionTrustDecision)
+	}
 	if d.sandboxed() {
 		d.sandboxPod(&pod)
 	}
