@@ -9,6 +9,13 @@ Locked replay does not require machine preview opt-in in CI. It is linux/amd64
 until the public oyzu release provides an arm64 CLI.
 Use the digest in the release notes for the manager's `--image`.
 
+`tools.lockPlatforms` in `oyzu.toml` explicitly preserves tool pin coverage for
+`linux/amd64/gnu`, `linux/arm64/gnu`, `darwin/amd64/native`,
+`darwin/arm64/native` and `windows/amd64/msvc` when running `oyzu pin`.
+This metadata coverage does not extend plugin payload availability or image
+support. The lock also records the default Docker quality set: dockerfmt 0.5.4
+and Hadolint 2.15.1, including their asset digests and license records.
+
 The base is Docker's official `buildpack-deps:noble-scm`, based on Ubuntu 24.04
 and pinned by OCI index digest. It supplies glibc, `/bin/sh`, `/bin/sleep` and
 the complete Git package, including its helpers, runtime libraries and HTTPS

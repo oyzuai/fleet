@@ -24,6 +24,16 @@ roots = ["sha256:8a42a09726c2c6334d7a97ba3123f282268b31631b184d6053f2c0207d7c5cb
 [resolved_environment.native_constraints]
 "oyzu:go" = ["go-minimum:>=1.24.0"]
 
+[[resolved_environment]]
+required_capabilities = []
+request_digest = "sha256:f1416535a49aa8f3e302a65ae9bb55f794031e1a7632489eb9789b530f0096ce"
+roots = ["sha256:023536ff70c01644263003811c0a4e2dfd7049be66015e07afe945611615bb35", "sha256:0552ce3279cb7d8fb00bcd5aff94d4def793b7ab0cfe86e25a34a04ac5509f2d", "sha256:572134446c7aa484124aacf37b9ffcda5d5eb1343b974deb2b413283b2e7b6c1", "sha256:7c00461ae2ea5fda9e04a331d97f4cebdf585ef44e4bdbd73bb70d6f7e389879", "sha256:9a8ccb505383051cacdff951604162b71bb2ad41f5f398caf7c1c0d7526b0cc9"]
+
+[resolved_environment.requests]
+"oyzu:go" = "1.27"
+
+[resolved_environment.native_constraints]
+
 [resolution."sha256:023536ff70c01644263003811c0a4e2dfd7049be66015e07afe945611615bb35"]
 tool = "oyzu:go"
 version = "1.27.3"
@@ -111,6 +121,219 @@ components = []
 [resolution."sha256:ff28b4b7c4cbc47e49f53873e8e6517e32ff80a026c3729be7e0e978bbecef6e".inputs.archive]
 url = "https://dl.google.com/go/go1.24.13.darwin-arm64.tar.gz"
 digest = "sha256:f282d882c3353485e2fc6c634606d85caf36e855167d59b996dbeae19fa7629a"
+
+[quality.docker]
+version = "sha256:4c2f234db2d49346503f6aac2879d7e263dbb53db139f3784791d12929ce19ab"
+
+[[quality.docker.assets]]
+path = "bin"
+version = "0.5.4"
+url = "https://github.com/reteps/dockerfmt/releases/download/v0.5.4/dockerfmt-v0.5.4-darwin-arm64.tar.gz"
+integrity = "sha256-FhsA0UybiFHmAbZlQSri6SKaonVOMpzmMtYN89BmHJ4="
+sha256 = "161b00d14c9b8851e601b665412ae2e9229aa2754e329ce632d60df3d0661c9e"
+kind = "tar-gz"
+os = ["darwin"]
+cpu = ["arm64"]
+
+[quality.docker.assets.upstream]
+asset = "dockerfmt-v0.5.4-darwin-arm64.tar.gz"
+checksums = []
+kind = "github"
+publishedAt = "2026-06-27T21:58:22Z"
+repository = "reteps/dockerfmt"
+tag = "v0.5.4"
+
+[quality.docker.assets.upstream.attestations]
+available = false
+
+[[quality.docker.assets]]
+path = "bin"
+version = "0.5.4"
+url = "https://github.com/reteps/dockerfmt/releases/download/v0.5.4/dockerfmt-v0.5.4-linux-amd64.tar.gz"
+integrity = "sha256-Cg9er9gadsil0Evo2bWl/ADABUoOpcwFEjd8E8hoWbw="
+sha256 = "0a0f5eafd81a76c8a5d04be8d9b5a5fc00c0054a0ea5cc0512377c13c86859bc"
+kind = "tar-gz"
+os = ["linux"]
+cpu = ["x64"]
+
+[quality.docker.assets.upstream]
+asset = "dockerfmt-v0.5.4-linux-amd64.tar.gz"
+checksums = []
+kind = "github"
+publishedAt = "2026-06-27T21:58:22Z"
+repository = "reteps/dockerfmt"
+tag = "v0.5.4"
+
+[quality.docker.assets.upstream.attestations]
+available = false
+
+[[quality.docker.assets]]
+path = "bin"
+version = "0.5.4"
+url = "https://github.com/reteps/dockerfmt/releases/download/v0.5.4/dockerfmt-v0.5.4-linux-arm64.tar.gz"
+integrity = "sha256-+LNwR/NaJP4J33xzQbgmrNfyWRf1dX/XLD6O7xe2bl0="
+sha256 = "f8b37047f35a24fe09df7c7341b826acd7f25917f5757fd72c3e8eef17b66e5d"
+kind = "tar-gz"
+os = ["linux"]
+cpu = ["arm64"]
+
+[quality.docker.assets.upstream]
+asset = "dockerfmt-v0.5.4-linux-arm64.tar.gz"
+checksums = []
+kind = "github"
+publishedAt = "2026-06-27T21:58:22Z"
+repository = "reteps/dockerfmt"
+tag = "v0.5.4"
+
+[quality.docker.assets.upstream.attestations]
+available = false
+
+[[quality.docker.assets]]
+path = "bin/hadolint"
+version = "2.15.1"
+url = "https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-arm64"
+integrity = "sha256-9hmO+AkPQE27dxq/7ghuuMSKwXfzDaf9NRCso1s0S10="
+sha256 = "f6198ef8090f404dbb771abfee086eb8c48ac177f30da7fd3510aca35b344b5d"
+kind = "file"
+os = ["linux"]
+cpu = ["arm64"]
+
+[quality.docker.assets.upstream]
+asset = "hadolint-linux-arm64"
+checksums = ["https://github.com/hadolint/hadolint/releases/download/v2.15.1/checksums.sha256"]
+kind = "github"
+publishedAt = "2026-07-31T10:13:06Z"
+repository = "hadolint/hadolint"
+tag = "v2.15.1"
+
+[quality.docker.assets.upstream.attestations]
+available = true
+
+[[quality.docker.assets.upstream.attestations.verified]]
+digest = "fbb3ca46baa03f6a985492b83d0ea384ab556c48b5851adf915525a465e27f5b"
+signer = "https://github.com/hadolint/hadolint/.github/workflows/release.yml@refs/heads/master"
+
+[[quality.docker.assets]]
+path = "bin/hadolint"
+version = "2.15.1"
+url = "https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-x86_64"
+integrity = "sha256-xxh9uU7u7KlWUZpq8XGtwxRTlBoed3lh9uaA9pfIxQc="
+sha256 = "c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507"
+kind = "file"
+os = ["linux"]
+cpu = ["x64"]
+
+[quality.docker.assets.upstream]
+asset = "hadolint-linux-x86_64"
+checksums = ["https://github.com/hadolint/hadolint/releases/download/v2.15.1/checksums.sha256"]
+kind = "github"
+publishedAt = "2026-07-31T10:13:06Z"
+repository = "hadolint/hadolint"
+tag = "v2.15.1"
+
+[quality.docker.assets.upstream.attestations]
+available = true
+
+[[quality.docker.assets.upstream.attestations.verified]]
+digest = "fbb3ca46baa03f6a985492b83d0ea384ab556c48b5851adf915525a465e27f5b"
+signer = "https://github.com/hadolint/hadolint/.github/workflows/release.yml@refs/heads/master"
+
+[[quality.docker.assets]]
+path = "bin/hadolint"
+version = "2.15.1"
+url = "https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-macos-arm64"
+integrity = "sha256-XAnzIT+OQEBqvgSCM9mF7r7zNtSmogAhvkf622z0gKI="
+sha256 = "5c09f3213f8e40406abe048233d985eebef336d4a6a20021be47fadb6cf480a2"
+kind = "file"
+os = ["darwin"]
+cpu = ["arm64"]
+
+[quality.docker.assets.upstream]
+asset = "hadolint-macos-arm64"
+checksums = ["https://github.com/hadolint/hadolint/releases/download/v2.15.1/checksums.sha256"]
+kind = "github"
+publishedAt = "2026-07-31T10:13:06Z"
+repository = "hadolint/hadolint"
+tag = "v2.15.1"
+
+[quality.docker.assets.upstream.attestations]
+available = true
+
+[[quality.docker.assets.upstream.attestations.verified]]
+digest = "fbb3ca46baa03f6a985492b83d0ea384ab556c48b5851adf915525a465e27f5b"
+signer = "https://github.com/hadolint/hadolint/.github/workflows/release.yml@refs/heads/master"
+
+[[quality.docker.assets]]
+path = "bin/hadolint"
+version = "2.15.1"
+url = "https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-macos-x86_64"
+integrity = "sha256-/+m7GLI9XtHq5QI3rs27Uj0BbpbaC9TnqkMgQKz8P94="
+sha256 = "ffe9bb18b23d5ed1eae50237aecdbb523d016e96da0bd4e7aa432040acfc3fde"
+kind = "file"
+os = ["darwin"]
+cpu = ["x64"]
+
+[quality.docker.assets.upstream]
+asset = "hadolint-macos-x86_64"
+checksums = ["https://github.com/hadolint/hadolint/releases/download/v2.15.1/checksums.sha256"]
+kind = "github"
+publishedAt = "2026-07-31T10:13:06Z"
+repository = "hadolint/hadolint"
+tag = "v2.15.1"
+
+[quality.docker.assets.upstream.attestations]
+available = true
+
+[[quality.docker.assets.upstream.attestations.verified]]
+digest = "fbb3ca46baa03f6a985492b83d0ea384ab556c48b5851adf915525a465e27f5b"
+signer = "https://github.com/hadolint/hadolint/.github/workflows/release.yml@refs/heads/master"
+
+[[quality.docker.assets]]
+path = "bin/hadolint.exe"
+version = "2.15.1"
+url = "https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-windows-x86_64.exe"
+integrity = "sha256-AdknKUlitTh/nq1PGGeRWEUr5PF8dlrQvf/lJkucewo="
+sha256 = "01d927294962b5387f9ead4f18679158452be4f17c765ad0bdffe5264b9c7b0a"
+kind = "file"
+os = ["win32"]
+cpu = ["x64"]
+
+[quality.docker.assets.upstream]
+asset = "hadolint-windows-x86_64.exe"
+checksums = ["https://github.com/hadolint/hadolint/releases/download/v2.15.1/checksums.sha256"]
+kind = "github"
+publishedAt = "2026-07-31T10:13:06Z"
+repository = "hadolint/hadolint"
+tag = "v2.15.1"
+
+[quality.docker.assets.upstream.attestations]
+available = true
+
+[[quality.docker.assets.upstream.attestations.verified]]
+digest = "fbb3ca46baa03f6a985492b83d0ea384ab556c48b5851adf915525a465e27f5b"
+signer = "https://github.com/hadolint/hadolint/.github/workflows/release.yml@refs/heads/master"
+
+[[quality.docker.assets]]
+path = "licenses/hadolint/LICENSE"
+version = "2.15.1"
+url = "https://raw.githubusercontent.com/hadolint/hadolint/v2.15.1/LICENSE"
+integrity = "git-blob-sha1:9cecc1d4669ee8af2ca727a5d8cde10cd8b2d7cc"
+sha256 = "589ed823e9a84c56feb95ac58e7cf384626b9cbf4fda2a907bc36e103de1bad2"
+kind = "file"
+
+[quality.docker.assets.upstream]
+gitBlob = "9cecc1d4669ee8af2ca727a5d8cde10cd8b2d7cc"
+kind = "github-source"
+path = "LICENSE"
+ref = "v2.15.1"
+repository = "hadolint/hadolint"
+
+[quality.docker.files]
+"upstream.txt" = """
+Complete upstream distributions; preserve their included licenses and notices.
+https://github.com/hadolint/hadolint/tree/v2.15.1
+https://github.com/reteps/dockerfmt/tree/v0.5.4
+"""
 
 [[plugin]]
 reference = "docker/image"

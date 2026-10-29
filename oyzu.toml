@@ -2,6 +2,13 @@
 # Run `oyzu pin` on a machine that can reach the download hosts and commit
 # the regenerated oyzu.lock.
 [tools]
+lockPlatforms = [
+  "linux/amd64/gnu",
+  "linux/arm64/gnu",
+  "darwin/amd64/native",
+  "darwin/arm64/native",
+  "windows/amd64/msvc",
+]
 go = "1.27"
 
 # Real Linux container diagnostic, using disposable secret-free controls.
