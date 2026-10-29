@@ -30,9 +30,9 @@ func TestSnapshotPoolManifestBlobRoundTrip(t *testing.T) {
 	cfg.StateDir = t.TempDir()
 	cfg.Repositories = []string{"oyzuai/fleet"}
 	cfg.Callers.TailnetUsers = []string{"test@example.com"}
-	cfg.GitHubApp.AppID = 5467712
+
 	cfg.EnrollmentTokenSHA256 = snapshotDigest([]byte("enroll"))[7:]
-	pool, err := poolserver.New(cfg, poolserver.Options{Source: poolTestSource{}})
+	pool, err := poolserver.New(cfg, poolserver.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

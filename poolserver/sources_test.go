@@ -300,9 +300,9 @@ func TestManifestRefusesMissingBlobAndMissingLookup(t *testing.T) {
 
 func TestBlobUploadDecodedDigestAndImmutableDeduplication(t *testing.T) {
 	f := newFixture(t)
-	data := bytes.Repeat([]byte("compressible source\n"), 1000)
+	data := bytes.Repeat([]byte("compressible source\n"), 32768)
 	digest := "sha256:" + hash(data)
-	encoder, err := zstd.NewWriter(nil)
+	encoder, err := zstd.NewWriter(nil, zstd.WithEncoderConcurrency(1), zstd.WithWindowSize(128<<10))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,6 +319,11 @@ func TestBlobUploadDecodedDigestAndImmutableDeduplication(t *testing.T) {
 	}
 	if status, _ := putBlob(t, f, digest, compressed[:len(compressed)-1], "zstd"); status != 400 {
 		t.Fatalf("truncated frame %d", status)
+	}
+	corrupted := bytes.Clone(compressed)
+	corrupted[len(corrupted)-1] ^= 0xff
+	if status, _ := putBlob(t, f, digest, corrupted, "zstd"); status != 400 {
+		t.Fatalf("corrupt frame checksum %d", status)
 	}
 	if status, _ := putBlob(t, f, digest, data, "gzip"); status != 422 {
 		t.Fatalf("unsupported encoding %d", status)

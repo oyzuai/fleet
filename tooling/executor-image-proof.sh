@@ -79,12 +79,12 @@ run checkout-source git -C "$scratch/fleet" checkout --detach "$source_head"
 run verify-source-head test "$(git -C "$scratch/fleet" rev-parse HEAD)" = "$source_head"
 run source-status git -C "$scratch/fleet" status --porcelain
 cd "$scratch/fleet"
-base=https://github.com/oyzuai/oyzu-releases/releases/download/oyzu/v0.2.3
+base=https://github.com/oyzuai/oyzu-releases/releases/download/oyzu/v0.2.5
 run download-oyzu curl -fsSL --retry 3 "$base/oyzu-linux-x86_64" -o "$scratch/bin/oyzu"
 run download-shim curl -fsSL --retry 3 "$base/oyzu-shim-linux-x86_64" -o "$scratch/bin/oyzu-shim"
 run verify-oyzu sha256sum --check <<CHECKSUMS
-99230d5b6cc452ea3e796e1fa8149abb6e21eb4ee85cc830d08d92e282d427d7  $scratch/bin/oyzu
-7d3284db39d96e8b817f8a244b8cd6a9d01c540a4501552c3b9dc4c0618cf653  $scratch/bin/oyzu-shim
+207228468f4adfa37c26f877a9bc93daed5477bb2a9b58f7d2bba587f8068e7f  $scratch/bin/oyzu
+f26af1787045ea811a3a62534ae87af4e79245712fab78329844550fed62f1e3  $scratch/bin/oyzu-shim
 CHECKSUMS
 chmod +x "$scratch/bin/oyzu" "$scratch/bin/oyzu-shim"
 # All oyzu commands use one initially empty HOME/store. The explicit empty

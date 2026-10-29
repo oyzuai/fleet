@@ -27,6 +27,22 @@ func main() {
 	}
 }
 func run() error {
+	if len(os.Args) > 1 && os.Args[1] == "token" {
+		if len(os.Args) < 3 {
+			return errors.New("expected token create, revoke or list")
+		}
+		fs := flag.NewFlagSet("token", flag.ContinueOnError)
+		config := fs.String("config", "/etc/oyzu-pool/server.json", "private JSON configuration")
+		name := fs.String("name", "", "caller token name")
+		if err := fs.Parse(os.Args[3:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return errors.New("unexpected token command arguments")
+		}
+		return poolserver.TokenCommand(os.Args[2], *config, *name, os.Stdout)
+	}
+
 	config := flag.String("config", "/etc/oyzu-pool/server.json", "root-owned private JSON configuration (or systemd credential mount)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()

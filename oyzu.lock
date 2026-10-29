@@ -4,6 +4,17 @@ tool = []
 
 [[resolved_environment]]
 required_capabilities = []
+request_digest = "sha256:cbd87194cbbe98ee2ed84bb58316e46d904c8eccc7b58ebc3272de1038ae555b"
+roots = ["sha256:023536ff70c01644263003811c0a4e2dfd7049be66015e07afe945611615bb35", "sha256:0552ce3279cb7d8fb00bcd5aff94d4def793b7ab0cfe86e25a34a04ac5509f2d", "sha256:572134446c7aa484124aacf37b9ffcda5d5eb1343b974deb2b413283b2e7b6c1", "sha256:7c00461ae2ea5fda9e04a331d97f4cebdf585ef44e4bdbd73bb70d6f7e389879", "sha256:9a8ccb505383051cacdff951604162b71bb2ad41f5f398caf7c1c0d7526b0cc9"]
+
+[resolved_environment.requests]
+"oyzu:go" = "1.27"
+
+[resolved_environment.native_constraints]
+"oyzu:go" = ["go-minimum:>=1.25"]
+
+[[resolved_environment]]
+required_capabilities = []
 request_digest = "sha256:d666c0c60976da96daf09c8ec14bbc9647a7d13c0ada868f1512d66119517f61"
 roots = ["sha256:8a42a09726c2c6334d7a97ba3123f282268b31631b184d6053f2c0207d7c5cb3", "sha256:dfd4992f91da11ebe617e13c4504282aaada258eb885cba37a7886111c678ce7", "sha256:ff28b4b7c4cbc47e49f53873e8e6517e32ff80a026c3729be7e0e978bbecef6e"]
 
@@ -12,6 +23,50 @@ roots = ["sha256:8a42a09726c2c6334d7a97ba3123f282268b31631b184d6053f2c0207d7c5cb
 
 [resolved_environment.native_constraints]
 "oyzu:go" = ["go-minimum:>=1.24.0"]
+
+[resolution."sha256:023536ff70c01644263003811c0a4e2dfd7049be66015e07afe945611615bb35"]
+tool = "oyzu:go"
+version = "1.27.3"
+backend_digest = "sha256:b03a56044afc327f709f699dc5d62874624ff05cc426afed981d2bf679b93705"
+execution_platform = "linux/arm64/gnu"
+components = []
+
+[resolution."sha256:023536ff70c01644263003811c0a4e2dfd7049be66015e07afe945611615bb35".inputs.archive]
+url = "https://dl.google.com/go/go1.27.3.linux-arm64.tar.gz"
+digest = "sha256:a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49"
+
+[resolution."sha256:0552ce3279cb7d8fb00bcd5aff94d4def793b7ab0cfe86e25a34a04ac5509f2d"]
+tool = "oyzu:go"
+version = "1.27.3"
+backend_digest = "sha256:b03a56044afc327f709f699dc5d62874624ff05cc426afed981d2bf679b93705"
+execution_platform = "windows/amd64/msvc"
+components = []
+
+[resolution."sha256:0552ce3279cb7d8fb00bcd5aff94d4def793b7ab0cfe86e25a34a04ac5509f2d".inputs.archive]
+url = "https://dl.google.com/go/go1.27.3.windows-amd64.zip"
+digest = "sha256:f26081f438319757f8a1b46d7d0b2c5ec7583d4038e485e0aa725cfde7885fff"
+
+[resolution."sha256:572134446c7aa484124aacf37b9ffcda5d5eb1343b974deb2b413283b2e7b6c1"]
+tool = "oyzu:go"
+version = "1.27.3"
+backend_digest = "sha256:b03a56044afc327f709f699dc5d62874624ff05cc426afed981d2bf679b93705"
+execution_platform = "darwin/arm64/native"
+components = []
+
+[resolution."sha256:572134446c7aa484124aacf37b9ffcda5d5eb1343b974deb2b413283b2e7b6c1".inputs.archive]
+url = "https://dl.google.com/go/go1.27.3.darwin-arm64.tar.gz"
+digest = "sha256:dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2"
+
+[resolution."sha256:7c00461ae2ea5fda9e04a331d97f4cebdf585ef44e4bdbd73bb70d6f7e389879"]
+tool = "oyzu:go"
+version = "1.27.3"
+backend_digest = "sha256:b03a56044afc327f709f699dc5d62874624ff05cc426afed981d2bf679b93705"
+execution_platform = "darwin/amd64/native"
+components = []
+
+[resolution."sha256:7c00461ae2ea5fda9e04a331d97f4cebdf585ef44e4bdbd73bb70d6f7e389879".inputs.archive]
+url = "https://dl.google.com/go/go1.27.3.darwin-amd64.tar.gz"
+digest = "sha256:b6f8e931e4ab497fcde6da8ae4499a58f9d258e55c8a80824a516eae5950a750"
 
 [resolution."sha256:8a42a09726c2c6334d7a97ba3123f282268b31631b184d6053f2c0207d7c5cb3"]
 tool = "oyzu:go"
@@ -23,6 +78,17 @@ components = []
 [resolution."sha256:8a42a09726c2c6334d7a97ba3123f282268b31631b184d6053f2c0207d7c5cb3".inputs.archive]
 url = "https://dl.google.com/go/go1.24.13.windows-amd64.zip"
 digest = "sha256:40b16bc8f00540a2cb02dff4de72b73e966fdd8d65f95e33d8e4080b48a2459a"
+
+[resolution."sha256:9a8ccb505383051cacdff951604162b71bb2ad41f5f398caf7c1c0d7526b0cc9"]
+tool = "oyzu:go"
+version = "1.27.3"
+backend_digest = "sha256:b03a56044afc327f709f699dc5d62874624ff05cc426afed981d2bf679b93705"
+execution_platform = "linux/amd64/gnu"
+components = []
+
+[resolution."sha256:9a8ccb505383051cacdff951604162b71bb2ad41f5f398caf7c1c0d7526b0cc9".inputs.archive]
+url = "https://dl.google.com/go/go1.27.3.linux-amd64.tar.gz"
+digest = "sha256:65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40"
 
 [resolution."sha256:dfd4992f91da11ebe617e13c4504282aaada258eb885cba37a7886111c678ce7"]
 tool = "oyzu:go"

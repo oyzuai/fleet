@@ -122,6 +122,10 @@ func TestGitHubOIDCCallerAndDenials(t *testing.T) {
 }
 func TestGitHubAppScopeAndCommitLookup(t *testing.T) {
 	f := newFixture(t)
+	f.cfg.GitHubApp.AppID = 12345
+	if err := f.cfg.defaults(); err != nil {
+		t.Fatal(err)
+	}
 	key, e := rsa.GenerateKey(rand.Reader, 2048)
 	if e != nil {
 		t.Fatal(e)
@@ -144,7 +148,7 @@ func TestGitHubAppScopeAndCommitLookup(t *testing.T) {
 				Expiry int64 `json:"exp"`
 				Issued int64 `json:"iat"`
 			}
-			if decodeJWT(p[1], &c) != nil || c.Issuer != 5467712 || c.Expiry-c.Issued > 600 {
+			if decodeJWT(p[1], &c) != nil || c.Issuer != 12345 || c.Expiry-c.Issued > 600 {
 				t.Error("invalid App JWT claims")
 			}
 			sig, _ := base64.RawURLEncoding.DecodeString(p[2])

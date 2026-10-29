@@ -30,6 +30,7 @@ type Config struct {
 	EnrollmentTokenSHA256 string   `json:"enrollment_token_sha256"`
 	Audience              string   `json:"audience,omitempty"`
 	Callers               struct {
+		Tokens       []TokenCaller  `json:"tokens,omitempty"`
 		TailnetUsers []string       `json:"tailnet_users"`
 		GitHub       []GitHubCaller `json:"github"`
 	} `json:"callers"`
@@ -41,6 +42,13 @@ type Config struct {
 
 	sourceRetention time.Duration
 }
+type TokenCaller struct {
+	Name   string `json:"name"`
+	SHA256 string `json:"sha256"`
+}
+
+var tokenNameRE = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
+
 type GitHubCaller struct {
 	Repository string   `json:"repository"`
 	Refs       []string `json:"refs"`
@@ -62,7 +70,23 @@ func LoadConfig(path string) (Config, error) {
 		return c, err
 	}
 	defer f.Close()
-	err = decodeJSON(io.LimitReader(f, 1<<20), &c)
+	data, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
+	if err != nil {
+		return c, err
+	}
+	if len(data) > 1<<20 {
+		return c, errors.New("configuration exceeds 1 MiB")
+	}
+	err = decodeJSON(strings.NewReader(string(data)), &c)
+	if err == nil {
+		var fields map[string]json.RawMessage
+		if e := json.Unmarshal(data, &fields); e != nil {
+			return c, e
+		}
+		if app, present := fields["github_app"]; present && (string(app) == "null" || c.GitHubApp.AppID <= 0) {
+			return c, errors.New("github_app.app_id must be positive when configured")
+		}
+	}
 	if err == nil {
 		err = c.defaults()
 	}
@@ -113,8 +137,18 @@ func (c *Config) defaults() error {
 	if !identifierRE.MatchString(c.Account) || !hashRE.MatchString(c.EnrollmentTokenSHA256) {
 		return errors.New("invalid account or enrollment token hash")
 	}
-	if c.GitHubApp.AppID != 5467712 {
-		return errors.New("github_app.app_id must be 5467712")
+	if c.GitHubApp.AppID < 0 || (c.GitHubApp.AppID == 0 && c.GitHubApp.PrivateKeyFile != "") {
+		return errors.New("github_app.app_id must be positive when configured")
+	}
+	names := map[string]bool{}
+	for _, token := range c.Callers.Tokens {
+		if !tokenNameRE.MatchString(token.Name) || !hashRE.MatchString(token.SHA256) || names[token.Name] {
+			return errors.New("invalid or duplicate caller token")
+		}
+		names[token.Name] = true
+	}
+	if len(c.Callers.Tokens)+len(c.Callers.TailnetUsers)+len(c.Callers.GitHub) == 0 {
+		return errors.New("no callers configured; use pool-server token create")
 	}
 	projects := map[string]bool{}
 	for _, r := range c.Repositories {
@@ -239,8 +273,8 @@ type Run struct {
 
 func finished(r Run) bool { return r.State != "queued" && r.State != "running" }
 
-// SourceProvider must mint read-only, single-repository credentials. Production
-// uses GitHubApp; injection lets tests avoid any live credentials or network.
+// SourceProvider supplies anonymous public sources or read-only, single-repository
+// credentials. Injection lets tests avoid live credentials or network.
 type SourceProvider interface {
 	CommitExists(context.Context, string, string) (bool, error)
 	Source(context.Context, string) (runnerclient.Source, error)

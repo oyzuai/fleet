@@ -7,7 +7,7 @@ executor/engine file binding and controlled Unix-socket proxy integration in
 progress. Native qualification is pending.
 
 A single-tenant [pool server](docs/pool-server.md) that serves remote builds
-without the platform is designed but not implemented.
+without the platform is implemented and experimental.
 
 Manager and executor authentication have separate
 [lifecycles](docs/authentication.md). A manager enrolls
@@ -283,6 +283,10 @@ needs a network plugin that enforces it (the self-test checks).
 Build and test with [Oyzu](https://github.com/oyzuai/oyzu): `oyzu build`. The
 manager's end-to-end tests run against the real runs service, so they live in
 the platform repository and import these packages.
+
+The build and release compiler is Go 1.27.3, pinned in `oyzu.lock`; the module
+minimum is Go 1.25. Go 1.27 requires macOS 13 or later on macOS build hosts.
+Published Fleet binaries target Linux amd64 and arm64.
 
 ## Releases
 

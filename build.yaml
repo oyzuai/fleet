@@ -17,14 +17,14 @@ builds:
     fetches:
       # Raw fetches keep the URL's final filename; no unpack is needed.
       - name: oyzu
-        url: https://github.com/oyzuai/oyzu-releases/releases/download/oyzu/v0.2.3/oyzu-linux-x86_64
-        sha256: 99230d5b6cc452ea3e796e1fa8149abb6e21eb4ee85cc830d08d92e282d427d7
+        url: https://github.com/oyzuai/oyzu-releases/releases/download/oyzu/v0.2.5/oyzu-linux-x86_64
+        sha256: 207228468f4adfa37c26f877a9bc93daed5477bb2a9b58f7d2bba587f8068e7f
       - name: oyzu-shim
-        url: https://github.com/oyzuai/oyzu-releases/releases/download/oyzu/v0.2.3/oyzu-shim-linux-x86_64
-        sha256: 7d3284db39d96e8b817f8a244b8cd6a9d01c540a4501552c3b9dc4c0618cf653
+        url: https://github.com/oyzuai/oyzu-releases/releases/download/oyzu/v0.2.5/oyzu-shim-linux-x86_64
+        sha256: f26af1787045ea811a3a62534ae87af4e79245712fab78329844550fed62f1e3
       - name: oyzu-notices
-        url: https://github.com/oyzuai/oyzu-releases/releases/download/oyzu/v0.2.3/oyzu-notices-linux-x86_64.txt
-        sha256: d3765497ef0c2fa5ff5272d825be7d745501053c181b87f76853dbc147b341cb
+        url: https://github.com/oyzuai/oyzu-releases/releases/download/oyzu/v0.2.5/oyzu-notices-linux-x86_64.txt
+        sha256: c3a724ee6642d42ea9fcb943cb21f762b49ec184d10af08ea14de893c5d7a1ed
       - name: crun
         url: https://github.com/containers/crun/releases/download/1.30.1/crun-1.30.1-linux-amd64
         sha256: 86d1e6a0e76945975d3aebfab39cbc6a26eea15f1c3fc66b6776d19e5dc346a0

@@ -19,7 +19,7 @@ no plugins or language toolchains are built into the image. No private trust
 roots or cache configuration are included.
 
 The `executor-image` target in `build.yaml` declares every download by public
-HTTPS URL and SHA-256: oyzu `oyzu/v0.2.3`, its companion shim and notices,
+HTTPS URL and SHA-256: oyzu `oyzu/v0.2.5`, its companion shim and notices,
 upstream static crun `1.30.1` and its corresponding source archive, and Ubuntu's
 `ca-certificates` package. Raw fetches keep their URL filename; the Dockerfile
 reads them through `oyzu-fetch-<name>` contexts. Version and digest updates
