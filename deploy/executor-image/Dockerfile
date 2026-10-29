@@ -1,5 +1,6 @@
-# Ubuntu 24.04 provides glibc, /bin/sh and /bin/sleep. Retain its /usr/share/doc.
-FROM ubuntu:24.04@sha256:24737cef17f4e22b1977df7d9a05e77c4e28b7da5b8911f8d8ccda136bf3573c
+# Ubuntu 24.04 SCM base includes the complete Git package and HTTPS dependencies.
+# Retain its /usr/share/doc and /usr/share/common-licenses.
+FROM buildpack-deps:noble-scm@sha256:9eb8dccd73fd735719771e8589b1a7aceb138d792866af0784ede1a3ea2d6107
 LABEL org.opencontainers.image.source="https://github.com/oyzuai/fleet"
 COPY rootfs/ /
 COPY --from=oyzu-fetch-oyzu oyzu-linux-x86_64 /opt/oyzu/data/oyzu/bin/oyzu
@@ -11,6 +12,8 @@ COPY --from=oyzu-fetch-ca-certificates / /var/tmp/ca-deb/
 # The materialized, versioned executor is the only executor-* file here.
 # Preserve its bytes while installing it under the runtime command's name.
 RUN mv /usr/local/bin/executor-* /usr/local/bin/oyzu-executor \
+    && test -r /usr/share/doc/git/copyright \
+    && test -r /usr/share/common-licenses/GPL-2 \
     && install -m755 /var/tmp/crun/* /usr/local/bin/crun \
     && chmod 755 /opt/oyzu/data/oyzu/bin/oyzu /opt/oyzu/data/oyzu/bin/oyzu-shim /usr/local/bin/crun \
     && dpkg-deb -x /var/tmp/ca-deb/*.deb /var/tmp/ca \

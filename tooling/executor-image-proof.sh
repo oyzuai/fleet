@@ -156,6 +156,30 @@ run uid-and-versions docker run --rm --name "$container_name" \
   crun --version
   printf "RESULT crun-version: PASS\n"
 '
+# Exercise the executor's ordinary init/fetch/checkout prerequisite without a
+# credential or network server. file:// invokes Git's upload-pack transport.
+run git-checkout-prerequisite docker run --rm --name "$container_name" \
+  --entrypoint /bin/sh "$loaded_id" -ec '
+    test "$(id -u)" = 1000
+    git --version
+    git_exec_path=$(git --exec-path)
+    test -x "$git_exec_path/git-upload-pack"
+    test -x "$git_exec_path/git-remote-https"
+    test -r /etc/ssl/certs/ca-certificates.crt
+    mkdir /work/git-origin /work/git-checkout
+    git -C /work/git-origin init --quiet
+    printf "fleet checkout fixture\n" > /work/git-origin/source.txt
+    git -C /work/git-origin add source.txt
+    git -C /work/git-origin -c user.name="Fleet image proof" \
+      -c user.email="fleet-image-proof@example.invalid" commit --quiet -m fixture
+    expected=$(git -C /work/git-origin rev-parse HEAD)
+    cd /work/git-checkout
+    git init --quiet
+    git fetch --quiet --depth 1 --no-tags file:///work/git-origin "$expected"
+    git checkout --quiet --detach FETCH_HEAD
+    test "$(git rev-parse HEAD)" = "$expected"
+    test "$(cat source.txt)" = "fleet checkout fixture"
+  '
 example=/srv/dev/repos/oyzu/examples/builds/go-app/project
 [[ -f $example/go.mod && -f $example/main.go ]]
 mkdir "$scratch/go-app"

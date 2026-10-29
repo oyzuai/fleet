@@ -9,9 +9,16 @@ Locked replay does not require machine preview opt-in in CI. It is linux/amd64
 until the public oyzu release provides an arm64 CLI.
 Use the digest in the release notes for the manager's `--image`.
 
-The base is Ubuntu 24.04, pinned by OCI index digest: it supplies glibc for the
-released CLI plus `/bin/sh` and `/bin/sleep`. Base package notices under
-`/usr/share/doc` remain intact. The image runs as uid/gid 1000 with `/work` owned
+The base is Docker's official `buildpack-deps:noble-scm`, based on Ubuntu 24.04
+and pinned by OCI index digest. It supplies glibc, `/bin/sh`, `/bin/sleep` and
+the complete Git package, including its helpers, runtime libraries and HTTPS
+transport. Git is required for ordinary remote commit assignments; a source
+snapshot alone does not exercise that path. The upstream SCM variant also
+includes Mercurial, OpenSSH client, Subversion and procps; its curl base includes
+the public CA and download tools. No individual host executable is copied.
+Base package notices under `/usr/share/doc` and `/usr/share/common-licenses`
+remain intact; the image's `BASE-IMAGE-NOTICES.md` records the upstream sources.
+The image runs as uid/gid 1000 with `/work` owned
 by that user. `XDG_DATA_HOME=/opt/oyzu/data` is fixed and writable by uid 1000.
 The CLI and companion shim live under that data root and are linked from
 `/usr/local/bin`. `/etc/oyzu/config.toml` enables published preview plugins;
@@ -53,7 +60,7 @@ for both targets. The root Go module produces named `pool-server`, `manager`
 and `executor` binaries; materialization orders the image after its compatible
 Go producer. There is no host-lane fallback. Docker image preparation and its
 BuildKit worker require a Linux Docker engine, the provisioned digest-pinned
-Ubuntu base, and permission to run the isolated workers.
+SCM base, and permission to run the isolated workers.
 
 The release workflow downloads the pinned public CLI, companion shim and notices
 and verifies their SHA-256 values. It uses fleet's own `oyzu.toml` and `oyzu.lock`
@@ -71,6 +78,10 @@ bash tooling/executor-image-proof.sh
 ```
 
 The helper clones committed HEAD under `/srv/dev/tmp`; commit changes first.
+It checks Git's upload-pack and HTTPS helper plus the CA bundle, then performs
+the executor's init/fetch/detached-checkout sequence against a disposable local
+repository as uid 1000. That check needs no credentials or external Git server;
+it does not claim an external HTTPS handshake was tested.
 Release archive generation needs this real Git checkout for Go's VCS stamping.
 The isolated `fleet` build and its vet, test and SBOM tooling also support source
 snapshots without `.git`. Archive generation additionally requires
