@@ -1,7 +1,38 @@
-# Build targets for fleet. `oyzu build` builds them all.
+# Build targets for fleet and its public executor image.
 builds:
-  # The Go module: one binary per cmd/ directory, `manager` (released as
-  # oyzu-pool-manager) and `executor` (released as oyzu-executor).
+  # One root module; preview.2 captures a build action for each main package.
+  # Multi-main builds require `oyzu build --isolated fleet`.
   fleet:
     uses: go/app
     path: .
+
+  executor-image:
+    uses: docker/image
+    path: deploy/executor-image
+    platforms: [linux/amd64]
+    materialize:
+      - from: fleet
+        artifact: executor
+        into: rootfs/usr/local/bin
+    fetches:
+      # Raw fetches keep the URL's final filename; no unpack is needed.
+      - name: oyzu
+        url: https://github.com/oyzuai/oyzu-releases/releases/download/oyzu/v0.2.5/oyzu-linux-x86_64
+        sha256: 207228468f4adfa37c26f877a9bc93daed5477bb2a9b58f7d2bba587f8068e7f
+      - name: oyzu-shim
+        url: https://github.com/oyzuai/oyzu-releases/releases/download/oyzu/v0.2.5/oyzu-shim-linux-x86_64
+        sha256: f26af1787045ea811a3a62534ae87af4e79245712fab78329844550fed62f1e3
+      - name: oyzu-notices
+        url: https://github.com/oyzuai/oyzu-releases/releases/download/oyzu/v0.2.5/oyzu-notices-linux-x86_64.txt
+        sha256: c3a724ee6642d42ea9fcb943cb21f762b49ec184d10af08ea14de893c5d7a1ed
+      - name: crun
+        url: https://github.com/containers/crun/releases/download/1.30.1/crun-1.30.1-linux-amd64
+        sha256: 86d1e6a0e76945975d3aebfab39cbc6a26eea15f1c3fc66b6776d19e5dc346a0
+      - name: crun-source
+        url: https://github.com/containers/crun/releases/download/1.30.1/crun-1.30.1.tar.gz
+        sha256: 99d036d95113552b6df66c7c879432835504bf0e525fc0372745071df129527b
+      - name: ca-certificates
+        url: https://archive.ubuntu.com/ubuntu/pool/main/c/ca-certificates/ca-certificates_20260816ubuntu0.24.04.1_all.deb
+        sha256: 8a0a754aaafed72cc8efb8c1731808133284a84fbfc76a4fcc73fce9e01b4187
+    with:
+      repository: ghcr.io/oyzuai/oyzu-pool-executor

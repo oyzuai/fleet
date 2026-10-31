@@ -475,6 +475,19 @@ DevOps `org/project/repo`) are edited in place when the second provider lands. S
 
 ## Deployment on build01
 
+### Released artifacts
+
+Releases provide `oyzu-pool-server_<version>_linux_<arch>.tar.gz`,
+`oyzu-pool-manager_<version>_linux_<arch>.tar.gz` and
+`oyzu-executor_<version>_linux_<arch>.tar.gz` for `amd64` and `arm64`, with
+license notices, CycloneDX SBOMs, signed `SHA256SUMS` and build attestations.
+The public `ghcr.io/oyzuai/oyzu-pool-executor:<version>` image contains the
+executor, released oyzu CLI and crun; pass the release notes' digest reference
+to the manager's `--image` flag. The image currently supports linux/amd64
+(the pinned public oyzu release has no Linux arm64 CLI). See
+[the image build instructions](../deploy/README.md) for pins and verification.
+
+
 Configured in platform `deploy/ovh-farm` (Ansible), not in this repository:
 
 - `oyzu-pool-server.service` (systemd, its own user, `ReadWritePaths` the state

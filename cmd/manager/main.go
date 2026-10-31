@@ -83,6 +83,10 @@ const usage = `usage:
 var version = "dev"
 
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
+		fmt.Printf("oyzu-pool-manager %s\n", version)
+		return
+	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := run(os.Args[1:], log); err != nil {
 		fmt.Fprintln(os.Stderr, "oyzu-pool-manager:", err)
