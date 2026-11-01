@@ -49,6 +49,6 @@ Keep permanent docs about supported behavior, limitations and reproducible confi
 Maintainer decision (2026-11-01). This applies to every `oyzuai` repository and every Claude or Codex session working in one.
 
 - **Work on main through short-lived branches.** Each branch holds one coherent change and merges within about a day. Don't keep long-lived feature or integration branches.
-- **Merge unfinished features behind a gate.** Land incomplete work behind an internal, off-by-default gate, such as an unregistered entry point or a compile-time or environment switch. Don't hold it on a branch. A gate is not a new user setting, so the flag rules in the product priorities still apply. Remove the gate when the feature ships.
+- **Merge unfinished features behind a gate.** Land incomplete work behind an internal, off-by-default gate, such as an unregistered entry point or a compile-time or environment switch. Don't hold it on a branch. A gate is not a new user setting. Remove the gate when the feature ships.
 - **Integrate before merging.** Rebase or merge each verified PR onto main's current tip, then pass the fast Linux suite on that result. When a merge queue exists, merge through it. Otherwise, merge one PR at a time and check again after each merge. A red main is reverted within minutes unless a fix is already in flight.
-- **Keep every agent slot busy.** Refill a Codex slot on MICAH-DESKTOP or dev01 as soon as its row finishes, using the agent coordination runbook in the platform repository. Give each row a whole task with a concrete definition of done.
+- **Keep every agent slot busy.** Refill a Codex slot as soon as its row finishes, following the maintainers' coordination runbook. Give each row a whole task with a concrete definition of done.
