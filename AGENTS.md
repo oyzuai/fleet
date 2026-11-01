@@ -44,11 +44,10 @@ Follow the shared [finite acceptance contract](https://github.com/oyzuai/agent-w
 
 Keep permanent docs about supported behavior, limitations and reproducible configuration; put run-specific receipts, temporary paths and chronology in PR evidence. Preserve required isolation, enforced egress, access control, secret handling, signing, provenance, compliance and repository checks. Clean only task-owned disposable output. Use draft PRs, complete independent review and required checks before marking ready, and never merge or approve your own change. This delivery order does not waive the tool, schema, CI or security rules below.
 
-## Trunk-based delivery and throughput
+## Branches and throughput
 
-Maintainer decision (2026-11-01). This applies to every `oyzuai` repository and every Claude or Codex session working in one.
+Maintainer decision (2026-11-01). This replaces the earlier trunk-based rule of the same day.
 
-- **Work on main through short-lived branches.** Each branch holds one coherent change and merges within about a day. Don't keep long-lived feature or integration branches.
-- **Merge unfinished features behind a gate.** Land incomplete work behind an internal, off-by-default gate, such as an unregistered entry point or a compile-time or environment switch. Don't hold it on a branch. A gate is not a new user setting. Remove the gate when the feature ships.
-- **Integrate before merging.** Rebase or merge each verified PR onto main's current tip, then pass the fast Linux suite on that result. When a merge queue exists, merge through it. Otherwise, merge one PR at a time and check again after each merge. A red main is reverted within minutes unless a fix is already in flight.
+- **This repository merges to `main`.** Merge once the change is verified locally and rebased on main's tip. A commit that breaks main is reverted within minutes unless a fix is already in flight. (oyzuai/oyzu integrates on `dev` and promotes `main` only to cut a release; see its AGENTS.md.)
+- **Short-lived branches, unfinished work behind a gate.** Each branch holds one coherent change and merges within about a day. Land incomplete work behind an internal, off-by-default gate. A gate is not a new user setting. Remove the gate when the feature ships.
 - **Keep every agent slot busy.** Refill a Codex slot as soon as its row finishes, following the maintainers' coordination runbook. Give each row a whole task with a concrete definition of done.
