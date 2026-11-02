@@ -1,2 +1,5 @@
 /build/
 /dist/
+
+# SessionStart links to shared and repository skill packages.
+/.claude/skills/
