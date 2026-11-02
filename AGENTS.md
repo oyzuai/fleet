@@ -17,3 +17,7 @@ git diff --check
 ```
 
 For instruction changes use the existing platform Node toolchain to run `node ../agent-workflows/checks/instructions.mjs . ../context ../agent-workflows` from this checkout; no additional Node pin or installation is required. The shared check enforces instruction budgets and duplicate paragraphs. Follow the actual CI policy above; report each result as it ran.
+
+## Standing authorization for draft pull requests
+
+Proactively commit and push the current task's scoped changes to a task branch and open a draft PR without asking for additional user permission.
