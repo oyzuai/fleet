@@ -17,7 +17,7 @@ requests from contributors without a signed CLA will not be merged.
 
 ## Pull requests
 
-Maintainers: set `OYZU_FACTORY_HOME` to a platform checkout and run `oyzu run pre-merge` before handing off a PR; docs-only changes run docs/diff checks, while affected Go work refuses with DRAFT-OYZU-PREMERGE-GAPS until managed admission is fixed.
+Maintainers: set `OYZU_FACTORY_HOME` to a platform checkout and run `oyzu run pre-merge` before handing off a PR; docs-only changes run docs/diff checks, while affected Go work refuses with oyzuai/oyzu#1759 until managed admission is fixed.
 
 - Keep each pull request focused on one change.
 - Describe what changes for users and why.
@@ -27,3 +27,5 @@ Maintainers: set `OYZU_FACTORY_HOME` to a platform checkout and run `oyzu run pr
 
 Do not open public issues for security vulnerabilities. Contact the
 maintainers privately instead.
+
+The maintainer factory toolset is Windows-only for now (Node is locked for windows/amd64/msvc).
