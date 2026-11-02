@@ -55,7 +55,7 @@ load_skills() {
       # Do not overwrite a user's package or a link owned by another source.
       if [ -e "$destination" ] || [ -L "$destination" ]; then
         printf 'warning: skill collision at %s; preserving existing package.\n' "$destination" >&2
-        return 1
+        continue
       fi
       ln -s -- "$source" "$destination" || return 1
     done
