@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SessionStart: shared context is optional; repository work stays usable offline.
 set -u
+export GIT_TERMINAL_PROMPT=0
 project_dir="${CLAUDE_PROJECT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 context_dir="$(dirname -- "$project_dir")/context"
 warn() { printf '%s\n' 'warning: shared oyzuai/context could not be refreshed or loaded; continuing without shared context.' >&2; }
