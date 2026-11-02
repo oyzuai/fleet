@@ -12,14 +12,14 @@
     "origin/main",
     "--json"
   ],
-  "oyzu": "oyzu 0.3.0-local.790bcca91265 (debug; x86_64-pc-windows-msvc; build 1793325838)",
+  "oyzu": "oyzu 0.3.8-dev (development; x86_64-pc-windows-msvc)",
   "host": {
     "hostname": "MICAH-DESKTOP",
     "os": "win32",
     "arch": "x64"
   },
-  "started": "2026-11-02T01:30:47.945Z",
-  "elapsed": 4144,
+  "started": "2026-11-02T01:36:36.918Z",
+  "elapsed": 349,
   "result": "fail",
   "exitCode": 1,
   "counts": {
@@ -27,47 +27,21 @@
     "stages": {}
   },
   "output": {
-    "actions": [],
-    "artifacts": [],
-    "diagnostics": [
-      {
-        "code": "build-failed",
-        "message": "ENGINE_INSTALLATION_INVALID: cannot read C:\\Users\\micah\\AppData\\Local\\Oyzu\\tools\\engine-installations\\0062737df37565547b2ef9c2278464f11fa4f0e95e5c9b4b60e9c5502a0e8166.json; reinstall the engine; file retained unchanged: invalid type: map, expected a string at line 1 column 364; target fleet was not admitted to the native host lane: host Go builds require exactly one main package",
-        "phase": "prepare",
-        "severity": "error"
-      }
-    ],
-    "envelopeDigest": "sha256:2521e328b774815f22d156d715870fac88fe6b98159a4496fe1eab18645c97e7",
-    "envelopePath": "envelope.json",
-    "evidence": [],
-    "extensions": {
-      "oyzu.dev/bundle-directory": "dist",
-      "oyzu.dev/execution-context": {
-        "ci": false,
-        "context": {
-          "detected": "local",
-          "detectedSource": "no CI signal",
-          "effective": "local",
-          "note": null,
-          "policy": "local",
-          "requested": null,
-          "source": "detected, no CI signal"
-        },
-        "fork": false,
-        "providers": [],
-        "signals": []
-      }
+    "code": "PLUGIN_UNAVAILABLE",
+    "error": "PLUGIN_UNAVAILABLE: no admitted package serves go/app: no eligible release of go/app (oyzu/go 0.1.0-preview.1: preview only, oyzu/go 0.1.0-preview.2: preview only, oyzu/go 0.1.0: no payload for this platform). Opt in to preview releases with: oyzu config set --global plugins.preview true",
+    "evidence": {
+      "reason": "No published build manifest for this invocation at the selected directory",
+      "status": "unavailable"
     },
-    "invocationId": "1428-1793583048011732900-1",
-    "kind": "build-manifest",
-    "planDigest": null,
-    "planPath": null,
-    "reports": [],
-    "runId": "1428-1793583051924757400",
-    "schemaVersion": "v1alpha1",
-    "source": null,
-    "status": "failed",
-    "targets": []
+    "exitCode": 1,
+    "invocationId": "21676-1793583397021196600-1",
+    "nextStep": "First-party plugins are preview releases. Run oyzu config set --global plugins.preview true, then retry the build.",
+    "runtime": {
+      "directory": ".",
+      "executable": "E:\\CodexData\\codex-worktrees\\factory-receipt\\proof-target\\debug\\oyzu.exe",
+      "platform": "windows/x86_64",
+      "version": "0.3.8-dev (development; x86_64-pc-windows-msvc)"
+    }
   },
-  "error": "worktree or HEAD changed during build"
+  "error": "build did not report a successful manifest"
 }
