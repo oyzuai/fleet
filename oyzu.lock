@@ -4,6 +4,17 @@ tool = []
 
 [[resolved_environment]]
 required_capabilities = []
+request_digest = "sha256:4cbc61ad3699d0c50c483bb94ac70a8def65f5fb473484837efdb20cd002be8d"
+roots = ["sha256:2a0fb6ba8b154d214fea39efb5a3667c2ffa7930fde0de35fb5a2e4ab797a529"]
+toolset = "factory"
+
+[resolved_environment.requests]
+"oyzu:node" = "24"
+
+[resolved_environment.native_constraints]
+
+[[resolved_environment]]
+required_capabilities = []
 request_digest = "sha256:cbd87194cbbe98ee2ed84bb58316e46d904c8eccc7b58ebc3272de1038ae555b"
 roots = ["sha256:023536ff70c01644263003811c0a4e2dfd7049be66015e07afe945611615bb35", "sha256:0552ce3279cb7d8fb00bcd5aff94d4def793b7ab0cfe86e25a34a04ac5509f2d", "sha256:572134446c7aa484124aacf37b9ffcda5d5eb1343b974deb2b413283b2e7b6c1", "sha256:7c00461ae2ea5fda9e04a331d97f4cebdf585ef44e4bdbd73bb70d6f7e389879", "sha256:9a8ccb505383051cacdff951604162b71bb2ad41f5f398caf7c1c0d7526b0cc9"]
 
@@ -45,6 +56,21 @@ components = []
 [resolution."sha256:0552ce3279cb7d8fb00bcd5aff94d4def793b7ab0cfe86e25a34a04ac5509f2d".inputs.archive]
 url = "https://dl.google.com/go/go1.27.3.windows-amd64.zip"
 digest = "sha256:f26081f438319757f8a1b46d7d0b2c5ec7583d4038e485e0aa725cfde7885fff"
+
+[resolution."sha256:2a0fb6ba8b154d214fea39efb5a3667c2ffa7930fde0de35fb5a2e4ab797a529"]
+tool = "oyzu:node"
+version = "24.22.1"
+backend_digest = "sha256:b03a56044afc327f709f699dc5d62874624ff05cc426afed981d2bf679b93705"
+execution_platform = "windows/amd64/msvc"
+components = []
+
+[resolution."sha256:2a0fb6ba8b154d214fea39efb5a3667c2ffa7930fde0de35fb5a2e4ab797a529".inputs.archive]
+url = "https://nodejs.org/dist/v24.22.1/node-v24.22.1-win-x64.zip"
+digest = "sha256:d2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5"
+
+[resolution."sha256:2a0fb6ba8b154d214fea39efb5a3667c2ffa7930fde0de35fb5a2e4ab797a529".evidence]
+strength = "digest-only"
+mechanism = "legacy-index-digest"
 
 [resolution."sha256:572134446c7aa484124aacf37b9ffcda5d5eb1343b974deb2b413283b2e7b6c1"]
 tool = "oyzu:go"

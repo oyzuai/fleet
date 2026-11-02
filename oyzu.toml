@@ -15,3 +15,17 @@ argv = ["bash", "tooling/container-runtime-proof.sh"]
 [tasks.runtime-inputs-proof]
 argv = ["go", "test", "./executor", "-run", "^TestNativeRuntimeInputs$", "-count=1", "-v"]
 env = { FLEET_RUNTIME_PROOF_REQUIRED = "1" }
+
+# Opt-in maintainer tools, not part of fleet builds.
+[toolsets.factory]
+contexts = []
+[toolsets.factory.tools]
+node = "24"
+
+# Maintainer-internal: select pinned Node before invoking the receipt wrapper.
+[tasks.pre-merge]
+argv = ["oyzu", "--toolset", "factory", "run", "factory-receipt"]
+
+# Maintainer-internal; implementation lives in a platform checkout.
+[tasks.factory-receipt]
+argv = ["node", "--input-type=module", "-e", "import {pathToFileURL} from 'node:url'; import {join} from 'node:path'; const home=process.env.OYZU_FACTORY_HOME; if(!home){console.error('OYZU_FACTORY_HOME must name a platform checkout');process.exit(1)} const {main}=await import(pathToFileURL(join(home,'factory/receipt.mjs'))); process.exitCode=main(['run','--repo','.','--base','origin/main']);"]
