@@ -17,7 +17,7 @@ requests from contributors without a signed CLA will not be merged.
 
 ## Pull requests
 
-Maintainers: set `OYZU_FACTORY_HOME` to a platform checkout and run `oyzu run pre-merge` before handing off a PR.
+Maintainers: set `OYZU_FACTORY_HOME` to a platform checkout and run `oyzu run pre-merge` before handing off a PR; docs-only changes run docs/diff checks, while affected Go work refuses with DRAFT-OYZU-PREMERGE-GAPS until managed admission is fixed.
 
 - Keep each pull request focused on one change.
 - Describe what changes for users and why.

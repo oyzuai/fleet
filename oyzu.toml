@@ -24,8 +24,14 @@ node = "24"
 
 # Maintainer-internal: select pinned Node before invoking the receipt wrapper.
 [tasks.pre-merge]
-argv = ["oyzu", "--toolset", "factory", "run", "factory-receipt"]
+argv = ["oyzu", "--toolset", "factory", "run", "factory-receipt", "--"]
 
 # Maintainer-internal; implementation lives in a platform checkout.
 [tasks.factory-receipt]
-argv = ["node", "--input-type=module", "-e", "import {pathToFileURL} from 'node:url'; import {join} from 'node:path'; const home=process.env.OYZU_FACTORY_HOME; if(!home){console.error('OYZU_FACTORY_HOME must name a platform checkout');process.exit(1)} const {main}=await import(pathToFileURL(join(home,'factory/receipt.mjs'))); process.exitCode=main(['run','--repo','.','--base','origin/main']);"]
+argv = ["node", "--input-type=module", "-e", "import {pathToFileURL} from 'node:url'; import {join} from 'node:path'; const home=process.env.OYZU_FACTORY_HOME; if(!home){console.error('OYZU_FACTORY_HOME must name a platform checkout');process.exit(1)} const {main}=await import(pathToFileURL(join(home,'factory/receipt.mjs'))); process.exitCode=await main(['run','--repo','.','--base','origin/main',...process.argv.slice(1)]);", "--"]
+
+# Maintainer-internal changed-document text and local-link checks.
+[tasks.factory-docs-check]
+argv = ["oyzu", "--toolset", "factory", "run", "factory-docs-node", "--"]
+[tasks.factory-docs-node]
+argv = ["node", "--input-type=module", "-e", "import {pathToFileURL} from 'node:url'; import {join} from 'node:path'; const home=process.env.OYZU_FACTORY_HOME; if(!home){console.error('OYZU_FACTORY_HOME must name a platform checkout');process.exit(1)} const {main}=await import(pathToFileURL(join(home,'factory/docs-check.mjs'))); process.exitCode=main(process.argv.slice(1));", "--"]
