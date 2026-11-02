@@ -351,6 +351,8 @@ Spool files close before cleanup, including on Windows.
 
 ## Dependency maintenance
 
+Repository contributors using Claude can read [agent session setup](docs/agent-sessions.md).
+
 The [Dependabot configuration](.github/dependabot.yml) maintains the root Go module and GitHub Actions. Review changes against the supported Go toolchain and the release workflow; contribution and release requirements remain in force.
 
 Routine version checks run on weekdays around 06:30 America/New_York. Minor and patch updates are grouped; major upgrades remain individual proposals. Security updates use a separate group and do not wait for the version-update schedule. Each update block allows three open routine PRs and assigns proposals to `micahlmartin`; GitHub applies a separate limit to security-update PRs. Review, applicable verification and existing merge requirements still apply.
