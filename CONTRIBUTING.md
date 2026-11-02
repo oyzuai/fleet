@@ -29,3 +29,4 @@ Do not open public issues for security vulnerabilities. Contact the
 maintainers privately instead.
 
 The maintainer factory toolset is Windows-only for now (Node is locked for windows/amd64/msvc).
+Receipt logs are local under the ignored `.oyzu/receipt-logs/` directory.
