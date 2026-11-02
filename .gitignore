@@ -1,5 +1,6 @@
 /build/
 /dist/
+.oyzu/
 
 # SessionStart links to shared and repository skill packages.
 /.claude/skills/
