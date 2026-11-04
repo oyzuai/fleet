@@ -2,14 +2,9 @@
 
 ## Before anything else
 
-Get the shared context: run `git clone --depth 1 https://github.com/oyzuai/context ../context`,
-or `git -C ../context pull --ff-only` if it exists. Read `CONSTITUTION.md` and
-`INDEX.md` there, open the entries and skills your task touches, and print
-`context commit <sha>`.
+Get the shared context: run `git clone --depth 1 https://github.com/oyzuai/context ../context`, or `git -C ../context pull --ff-only` if it exists. Read `CONSTITUTION.md` and `INDEX.md` there, open the entries and skills your task touches, and print `context commit <sha>`.
 
-Generic skills live in https://github.com/oyzuai/agent-workflows
-under `skills/`; clone it the same way when a task needs one. This repo's rules below
-add to the context; they never weaken the constitution's gates.
+Generic skills live in https://github.com/oyzuai/agent-workflows under `skills/`; clone it the same way when a task needs one. This repo's rules below add to the context; they never weaken the constitution's gates.
 
 The Oyzu pool manager and executor. Preserve isolation, identity, access checks and the public runner contract. This repository targets `main`.
 
