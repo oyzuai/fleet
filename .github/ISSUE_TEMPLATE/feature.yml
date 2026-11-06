@@ -1,0 +1,15 @@
+name: Feature or improvement
+description: Propose a capability or an improvement to an existing one.
+title: "[Feature]: "
+labels: ["type:feature"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and desired outcome
+    validations:
+      required: true
+  - type: textarea
+    id: links
+    attributes:
+      label: Related issues or proposals
