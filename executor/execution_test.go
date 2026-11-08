@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oyzuai/fleet/egressgate"
 	"github.com/oyzuai/fleet/executionconfig"
 	"github.com/oyzuai/fleet/runnerclient"
 )
@@ -133,7 +134,17 @@ func TestRunGatewayWithCorporateBundleAndNoGrants(t *testing.T) {
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
-		_, _ = io.WriteString(w, `[]`)
+		switch r.URL.Path {
+		case egressgate.PathReady:
+			// Model a job already registered by the manager.
+			w.WriteHeader(http.StatusNoContent)
+		case egressgate.PathDenials:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(egressgate.DenialsReply{})
+		default:
+			t.Errorf("unexpected gateway request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
 	}))
 	defer gateway.Close()
 	cfg.EgressGateway = gateway.URL
