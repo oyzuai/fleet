@@ -1,0 +1,22 @@
+name: Bug report
+description: Report non-security behavior defects; vulnerabilities go to SECURITY.md where present.
+title: "[Bug]: "
+labels: ["type:bug"]
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Relevant evidence
+      description: Remove credentials, private code and sensitive details. Never post security exploits in a public issue.

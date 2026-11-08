@@ -1,31 +1,25 @@
-# Repository instructions
+# fleet
 
-## Verification execution policy
+## Before anything else
 
-Maintainer decision (2026-10-25): GitHub Actions is enabled again, on the
-self-hosted Linux runners of the OVH build server. This supersedes the
-2026-10-24 pause. oyzuai/oyzu's Linux jobs run there in a fresh container per
-job (`oyzu-wsl` for pull requests and branches, `oyzu-main` for main); the
-server is configured in the platform repository's `deploy/ovh-farm`.
+Get the shared context: run `git clone --depth 1 https://github.com/oyzuai/context ../context`, or `git -C ../context pull --ff-only` if it exists. Read `CONSTITUTION.md` and `INDEX.md` there, open the entries and skills your task touches, and print `context commit <sha>`.
 
-- Workflows run on push, pull request, schedule and dispatch as their
-  definitions say. Use their results together with the applicable bounded local
-  checks and real user-flow proofs. Record the revision, run and result; report
-  a failed, skipped or not-run check as exactly that, never as passed.
-- GitHub-hosted runners stay off by default. Leave `OYZU_HOSTED_RUNNERS` unset,
-  and run a hosted-only job (macOS, Windows, release, signing, toolchain images)
-  only with Micah's approval for that run.
-- Don't move CI back onto the desktop's WSL runner, change runner counts or
-  labels outside `deploy/ovh-farm`, or arrange other paid or cloud CI without
-  Micah's approval.
-- Preserve required safety, trust/compliance checks, observed failures and
-  honest platform coverage. Do not silently change branch protection or
-  merge/approval authority.
-- Carry this policy into coordinator/worker briefs and relay it to existing
-  workers; editing a file does not prove running sessions reloaded it.
+Generic skills live in https://github.com/oyzuai/agent-workflows under `skills/`; clone it the same way when a task needs one. This repo's rules below add to the context; they never weaken the constitution's gates.
 
-## Be practical
+The Oyzu pool manager and executor. Preserve isolation, identity, access checks and the public runner contract. This repository targets `main`.
 
-Follow the shared [finite acceptance contract](https://github.com/oyzuai/agent-workflows/blob/main/policy/working-agreements.md#finite-acceptance-contract): agree the outcome, required evidence and non-goals; advance the next failing user scenario or binding safeguard; ask before expanding scope. Keep first-proof inputs stable, rerun only invalidated evidence, and give milestone/blocker updates with no more than an hour of silence during active work. Format and run applicable lightweight checks before meaningful commits.
+Load relevant entries, including [CI policy](https://github.com/oyzuai/context/blob/main/decisions/verification-execution.md), [branch model](https://github.com/oyzuai/context/blob/main/decisions/branch-model.md) and [documentation ownership](https://github.com/oyzuai/context/blob/main/rules/documentation-ownership.md).
 
-Keep permanent docs about supported behavior, limitations and reproducible configuration; put run-specific receipts, temporary paths and chronology in PR evidence. Preserve required isolation, enforced egress, access control, secret handling, signing, provenance, compliance and repository checks. Clean only task-owned disposable output. Use draft PRs, complete independent review and required checks before marking ready, and never merge or approve your own change. This delivery order does not waive the tool, schema, CI or security rules below.
+For assigned implementation load [implement-item](https://github.com/oyzuai/agent-workflows/blob/main/skills/implement-item/SKILL.md); for intake load [write-brief](https://github.com/oyzuai/agent-workflows/blob/main/skills/write-brief/SKILL.md); for issue work load [classify-issues](https://github.com/oyzuai/agent-workflows/blob/main/skills/classify-issues/SKILL.md) and its catalog. These procedures grant no extra authority.
+
+## Commands
+
+Use Oyzu-managed tools; never install toolchains or fall back to host tools.
+
+```sh
+eval "$(oyzu activate bash)"
+oyzu build --full
+git diff --check
+```
+
+For instruction changes use the existing platform Node toolchain to run `node ../agent-workflows/checks/instructions.mjs . ../context ../agent-workflows` from this checkout; no additional Node pin or installation is required. The shared check enforces instruction budgets and duplicate paragraphs. Follow the actual CI policy above; report each result as it ran.

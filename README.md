@@ -287,6 +287,10 @@ Build and test with [Oyzu](https://github.com/oyzuai/oyzu): `oyzu build`. The
 manager's end-to-end tests run against the real runs service, so they live in
 the platform repository and import these packages.
 
+The build and release compiler is Go 1.27.3, pinned in `oyzu.lock`; the module
+minimum is Go 1.25. Go 1.27 requires macOS 13 or later on macOS build hosts.
+Published Fleet binaries target Linux amd64 and arm64.
+
 ## Releases
 
 Each `v*` tag publishes `oyzu-pool-manager` and `oyzu-executor` for Linux
@@ -350,8 +354,18 @@ Spool files close before cleanup, including on Windows.
 
 ## Dependency maintenance
 
+Repository contributors using Claude can read [agent session setup](docs/agent-sessions.md).
+
 The [Dependabot configuration](.github/dependabot.yml) maintains the root Go module and GitHub Actions. Review changes against the supported Go toolchain and the release workflow; contribution and release requirements remain in force.
 
 Routine version checks run on weekdays around 06:30 America/New_York. Minor and patch updates are grouped; major upgrades remain individual proposals. Security updates use a separate group and do not wait for the version-update schedule. Each update block allows three open routine PRs and assigns proposals to `micahlmartin`; GitHub applies a separate limit to security-update PRs. Review, applicable verification and existing merge requirements still apply.
 
 Dependabot alerts and security updates must also be enabled in repository settings; the YAML does not enable those switches. Use the standard GitHub runner for update jobs. The configuration becomes active after it reaches the default branch.
+
+## Instruction maintenance
+
+Follow the root skill index before changing instructions. With Node from the
+existing platform activated shell, run
+`node ../agent-workflows/checks/instructions.mjs . ../context ../agent-workflows`
+from the repository root, followed by `git diff --check`.
+Keep rule details in their linked owner; do not copy them back into the root.
