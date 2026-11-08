@@ -474,7 +474,10 @@ func build(ctx context.Context, cfg Config, token, startup string, job runnercli
 			}
 			defer proxy.stop()
 			if job.ExecutionConfig != nil {
-				extra := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: proxy.ca.Raw})
+				var extra []byte
+				if proxy.ca != nil {
+					extra = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: proxy.ca.Raw})
+				}
 				combined, err := executionconfig.Prepare(ctx, trustParent(cfg.WorkDir), job.ExecutionConfig, systemRoots(), extra)
 				if err != nil {
 					return failedWith(executionconfig.Reason(err), err.Error()), capture

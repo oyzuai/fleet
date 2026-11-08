@@ -176,6 +176,27 @@ func TestRequiredFailures(t *testing.T) {
 	}
 }
 
+func TestEmptyOptionalBundleRetainsConfiguredEvidence(t *testing.T) {
+	c := testConfig(t)
+	c.Required, c.Bundles[0].Required = false, false
+	c.Bundles[0].PEM = ""
+	corporate, err := Validate(c)
+	if err != nil || len(corporate) != 0 {
+		t.Fatalf("optional bundle was not skipped: %v", err)
+	}
+	p, err := Prepare(context.Background(), t.TempDir(), c, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if p.Dir != "" || len(p.Evidence.Formats) != 0 {
+		t.Fatal("skipped bundle produced a projection")
+	}
+	if !reflect.DeepEqual(p.Evidence, Evidence(c)) || !reflect.DeepEqual(p.Evidence.BundleDigests, []string{c.Bundles[0].Digest}) {
+		t.Fatal("skipped bundle lost its configured identity")
+	}
+}
+
 func TestJavaPKCS12(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	c := testConfig(t)

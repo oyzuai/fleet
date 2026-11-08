@@ -117,6 +117,135 @@ func TestRunFailsBeforeCheckoutWhenRequiredTrustIsMissing(t *testing.T) {
 	}
 }
 
+func TestRunGatewayWithCorporateBundleAndNoGrants(t *testing.T) {
+	canonical, digest, err := executionconfig.CanonicalBundle(executionCA(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := buildJob("build", "oyzu", "build")
+	job.ExecutionConfig = &runnerclient.ExecutionConfig{Version: 1, Revision: "gateway-bundle", Required: true,
+		Bundles: []runnerclient.ExecutionCABundle{{PEM: canonical, Digest: digest, Required: true}}}
+	runs, cfg, _ := setup(t, job)
+	runs.egress = `{"grants":[]}`
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect {
+			t.Error("fake build unexpectedly requested a gateway tunnel")
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	defer gateway.Close()
+	cfg.EgressGateway = gateway.URL
+	roots := filepath.Join(t.TempDir(), "system.pem")
+	if err := os.WriteFile(roots, []byte(executionCA(t)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSL_CERT_FILE", roots)
+	reportFile := filepath.Join(t.TempDir(), "report.json")
+	t.Setenv("FAKE_TRUST_REPORT", reportFile)
+	// Call Run directly: a nil job CA must neither panic nor fail the job.
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if runs.finished == nil || runs.finished.State != "succeeded" || runs.finished.ExitCode == nil || *runs.finished.ExitCode != 0 {
+		t.Fatalf("outcome: %+v", runs.finished)
+	}
+	if evidence := runs.finished.Execution; evidence == nil || evidence.Revision != "gateway-bundle" || len(evidence.BundleDigests) != 1 || evidence.BundleDigests[0] != digest {
+		t.Fatalf("execution evidence: %+v", evidence)
+	}
+	raw, err := os.ReadFile(reportFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report map[string]any
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range append(append([]string{}, caBundleVars...), "NODE_EXTRA_CA_CERTS") {
+		want := float64(2) // System and corporate roots, with no job CA.
+		if name == "NODE_EXTRA_CA_CERTS" {
+			want = 1
+		}
+		if report[name+"_count"] != want {
+			t.Fatalf("%s has %v certificates, want %v", name, report[name+"_count"], want)
+		}
+		if _, err := os.Stat(report[name].(string)); !os.IsNotExist(err) {
+			t.Fatalf("%s was not cleaned up", name)
+		}
+	}
+	files, err := os.ReadDir(trustParent(cfg.WorkDir))
+	if err != nil || len(files) != 0 {
+		t.Fatal("execution files survived completion", err)
+	}
+}
+
+func TestCorporateBypassStaysUpstreamOfCredentialProxy(t *testing.T) {
+	for _, bypass := range []string{"example.com,other.test", "*"} {
+		t.Run(bypass, func(t *testing.T) {
+			u := newUpstreams(t)
+			corporateProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("bypassed traffic reached the corporate proxy")
+				w.WriteHeader(http.StatusBadGateway)
+			}))
+			defer corporateProxy.Close()
+			config := &runnerclient.ExecutionConfig{Version: 1, Revision: "upstream-bypass",
+				Proxy: &runnerclient.ExecutionProxy{HTTPS: corporateProxy.URL, HTTP: corporateProxy.URL, Bypass: strings.Split(bypass, ",")}}
+			projection, err := executionconfig.Prepare(context.Background(), t.TempDir(), config, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer projection.Close()
+			first := grant("example.com", "Bearer bypass-test", time.Now().Add(time.Hour))
+			p, err := startEgress(first, nil, func(...string) {}, slog.New(slog.NewTextHandler(io.Discard, nil)), "",
+				egressExecution{config: config, workDir: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer p.stop()
+			// Substitute only test DNS and the fixture's TLS root; retain the
+			// configured upstream proxy/bypass selection for requests and tunnels.
+			transport := p.upstream.(*http.Transport)
+			transport.DialContext = u.dial
+			transport.TLSClientConfig.RootCAs.AddCert(u.tls.Certificate())
+			env := p.env(projection.Env([]string{"NO_PROXY=ambient.example", "no_proxy=*"}, projection.Dir))
+			values := map[string][]string{}
+			for _, entry := range env {
+				key, value, _ := strings.Cut(entry, "=")
+				values[key] = append(values[key], value)
+			}
+			for _, name := range []string{"NO_PROXY", "no_proxy"} {
+				if len(values[name]) != 1 || values[name][0] != "localhost,127.0.0.1,::1" {
+					t.Fatalf("%s = %v", name, values[name])
+				}
+			}
+			for _, name := range proxyVars {
+				if len(values[name]) != 1 || values[name][0] != p.url {
+					t.Fatalf("%s does not name the credential proxy", name)
+				}
+			}
+			get(t, buildClient(t, p), "https://example.com/private", "")
+			if u.last().Get("Authorization") != "Bearer bypass-test" {
+				t.Fatal("bypassed host did not receive its job credential")
+			}
+			// Opaque tunnels follow the same upstream bypass list.
+			conn, reader, status := connect(t, p, "other.test:443", "Basic "+basicAuth(egressProxyUser, p.secret))
+			if status != http.StatusOK {
+				t.Fatalf("CONNECT = %d", status)
+			}
+			if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := io.WriteString(conn, "bypass\n"); err != nil {
+				t.Fatal(err)
+			}
+			if line, err := reader.ReadString('\n'); err != nil || line != "bypass\n" {
+				t.Fatalf("tunnel echo = %q, %v", line, err)
+			}
+		})
+	}
+}
+
 func TestCredentialProxyUsesCorporateTrustAndProxy(t *testing.T) {
 	corporate := &egressProxy{hosts: map[string]bool{"internal.example": true}, certs: map[string]*tls.Certificate{}}
 	if err := corporate.makeCA(); err != nil {

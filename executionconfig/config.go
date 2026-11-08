@@ -150,6 +150,9 @@ func proxyURL(raw string) (*url.URL, error) {
 
 // Evidence validates identities independently of projection, so an unavailable
 // required bundle or unsupported format still has a secret-free failure record.
+// BundleDigests records configured identities, including empty optional bundles
+// skipped by Validate. It does not attest that every listed bundle was applied;
+// retaining these identities preserves the service's frozen configuration record.
 func Evidence(c *runnerclient.ExecutionConfig) *runnerclient.ExecutionEvidence {
 	if c == nil {
 		return nil

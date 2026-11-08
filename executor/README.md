@@ -33,6 +33,9 @@ hosts, domains, optional ports, IP addresses, CIDRs and `*`; a leading dot or
 one fails explicitly. The executor never falls back to direct routing after
 an upstream proxy or TLS failure.
 
+Each bundle is limited to 4 MiB. Fleet imposes no aggregate bundle size cap;
+the platform must enforce a total size limit before sending configuration.
+
 The projection owns these read-only files until the job finishes:
 
 | File | Contents |
@@ -55,6 +58,13 @@ When corporate configuration is present, its upstream TLS also trusts corporate
 anchors, and both intercepted traffic and opaque CONNECT tunnels use the
 corporate proxy and bypass list. With no `execution_config`, the legacy proxy,
 environment and CA-file behavior are unchanged.
+When a credential proxy is active with a corporate proxy, the job's `NO_PROXY`
+and `no_proxy` contain only `localhost,127.0.0.1,::1`. Corporate bypass entries,
+including `*`, select the credential proxy's upstream route, preserving job
+credential injection and trust. Without a credential proxy, the projected
+environment uses the corporate bypass list directly.
+Combining a corporate proxy with an egress gateway is unsupported and returns
+`PROXY_CONFIG_UNSUPPORTED`; corporate CA bundles alone work with the gateway.
 
 Build, checkout and maintenance processes receive the same projected environment.
 Anonymous public checkouts retain that trust without adding an Authorization header
@@ -78,13 +88,17 @@ roots with corporate trust alone.
 | `TRUST_BUNDLE_UNAVAILABLE` | A required bundle is empty |
 | `TRUST_FORMAT_UNSUPPORTED` | Required format is unsupported |
 | `TRUST_PROJECTION_FAILED` | System roots or materialization failed |
-| `PROXY_CONFIG_UNSUPPORTED` | A proxy credential reference has no supported adapter |
+| `PROXY_CONFIG_UNSUPPORTED` | A proxy credential reference has no supported adapter, or a corporate proxy is combined with an egress gateway |
 
 Build outcomes and kind finish requests carry `execution`: revision, canonical
 bundle digests, proxy hostnames and applied formats. It contains no PEM, proxy
 URL, bypass list or credential reference. Failed validation returns a sanitized
 reason and does not copy invalid input into evidence. The receiving service must
 validate and persist this record; fleet cannot establish that persistence.
+Bundle digests identify the configured bundles, including an empty optional
+bundle skipped by validation and projection. Such a digest preserves the frozen
+configuration identity and does not prove that its bundle was applied. Applied
+formats describe the projections produced, not individual bundle application.
 
 Executors send `Oyzu-Execution-Config: 1` on job/start. The server must refuse
 required configurations to old executors with `EXECUTION_CONFIG_UNSUPPORTED`

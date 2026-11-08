@@ -76,8 +76,10 @@ var proxyVars = []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy
 // egressProxy is one job's credential-injecting proxy.
 type egressProxy struct {
 	corporate []byte
-	workDir   string
-	refresh   func(context.Context) (runnerclient.Egress, error)
+	// Corporate bypass rules apply upstream, never around the credential proxy.
+	corporateProxy bool
+	workDir        string
+	refresh        func(context.Context) (runnerclient.Egress, error)
 	// issued is told every credential and secret, so the log masks them.
 	issued func(...string)
 	log    *slog.Logger
@@ -168,6 +170,7 @@ func startEgress(first runnerclient.Egress, refresh func(context.Context) (runne
 			return nil, err
 		}
 		p.corporate, p.workDir = corporate, execution[0].workDir
+		p.corporateProxy = config.Proxy != nil
 		p.upstream = transport
 		p.dial = executionconfig.TunnelDialer(transport)
 	}
@@ -275,11 +278,13 @@ func (p *egressProxy) authorization(ctx context.Context, host string) (string, b
 // env is what the build is given to use the proxy and trust its CA.
 func (p *egressProxy) env(environ []string) []string {
 	noProxy := "localhost,127.0.0.1,::1"
-	for _, kv := range environ {
-		k, v, _ := strings.Cut(kv, "=")
-		if (k == "NO_PROXY" || k == "no_proxy") && v != "" {
-			noProxy = v + "," + noProxy
-			break
+	if !p.corporateProxy {
+		for _, kv := range environ {
+			k, v, _ := strings.Cut(kv, "=")
+			if (k == "NO_PROXY" || k == "no_proxy") && v != "" {
+				noProxy = v + "," + noProxy
+				break
+			}
 		}
 	}
 	set := map[string]string{"NO_PROXY": noProxy, "no_proxy": noProxy}
