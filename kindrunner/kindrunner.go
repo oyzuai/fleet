@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oyzuai/fleet/executionconfig"
 	"github.com/oyzuai/fleet/internal/masking"
 	"github.com/oyzuai/fleet/kindprotocol"
 	"github.com/oyzuai/fleet/runnerclient"
@@ -38,6 +39,8 @@ const (
 	ContainerStateDir   = "/var/lib/oyzu/kind"
 	// ContainerPlanFilesDir is where an image kind sees its plan files.
 	ContainerPlanFilesDir = "/run/oyzu/plan"
+	// ContainerTrustDir is the read-only trust mount for image kinds.
+	ContainerTrustDir = "/run/oyzu/trust"
 	// maxResult bounds what a kind may write on standard output.
 	maxResult = 4 << 20
 	// flushEvery and flushAt decide when events are posted.
@@ -70,6 +73,8 @@ type Config struct {
 	// StateDir is where kinds keep state between runs on this host, one
 	// directory per kind. It must outlive the job.
 	StateDir string
+	// WorkDir holds execution-owned trust files for this job.
+	WorkDir string
 	// SecretsDir is where a private directory for the run's secrets is
 	// made; the system temp directory by default. Point it at a tmpfs.
 	SecretsDir string
@@ -137,7 +142,11 @@ func Run(ctx context.Context, cfg Config, job runnerclient.Job) error {
 	flushDone()
 	finishCtx, done := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
 	defer done()
-	if err := retry(finishCtx, func(ctx context.Context) error { return cfg.Client.KindFinish(ctx, cfg.Token, result, none) }); err != nil {
+	evidence := executionconfig.Evidence(job.ExecutionConfig)
+	if r.trust != nil {
+		evidence = r.trust.Evidence
+	}
+	if err := retry(finishCtx, func(ctx context.Context) error { return cfg.Client.KindFinish(ctx, cfg.Token, result, none, evidence) }); err != nil {
 		return fmt.Errorf("report the result: %w", err)
 	}
 	if none != nil {
@@ -154,6 +163,7 @@ type run struct {
 	op     *runnerclient.KindOperation
 	log    *slog.Logger
 	events *uploader
+	trust  *executionconfig.Projection
 
 	cancelOnce sync.Once
 	cancel     chan struct{}
@@ -199,6 +209,12 @@ func (r *run) execute(ctx context.Context) (json.RawMessage, *runnerclient.KindN
 	if !safeName.MatchString(r.op.Kind.Name) {
 		return nil, &runnerclient.KindNoResult{Code: "kind-not-started", Message: "invalid kind name"}
 	}
+	projection, err := executionconfig.Prepare(ctx, r.cfg.WorkDir, r.job.ExecutionConfig, executionconfig.SystemRoots(), nil)
+	if err != nil {
+		return nil, &runnerclient.KindNoResult{Code: executionconfig.Reason(err), Message: err.Error()}
+	}
+	r.trust = projection
+	defer projection.Close()
 	secrets, err := r.secrets(ctx)
 	if err != nil {
 		return nil, &runnerclient.KindNoResult{Code: "secrets-unavailable", Message: err.Error()}
@@ -450,6 +466,9 @@ func (r *run) start(ctx context.Context, request []byte, dirs jobDirs, label str
 		if ledger != nil {
 			cmd.Env = append(cmd.Env, "OYZU_KIND_LEDGER_DIR="+ledger.path)
 		}
+		if r.trust != nil {
+			cmd.Env = r.trust.Env(cmd.Env, r.trust.Dir)
+		}
 	} else {
 		if !imagePinned.MatchString(r.op.Image) {
 			return nil, fmt.Errorf("kind image %q is not pinned by digest", r.op.Image)
@@ -516,6 +535,14 @@ func (r *run) start(ctx context.Context, request []byte, dirs jobDirs, label str
 		for _, name := range r.cfg.DockerEnv {
 			if _, ok := os.LookupEnv(name); ok && envName.MatchString(name) {
 				args = append(args, "-e", name)
+			}
+		}
+		if r.trust != nil {
+			if r.trust.Dir != "" {
+				args = append(args, "-v", r.trust.Dir+":"+ContainerTrustDir+":ro")
+			}
+			for _, value := range r.trust.Env(nil, ContainerTrustDir) {
+				args = append(args, "-e", value)
 			}
 		}
 		cmd = exec.Command(r.cfg.Docker, append(args, r.op.Image)...)

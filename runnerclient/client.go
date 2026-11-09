@@ -222,6 +222,8 @@ func (c *Client) Release(ctx context.Context, access string, r Release) (bool, e
 
 // Job is what a runner runs.
 type Job struct {
+	ExecutionConfig *ExecutionConfig `json:"execution_config,omitempty"`
+
 	ID            int64    `json:"id"`
 	RunID         int64    `json:"run_id"`
 	Kind          string   `json:"kind"`
@@ -391,6 +393,8 @@ func (c *Client) WriteToken(ctx context.Context, job string) (WriteToken, error)
 
 // Outcome is how a job ended.
 type Outcome struct {
+	Execution *ExecutionEvidence `json:"execution,omitempty"`
+
 	State    string `json:"state"`
 	ExitCode *int   `json:"exit_code,omitempty"`
 	Summary  string `json:"summary"`
@@ -462,6 +466,9 @@ func (c *Client) doStatus(ctx context.Context, path, bearer string, in, out any,
 	}
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	if path == "job/start" {
+		req.Header.Set(ExecutionCapabilityHeader, "1")
 	}
 	return c.sendStatus(req, out, status)
 }

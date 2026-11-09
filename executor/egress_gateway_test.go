@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"github.com/oyzuai/fleet/executionconfig"
 	"io"
 	"log/slog"
 	"net"
@@ -152,5 +154,36 @@ func TestWaitGatewayWaitsForRegistration(t *testing.T) {
 	defer cancel()
 	if err := waitGateway(ctx, gw); err == nil {
 		t.Fatal("an unregistered job was ready")
+	}
+}
+
+func TestGatewayWithACorporateBundleStillNeedsNoJobCAAndRefusesACorporateProxy(t *testing.T) {
+	gw, _ := gatewayRig(t, egressgate.Allow{Host: "example.com"})
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	canonical, digest, err := executionconfig.CanonicalBundle(executionCA(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := runnerclient.ExecutionCABundle{PEM: canonical, Digest: digest, Required: true}
+
+	config := &runnerclient.ExecutionConfig{Version: 1, Revision: "bundle-only", Required: true, Bundles: []runnerclient.ExecutionCABundle{bundle}}
+	p, err := startEgress(runnerclient.Egress{}, nil, func(...string) {}, log, gw, egressExecution{config: config, workDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.stop()
+	if p.caFile != "" {
+		t.Fatalf("a gateway-only job made a job CA: %q", p.caFile)
+	}
+	if resp, _ := connectVia(t, p, "example.com:443"); resp.StatusCode != 200 {
+		t.Fatalf("allowed CONNECT = %s", resp.Status)
+	}
+
+	withProxy := &runnerclient.ExecutionConfig{Version: 1, Revision: "with-proxy", Required: true, Bundles: []runnerclient.ExecutionCABundle{bundle},
+		Proxy: &runnerclient.ExecutionProxy{HTTPS: "http://proxy.corp.example:3128", Required: true}}
+	_, err = startEgress(runnerclient.Egress{}, nil, func(...string) {}, log, gw, egressExecution{config: withProxy, workDir: t.TempDir()})
+	var configError *executionconfig.Error
+	if !errors.As(err, &configError) || configError.Code != executionconfig.ProxyUnsupported {
+		t.Fatalf("gateway plus corporate proxy = %v, want %s", err, executionconfig.ProxyUnsupported)
 	}
 }

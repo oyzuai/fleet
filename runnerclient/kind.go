@@ -93,8 +93,11 @@ type KindNoResult struct {
 
 // KindFinish reports the kind's result, or why there is none; the job token
 // stops working.
-func (c *Client) KindFinish(ctx context.Context, job string, result json.RawMessage, none *KindNoResult) error {
+func (c *Client) KindFinish(ctx context.Context, job string, result json.RawMessage, none *KindNoResult, evidence ...*ExecutionEvidence) error {
 	body := map[string]any{}
+	if len(evidence) > 0 && evidence[0] != nil {
+		body["execution"] = evidence[0]
+	}
 	if none != nil {
 		body["no_result"] = none
 	} else {
