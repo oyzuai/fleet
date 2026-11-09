@@ -1,6 +1,6 @@
 module github.com/oyzuai/fleet
 
-go 1.25
+go 1.25.0
 
 require (
 	github.com/klauspost/compress v1.20.3
@@ -9,6 +9,6 @@ require (
 )
 
 require (
-	golang.org/x/crypto v0.11.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
+	golang.org/x/crypto v0.52.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 )
