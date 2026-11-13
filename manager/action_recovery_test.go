@@ -121,6 +121,37 @@ func TestActionRestartRecoveryRejectsMismatchedOwnerAndBlocksCapacity(t *testing
 	}
 }
 
+func TestActionRecoverySurvivesUnrelatedKindListingFailure(t *testing.T) {
+	p := &Process{Manager: 7, WorkDir: t.TempDir(), Slots: 1, Docker: true, ActionEngine: "separate-trusted-engine"}
+	dir := filepath.Join(p.jobsDir(), "job-42-3-recovery")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	owner := runnerclient.ActionOwner{ManagerID: 7, JobID: 42, Attempt: 3, Directory: dir}
+	if err := runnerclient.WriteActionOwner(owner); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	p.ActionCleanup = func(_ context.Context, actual runnerclient.ActionOwner) error {
+		if actual != owner {
+			t.Fatal("wrong owner")
+		}
+		called = true
+		return nil
+	}
+	// The action engine is independently injected. The native-kind CLI is absent.
+	t.Setenv("PATH", t.TempDir())
+	if err := p.Reap(context.Background(), nil); err == nil || !called {
+		t.Fatalf("kind failure bypassed action recovery: called=%t err=%v", called, err)
+	}
+	if c, _ := p.Capacity(context.Background()); c.Running != 1 || len(c.Ready) != 0 {
+		t.Fatalf("unreconciled kind resources freed capacity: %+v", c)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatal("recovery directory removed while native kinds were unobserved", err)
+	}
+}
+
 func TestActionAdoptedExitKeepsFailedCleanupBlockedForReaper(t *testing.T) {
 	crashed := helperDriver(t, "sleep")
 	crashed.ActionEngine = "trusted-engine"

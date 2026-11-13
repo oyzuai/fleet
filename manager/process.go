@@ -372,6 +372,8 @@ func (p *Process) Reap(ctx context.Context, live []JobID) error {
 	for _, e := range entries {
 		if job, ok := jobOfDir(e.Name()); ok && !keepDir[e.Name()] && !keepJob[job] && p.survives(e.Name()) {
 			keepDir[e.Name()] = true
+		}
+		if _, ok := jobOfDir(e.Name()); ok {
 			if _, err := os.Stat(filepath.Join(p.jobsDir(), e.Name(), runnerclient.ActionOwnerFile)); !errors.Is(err, os.ErrNotExist) {
 				p.blockActionDirectory(e.Name())
 			}
@@ -389,7 +391,24 @@ func (p *Process) Reap(ctx context.Context, live []JobID) error {
 		rows, listErr := list.Output()
 		if listErr != nil {
 			cancel()
-			return fmt.Errorf("list kind containers: %w", listErr)
+			// Action recovery uses its separately configured engine. A failed
+			// native-kind CLI must not leave a dead executor's action alive or
+			// make its capacity reusable. Keep directories until kind ownership
+			// can also be reconciled on a later pass.
+			for _, e := range entries {
+				job, ok := jobOfDir(e.Name())
+				if !ok || keepDir[e.Name()] || keepJob[job] {
+					continue
+				}
+				dir := filepath.Join(p.jobsDir(), e.Name())
+				if _, err := os.Stat(filepath.Join(dir, runnerclient.ActionOwnerFile)); errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				if err := p.cleanupActionDirectory(ctx, dir); err != nil {
+					errs = append(errs, err)
+				}
+			}
+			return errors.Join(append(errs, fmt.Errorf("list kind containers: %w", listErr))...)
 		}
 		for _, row := range strings.Split(strings.TrimSpace(string(rows)), "\n") {
 			fields := strings.Split(strings.TrimSuffix(row, "\r"), "\t")
