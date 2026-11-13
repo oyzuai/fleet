@@ -1,0 +1,18 @@
+# oyzu-context:start
+[marketplaces.oyzu-context]
+source_type = "git"
+source = "https://github.com/oyzuai/context.git"
+ref = "main"
+
+[plugins."context@oyzu-context"]
+enabled = true
+
+[plugins."ponytail@oyzu-context"]
+enabled = true
+
+[plugins."pstack@oyzu-context"]
+enabled = true
+
+[plugins."thermonuclear@oyzu-context"]
+enabled = true
+# oyzu-context:end
