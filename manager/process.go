@@ -52,6 +52,10 @@ const defaultStopGrace = 30 * time.Second
 // Slots are always ready, so Provision does nothing. Jobs share the host,
 // so the pool reports oyzu.io/isolation=process.
 type Process struct {
+	// ActionEngine is an explicitly configured trusted host-side endpoint.
+	// ActionRuntimeReady must probe that engine before capability reporting.
+	ActionEngine       string
+	ActionRuntimeReady func(context.Context) error
 	// Runner is the oyzu-executor executable.
 	Runner string
 	// Args are passed to every runner before the job's own flags, such as
@@ -115,7 +119,7 @@ func (p *Process) jobsDir() string {
 }
 
 // Facts implements Driver.
-func (p *Process) Facts(context.Context) (Facts, error) {
+func (p *Process) Facts(ctx context.Context) (Facts, error) {
 	f := Facts{
 		FactOS:        runtime.GOOS,
 		FactArch:      runtime.GOARCH,
@@ -127,6 +131,15 @@ func (p *Process) Facts(context.Context) (Facts, error) {
 	}
 	if p.Renovate {
 		f[FactRenovate] = "true"
+	}
+	if p.ActionEngine != "" {
+		if p.ActionRuntimeReady == nil {
+			return nil, errors.New("action runtime probe is missing")
+		}
+		if err := p.ActionRuntimeReady(ctx); err != nil {
+			return nil, fmt.Errorf("action runtime unavailable: %w", err)
+		}
+		f["oyzu.io/action-runtime"] = runnerclient.ActionRuntime
 	}
 	return f, nil
 }
@@ -484,6 +497,9 @@ func (p *Process) env() []string {
 		if !ok || name == "" {
 			continue
 		}
+		if strings.EqualFold(name, "FLEET_ACTION_ENGINE") {
+			continue
+		}
 		if !p.Docker && strings.EqualFold(name, noDockerEnv) {
 			continue
 		}
@@ -499,6 +515,9 @@ func (p *Process) env() []string {
 	}
 	if !p.Docker {
 		out = append(out, noDockerEnv+"=1")
+	}
+	if p.ActionEngine != "" && p.ActionRuntimeReady != nil {
+		out = append(out, "FLEET_ACTION_ENGINE="+p.ActionEngine)
 	}
 	return out
 }

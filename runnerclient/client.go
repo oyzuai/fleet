@@ -222,7 +222,8 @@ func (c *Client) Release(ctx context.Context, access string, r Release) (bool, e
 
 // Job is what a runner runs.
 type Job struct {
-	ExecutionConfig *ExecutionConfig `json:"execution_config,omitempty"`
+	Action          *ActionAssignment `json:"action,omitempty"`
+	ExecutionConfig *ExecutionConfig  `json:"execution_config,omitempty"`
 
 	ID            int64    `json:"id"`
 	RunID         int64    `json:"run_id"`
@@ -264,6 +265,7 @@ type Started struct {
 // StartupAssignment echoes only server-selected assignment metadata. The
 // server still validates the exact current startup credential and attempt.
 type StartupAssignment struct {
+	ActionRuntime          string             `json:"action_runtime,omitempty"`
 	Readiness              *readiness.Binding `json:"readiness,omitempty"`
 	ExecutionTrustDecision string             `json:"execution_trust_decision,omitempty"`
 }
@@ -273,6 +275,9 @@ var executionDecisionReference = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0
 // Validate checks wire shape only, never decision facts or current authority.
 // An absent reference is meaningful only when the server did not require one.
 func (a StartupAssignment) Validate() error {
+	if a.ActionRuntime != "" && a.ActionRuntime != ActionRuntime {
+		return errors.New("unsupported action runtime capability")
+	}
 	if a.ExecutionTrustDecision != "" && (!executionDecisionReference.MatchString(a.ExecutionTrustDecision) || a.ExecutionTrustDecision == "00000000-0000-0000-0000-000000000000") {
 		return errors.New("invalid server execution decision reference")
 	}
@@ -523,6 +528,16 @@ func (c *Client) sendStatus(req *http.Request, out any, status func(int)) (err e
 	case out == nil || resp.StatusCode == http.StatusNoContent:
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
+	}
+	if strings.HasSuffix(req.URL.Path, "/job/action/inputs") {
+		data, err := io.ReadAll(io.LimitReader(resp.Body, MaxActionWire+1))
+		if err != nil {
+			return err
+		}
+		if len(data) > MaxActionWire {
+			return errors.New("action inputs exceed wire limit")
+		}
+		return json.Unmarshal(data, out)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

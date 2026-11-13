@@ -268,14 +268,7 @@ func (d *Docker) Info(ctx context.Context) (Info, error) {
 	if err := d.prepareSandbox(ctx); err != nil {
 		return Info{}, err
 	}
-	var i struct {
-		ID            string
-		ServerVersion string
-		OSType        string
-		Architecture  string
-		NCPU          int
-		MemTotal      int64
-	}
+	var i Info
 	if err := d.do(ctx, http.MethodGet, "/info", nil, nil, &i); err != nil {
 		return Info{}, err
 	}
@@ -288,7 +281,7 @@ func (d *Docker) Info(ctx context.Context) (Info, error) {
 			return Info{}, err
 		}
 	}
-	return Info{ID: i.ID, ServerVersion: i.ServerVersion, OSType: i.OSType, Architecture: i.Architecture, NCPU: i.NCPU, MemTotal: i.MemTotal}, nil
+	return i, nil
 }
 
 // ImagePresent implements Engine.
@@ -386,15 +379,19 @@ type portBinding struct {
 }
 
 type mount struct {
-	Type   string
-	Source string
-	Target string
+	Type          string
+	Source        string
+	Target        string
+	VolumeOptions *volumeOptions `json:",omitempty"`
 }
+
+type volumeOptions struct{ NoCopy bool }
 
 // containerConfig is the body of a create request.
 type containerConfig struct {
 	Image           string
 	Cmd             []string
+	Entrypoint      []string `json:",omitempty"`
 	User            string
 	WorkingDir      string
 	Labels          map[string]string
@@ -423,6 +420,12 @@ func createBody(spec Spec) containerConfig {
 	}
 	if spec.Volume != "" {
 		hc.Mounts = []mount{{Type: "volume", Source: spec.Volume, Target: spec.WorkDir}}
+		if spec.VolumePath != "" {
+			hc.Mounts[0].Target = spec.VolumePath
+		}
+		if spec.VolumeNoCopy {
+			hc.Mounts[0].VolumeOptions = &volumeOptions{NoCopy: true}
+		}
 	}
 	hc.ReadonlyRootfs = spec.ReadOnly
 	if spec.MemoryBytes > 0 {
@@ -439,7 +442,7 @@ func createBody(spec Spec) containerConfig {
 		hc.PortBindings[key] = []portBinding{{HostIp: "127.0.0.1"}}
 	}
 	return containerConfig{
-		Image: spec.Image, Cmd: spec.Cmd, User: spec.User, WorkingDir: spec.WorkDir,
+		Image: spec.Image, Cmd: spec.Cmd, Entrypoint: spec.Entrypoint, User: spec.User, WorkingDir: spec.WorkDir,
 		Labels: spec.Labels, Env: append([]string{"HOME=" + spec.WorkDir}, spec.Env...), ExposedPorts: exposed,
 		NetworkDisabled: spec.Network == "none", HostConfig: hc,
 	}

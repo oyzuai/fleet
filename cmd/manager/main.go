@@ -162,6 +162,7 @@ func run(args []string, log *slog.Logger) error {
 		driverName := fs.String("driver", "container", "how jobs run: container (default), kubernetes, or process (trusted code only: jobs run as the manager's own OS user and can read its key)")
 		image := fs.String("image", "", "container and kubernetes drivers: executor image pinned by SHA-256 digest")
 		engine := fs.String("engine", os.Getenv("DOCKER_HOST"), "container driver: the engine, unix:///path, npipe:////./pipe/name or tcp://host:port")
+		actionEngine := fs.String("action-engine", "", "process driver: explicit engine endpoint for isolated Linux actions; no image pulls")
 		engineCerts := fs.String("engine-cert-path", os.Getenv("DOCKER_CERT_PATH"), "container driver: directory with ca.pem, cert.pem and key.pem for a tcp:// engine over TLS")
 		enginePlaintext := fs.Bool("engine-allow-plaintext", false, "container driver: allow a plain-HTTP tcp:// engine on another host (startup tokens cross the network unencrypted)")
 		cpus := fs.Float64("cpus", 0, "container and kubernetes drivers: CPUs per job, 0 for no cap")
@@ -220,7 +221,16 @@ func run(args []string, log *slog.Logger) error {
 		var driver manager.Driver
 		switch *driverName {
 		case "process":
+			var actionReady func(context.Context) error
+			if *actionEngine != "" {
+				eng, err := container.NewDocker(*actionEngine, container.DockerOptions{})
+				if err != nil {
+					return err
+				}
+				actionReady = (&container.ActionRuntime{Engine: eng}).Ready
+			}
 			driver = &manager.Process{
+				ActionEngine: *actionEngine, ActionRuntimeReady: actionReady,
 				Runner: *executor, Args: runnerArgs, Server: st.Server, Manager: st.ManagerID,
 				WorkDir: *workDir, LogDir: filepath.Join(*stateDir, "logs"), Slots: *concurrency, Docker: *docker,
 				Renovate: *renovate != "",

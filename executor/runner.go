@@ -42,6 +42,7 @@ const (
 
 // Config configures one run.
 type Config struct {
+	ActionDriver           ActionDriver
 	ExecutionTrustDecision string
 	Readiness              *readiness.Binding
 	Client                 *runnerclient.Client
@@ -105,6 +106,12 @@ type Config struct {
 // It also returns when runs says the job is no longer this runner's.
 func Run(ctx context.Context, cfg Config) (runErr error) {
 	assignment := runnerclient.StartupAssignment{Readiness: cfg.Readiness, ExecutionTrustDecision: cfg.ExecutionTrustDecision}
+	if cfg.ActionDriver != nil {
+		if err := cfg.ActionDriver.Ready(ctx); err != nil {
+			return fmt.Errorf("action runtime unavailable: %w", err)
+		}
+		assignment.ActionRuntime = runnerclient.ActionRuntime
+	}
 	if err := assignment.Validate(); err != nil {
 		return err
 	}
@@ -170,6 +177,12 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 		return fmt.Errorf("start the job: %w", err)
 	}
 	job := st.Job
+	if job.Kind == runnerclient.ActionJob {
+		return runAction(ctx, cfg, st)
+	}
+	if job.Action != nil {
+		return errors.New("action payload on a native job refused")
+	}
 	span.Int("oyzu.fleet.job", job.ID)
 	span.Int("oyzu.fleet.attempt", int64(job.Attempt))
 	span.Str("oyzu.fleet.kind", job.Kind)
