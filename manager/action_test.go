@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"errors"
+	"github.com/oyzuai/fleet/runnerclient"
 	"strings"
 	"testing"
 )
@@ -23,6 +24,7 @@ func TestActionCapabilityRequiresExplicitReadyRuntime(t *testing.T) {
 		t.Fatal("unavailable runtime advertised")
 	}
 	p.ActionRuntimeReady = func(context.Context) error { return nil }
+	p.ActionCleanup = func(context.Context, runnerclient.ActionOwner) error { return nil }
 	f, err = p.Facts(ctx)
 	if err != nil || f["oyzu.io/action-runtime"] != "linux-container" {
 		t.Fatalf("ready runtime not advertised: %v %v", f, err)

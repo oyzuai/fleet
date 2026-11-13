@@ -72,7 +72,10 @@ an engine unable to expose the required allocation before execution is refused.
 
 This first profile bounds file bytes to 16 MiB per direction, combined
 stdout/stderr to 1 MiB, JSON transfer to 32 MiB and directory entries to 10,000.
-The private work archive is also bounded. Timeout is at most one hour. Paths
+The input archive also counts implicit working/output parent directories and
+its root against the entry limit, and bounds actual tar bytes to 32 MiB before
+allocating engine resources. The private work output archive is also bounded.
+Timeout is at most one hour. Paths
 must be canonical relative portable paths. Links and special files are refused,
 including in output archives; archives are parsed in memory and never extracted
 onto the executor host. Larger transfer profiles and symlink interoperability
@@ -88,6 +91,23 @@ failures stop the container and inspect its state before acknowledging
 termination. Cleanup removes the container and its private work volume;
 unrecoverable engine failures are reported as service failures.
 
+The trusted process manager creates a private owner anchor in the existing job
+directory before launching an executor. The runtime receives that manager,
+job, attempt and directory identity separately from the action assignment and
+syncs a resource journal before its first engine allocation. Container and
+volume labels bind the same identity and a private random resource name. This
+also recovers an allocation whose engine response was lost.
+
+Normal cleanup, `Process.Teardown` and restart `Process.Reap` use that exact
+journal and full ownership labels. Cleanup stops and inspects the owned child,
+removes its container and volume, then removes the journal. A failed cleanup
+retains recovery state and holds capacity; an adopted executor's exit follows
+the same rule. A configured action process pool releases a failed job only
+after successful teardown. Completion cannot confirm termination while cleanup
+is incomplete. Resources belonging to other owners are preserved. Recovery
+requires the trusted manager and its configured engine connection to return;
+there is no immediate-stop guarantee while both manager and executor are down.
+
 ## Verification
 
 Focused executor/runtime checks cover dispatch, lease binding, missing-driver
@@ -95,3 +115,12 @@ refusal, bounded files and process termination. The real Bazel execution and
 Oyzu cache acceptance proof is owned by
 [platform #718](https://github.com/oyzuai/platform/issues/718). Unit fixtures
 alone do not establish runtime isolation or REAPI conformance.
+
+The [crash recovery reproducer](../testdata/action-crash-proof/main.go) takes a
+locally cached immutable Linux image as its argument. On a trusted controller
+with engine access, it observes a live action, kills only its own executor
+helper, reconstructs `Process` and invokes `Reap`. It checks that the recorded
+action and volume are removed, a separate task-owned foreign sentinel survives,
+and capacity becomes reusable. The reproducer removes its sentinel and scratch
+directory on exit. Its controller engine connection must never be mounted into
+the action child.

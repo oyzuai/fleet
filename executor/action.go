@@ -13,7 +13,7 @@ import (
 // engines that cannot provide the required Linux isolation. No host fallback.
 type ActionDriver interface {
 	Ready(context.Context) error
-	RunAction(context.Context, runnerclient.ActionAssignment, runnerclient.ActionInputs) runnerclient.ActionCompletion
+	RunAction(context.Context, runnerclient.ActionOwner, runnerclient.ActionAssignment, runnerclient.ActionInputs) runnerclient.ActionCompletion
 }
 
 func runAction(ctx context.Context, cfg Config, st runnerclient.Started) error {
@@ -33,7 +33,8 @@ func runAction(ctx context.Context, cfg Config, st runnerclient.Started) error {
 		} else if in, err := cfg.Client.ActionInputs(work, st.JobToken); err != nil {
 			result.ErrorCode, result.Message = "UNAVAILABLE", "Action input transfer failed."
 		} else {
-			result = cfg.ActionDriver.RunAction(work, *st.Job.Action, in)
+			owner := runnerclient.ActionOwner{ManagerID: cfg.ManagerID, JobID: st.Job.ID, Attempt: st.Job.Attempt, Directory: cfg.JobDir}
+			result = cfg.ActionDriver.RunAction(work, owner, *st.Job.Action, in)
 		}
 	}
 	// Keep lease watching through output transfer. The server rechecks the live

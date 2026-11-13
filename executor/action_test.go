@@ -24,7 +24,7 @@ type actionDriverFake struct {
 }
 
 func (d actionDriverFake) Ready(context.Context) error { return d.readyErr }
-func (d actionDriverFake) RunAction(ctx context.Context, _ runnerclient.ActionAssignment, _ runnerclient.ActionInputs) runnerclient.ActionCompletion {
+func (d actionDriverFake) RunAction(ctx context.Context, _ runnerclient.ActionOwner, _ runnerclient.ActionAssignment, _ runnerclient.ActionInputs) runnerclient.ActionCompletion {
 	return d.run(ctx)
 }
 

@@ -54,6 +54,7 @@ func (d *Docker) VerifyActionContainer(ctx context.Context, id string, spec Spec
 			Image, User, WorkingDir string
 			Cmd, Entrypoint         []string
 			NetworkDisabled         bool
+			Labels                  map[string]string
 		}
 		HostConfig hostConfig
 		Mounts     []struct {
@@ -65,7 +66,7 @@ func (d *Docker) VerifyActionContainer(ctx context.Context, id string, spec Spec
 		return err
 	}
 	h := actual.HostConfig
-	if actual.Config.Image != spec.Image || actual.Config.User != spec.User || actual.Config.WorkingDir != spec.WorkDir ||
+	if actual.Config.Image != spec.Image || actual.Config.User != spec.User || actual.Config.WorkingDir != spec.WorkDir || !actionLabelsMatch(actual.Config.Labels, spec.Labels) ||
 		!slices.Equal(actual.Config.Entrypoint, spec.Entrypoint) || !slices.Equal(actual.Config.Cmd, spec.Cmd) ||
 		!actual.Config.NetworkDisabled || h.NetworkMode != "none" || h.Privileged || !h.ReadonlyRootfs ||
 		h.NanoCpus != spec.NanoCPUs || h.Memory != spec.MemoryBytes || h.MemorySwap != spec.MemoryBytes || h.PidsLimit != spec.PidsLimit ||

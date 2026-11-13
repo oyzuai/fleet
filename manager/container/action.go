@@ -33,11 +33,18 @@ func actionError(code, message string) runnerclient.ActionCompletion {
 	return runnerclient.ActionCompletion{ErrorCode: code, Message: message}
 }
 
-func (r *ActionRuntime) RunAction(ctx context.Context, a runnerclient.ActionAssignment, in runnerclient.ActionInputs) (result runnerclient.ActionCompletion) {
+func (r *ActionRuntime) RunAction(ctx context.Context, owner runnerclient.ActionOwner, a runnerclient.ActionAssignment, in runnerclient.ActionInputs) (result runnerclient.ActionCompletion) {
+	if err := owner.Validate(); err != nil {
+		return actionError("FAILED_PRECONDITION", err.Error())
+	}
 	if err := a.Validate(); err != nil {
 		return actionError("INVALID_ARGUMENT", err.Error())
 	}
 	if err := in.Validate(); err != nil {
+		return actionError("INVALID_ARGUMENT", err.Error())
+	}
+	archive, err := actionInputArchive(a, in)
+	if err != nil {
 		return actionError("INVALID_ARGUMENT", err.Error())
 	}
 	if err := r.Ready(ctx); err != nil {
@@ -53,32 +60,25 @@ func (r *ActionRuntime) RunAction(ctx context.Context, a runnerclient.ActionAssi
 		return actionError("INTERNAL", "Could not allocate private action identity.")
 	}
 	name := "oyzu-action-" + hex.EncodeToString(nonce[:])
-	labels := map[string]string{"oyzu.io/action": name}
-	if err := r.Engine.CreateVolume(ctx, name, labels); err != nil {
-		return actionError("INTERNAL", "Could not create private action volume.")
+	record := actionRecord{Owner: owner, Name: name}
+	if err = writeActionRecord(record); err != nil {
+		return actionError("FAILED_PRECONDITION", "Could not persist trusted action recovery identity.")
 	}
-	id := ""
+	labels := record.labels()
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 45*time.Second)
 		defer cancel()
-		// Never remove the volume while a possibly live action owns it. Failure
-		// leaves labelled resources for operator recovery and fails completion.
-		if id != "" {
-			if err := r.Engine.RemoveContainer(cleanup, id); err != nil {
-				result.Files = nil
-				result.Directories = nil
-				result.ErrorCode = "INTERNAL"
-				result.Message = "Action container cleanup failed."
-				return
-			}
-		}
-		if err := r.Engine.RemoveVolume(cleanup, name); err != nil {
+		if err := r.CleanupAction(cleanup, owner); err != nil {
 			result.Files = nil
 			result.Directories = nil
+			result.TerminationConfirmed = false
 			result.ErrorCode = "INTERNAL"
-			result.Message = "Action volume cleanup failed."
+			result.Message = "Action cleanup is incomplete; recovery state retained."
 		}
 	}()
+	if err := r.Engine.CreateVolume(ctx, name, labels); err != nil {
+		return actionError("INTERNAL", "Could not create private action volume.")
+	}
 	env := make([]string, 0, len(a.Environment))
 	for key, value := range a.Environment {
 		env = append(env, key+"="+value)
@@ -87,13 +87,9 @@ func (r *ActionRuntime) RunAction(ctx context.Context, a runnerclient.ActionAssi
 	spec := Spec{Image: a.Image, Entrypoint: []string{a.Arguments[0]}, Cmd: append([]string{}, a.Arguments[1:]...), User: "1000:1000", Labels: labels,
 		Volume: name, VolumePath: "/work", VolumeNoCopy: true, WorkDir: path.Join("/work", a.WorkingDirectory), Network: "none", ReadOnly: true,
 		Env: env, NanoCPUs: a.NanoCPUs, MemoryBytes: a.MemoryBytes, PidsLimit: a.PidsLimit}
-	id, err = r.Engine.CreateContainer(ctx, name, spec)
+	id, err := r.Engine.CreateContainer(ctx, name, spec)
 	if err != nil {
 		return actionError("INTERNAL", "Could not create isolated action container.")
-	}
-	archive, err := actionInputArchive(a, in)
-	if err != nil {
-		return actionError("INVALID_ARGUMENT", err.Error())
 	}
 	if err = r.Engine.CopyFiles(ctx, id, "/work", archive); err != nil {
 		return actionError("INTERNAL", "Could not materialize action inputs.")
@@ -162,28 +158,50 @@ func (r *ActionRuntime) RunAction(ctx context.Context, a runnerclient.ActionAssi
 }
 
 func actionInputArchive(a runnerclient.ActionAssignment, in runnerclient.ActionInputs) ([]byte, error) {
-	var b bytes.Buffer
+	var b actionArchiveBuffer
 	tw := tar.NewWriter(&b)
 	dirs := map[string]bool{".": true}
-	addParents := func(p string) {
+	addParents := func(p string) error {
 		for p != "." {
+			if dirs[p] {
+				break
+			}
+			if len(dirs)+len(in.Files) >= runnerclient.MaxActionEntries {
+				return errors.New("implicit action directories exceed entry limit")
+			}
 			dirs[p] = true
 			p = path.Dir(p)
 		}
+		return nil
+	}
+	if len(in.Files)+len(dirs) > runnerclient.MaxActionEntries {
+		return nil, errors.New("action archive exceeds entry limit")
 	}
 	for _, d := range in.Directories {
-		addParents(d)
+		if err := addParents(d); err != nil {
+			return nil, err
+		}
 	}
 	if a.WorkingDirectory != "" {
-		addParents(a.WorkingDirectory)
+		if err := addParents(a.WorkingDirectory); err != nil {
+			return nil, err
+		}
 	}
 	for _, f := range in.Files {
-		addParents(path.Dir(f.Path))
+		if err := addParents(path.Dir(f.Path)); err != nil {
+			return nil, err
+		}
 	}
 	// Output paths are relative to the command's working directory. Create parents,
 	// never the output itself, which may be either a file or a directory.
 	for _, p := range a.OutputPaths {
-		addParents(path.Dir(path.Join(a.WorkingDirectory, p)))
+		joined := path.Join(a.WorkingDirectory, p)
+		if !runnerclient.ActionPath(joined) {
+			return nil, errors.New("invalid action output path below working directory")
+		}
+		if err := addParents(path.Dir(joined)); err != nil {
+			return nil, err
+		}
 	}
 	for _, f := range in.Files {
 		if dirs[f.Path] {
@@ -217,6 +235,16 @@ func actionInputArchive(a runnerclient.ActionAssignment, in runnerclient.ActionI
 	}
 	return b.Bytes(), nil
 }
+
+type actionArchiveBuffer struct{ buffer bytes.Buffer }
+
+func (b *actionArchiveBuffer) Write(p []byte) (int, error) {
+	if len(p) > runnerclient.MaxActionWire-b.buffer.Len() {
+		return 0, errors.New("action input archive exceeds byte limit")
+	}
+	return b.buffer.Write(p)
+}
+func (b *actionArchiveBuffer) Bytes() []byte { return b.buffer.Bytes() }
 
 func actionOutputs(archive []byte, a runnerclient.ActionAssignment) ([]runnerclient.ActionFile, []string, error) {
 	tr := tar.NewReader(bytes.NewReader(archive))

@@ -7,7 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -24,6 +27,15 @@ func actionFile(p, content string) runnerclient.ActionFile {
 	b := []byte(content)
 	sum := sha256.Sum256(b)
 	return runnerclient.ActionFile{Path: p, Data: b, Size: int64(len(b)), SHA256: hex.EncodeToString(sum[:])}
+}
+
+func testActionOwner(t *testing.T) runnerclient.ActionOwner {
+	t.Helper()
+	owner := runnerclient.ActionOwner{ManagerID: 7, JobID: 42, Attempt: 1, Directory: t.TempDir()}
+	if err := runnerclient.WriteActionOwner(owner); err != nil {
+		t.Fatal(err)
+	}
+	return owner
 }
 
 func outputArchive(t *testing.T, headers ...*tar.Header) []byte {
@@ -49,15 +61,21 @@ func outputArchive(t *testing.T, headers ...*tar.Header) []byte {
 
 type actionEngineFake struct {
 	*fakeEngine
-	spec      Spec
-	archive   []byte
-	verifyErr error
-	wait      func(context.Context) error
-	stopErr   error
-	running   bool
-	stops     int
-	exitCode  int
-	inputTar  []byte
+	spec          Spec
+	archive       []byte
+	verifyErr     error
+	wait          func(context.Context) error
+	stopErr       error
+	running       bool
+	stops         int
+	exitCode      int
+	inputTar      []byte
+	volumeCreates int
+}
+
+func (e *actionEngineFake) CreateVolume(ctx context.Context, name string, labels map[string]string) error {
+	e.volumeCreates++
+	return e.fakeEngine.CreateVolume(ctx, name, labels)
 }
 
 func (e *actionEngineFake) ActionReady(context.Context) error { return nil }
@@ -95,7 +113,7 @@ func TestActionRuntimeIsolatesAndReturnsProcessResult(t *testing.T) {
 	a := testAction()
 	a.Environment = map[string]string{"EXPLICIT": "value"}
 	a.WorkingDirectory = "sub"
-	out := (&ActionRuntime{Engine: e}).RunAction(context.Background(), a, runnerclient.ActionInputs{Files: []runnerclient.ActionFile{actionFile("input", "hello")}, Directories: []string{"empty"}})
+	out := (&ActionRuntime{Engine: e}).RunAction(context.Background(), testActionOwner(t), a, runnerclient.ActionInputs{Files: []runnerclient.ActionFile{actionFile("input", "hello")}, Directories: []string{"empty"}})
 	if out.ErrorCode != "" || !out.TerminationConfirmed || out.ExitCode == nil || *out.ExitCode != 7 || string(out.Stdout) != "stdout" || string(out.Stderr) != "stderr" || len(out.Files) != 1 || !out.Files[0].Executable {
 		t.Fatalf("result: %+v", out)
 	}
@@ -134,7 +152,7 @@ func TestActionRuntimeRefusesUnsafeInputsAndUnverifiedSandbox(t *testing.T) {
 		if unsafe {
 			in.Files = []runnerclient.ActionFile{actionFile("../token", "bad")}
 		}
-		out := (&ActionRuntime{Engine: e}).RunAction(context.Background(), testAction(), in)
+		out := (&ActionRuntime{Engine: e}).RunAction(context.Background(), testActionOwner(t), testAction(), in)
 		if out.ErrorCode == "" || out.TerminationConfirmed {
 			t.Fatalf("accepted: %+v", out)
 		}
@@ -155,12 +173,121 @@ func TestActionRuntimeCancellationRequiresObservedStop(t *testing.T) {
 		e.present = true
 		ctx, cancel := context.WithCancel(context.Background())
 		e.wait = func(ctx context.Context) error { cancel(); <-ctx.Done(); return ctx.Err() }
-		out := (&ActionRuntime{Engine: e}).RunAction(ctx, testAction(), runnerclient.ActionInputs{})
-		if e.stops != 1 || out.TerminationConfirmed == running || len(out.Files) != 0 {
+		out := (&ActionRuntime{Engine: e}).RunAction(ctx, testActionOwner(t), testAction(), runnerclient.ActionInputs{})
+		expectedStops := 1
+		if running {
+			expectedStops = 2
+		}
+		if e.stops != expectedStops || out.TerminationConfirmed == running || len(out.Files) != 0 {
 			t.Fatalf("stop result: %+v, stops %d", out, e.stops)
 		}
 		if running && out.ErrorCode != "INTERNAL" || !running && out.ErrorCode != "CANCELLED" {
 			t.Fatalf("wrong status: %+v", out)
+		}
+	}
+}
+
+func TestActionInputImplicitDirectoriesAndArchiveBytesBoundedBeforeAllocation(t *testing.T) {
+	a := testAction()
+	// Each explicit leaf contributes hundreds of distinct implicit parents.
+	for n := 0; n < 100; n++ {
+		a.OutputPaths = append(a.OutputPaths, fmt.Sprintf("tree%d/", n)+strings.Repeat("d/", 200)+"out")
+	}
+	e := &actionEngineFake{fakeEngine: newFakeEngine()}
+	e.present = true
+	out := (&ActionRuntime{Engine: e}).RunAction(context.Background(), testActionOwner(t), a, runnerclient.ActionInputs{})
+	if out.ErrorCode != "INVALID_ARGUMENT" || e.next != 0 || e.volumeCreates != 0 || len(e.volumes) != 0 {
+		t.Fatalf("implicit directory expansion allocated resources: %+v", out)
+	}
+	// PAX long-path records can exceed the wire budget below the entry cap.
+	in := runnerclient.ActionInputs{}
+	for n := 0; n < 7000; n++ {
+		in.Files = append(in.Files, actionFile(fmt.Sprintf("%04d", n)+strings.Repeat("x", 4000), ""))
+	}
+	if err := in.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	out = (&ActionRuntime{Engine: e}).RunAction(context.Background(), testActionOwner(t), testAction(), in)
+	if out.ErrorCode != "INVALID_ARGUMENT" || e.volumeCreates != 0 || e.next != 0 {
+		t.Fatalf("oversized encoded archive reached engine allocation: %+v", out)
+	}
+}
+
+type cleanupFailActionEngine struct {
+	*actionEngineFake
+	fail bool
+}
+
+func (e *cleanupFailActionEngine) RemoveVolume(ctx context.Context, name string) error {
+	if e.fail {
+		return errors.New("volume cleanup unavailable")
+	}
+	return e.fakeEngine.RemoveVolume(ctx, name)
+}
+
+func TestActionRuntimeCleanupFailureRetainsJournalAndRefusesConfirmedCompletion(t *testing.T) {
+	fake := &actionEngineFake{fakeEngine: newFakeEngine(), archive: outputArchive(t, &tar.Header{Name: "work/out", Typeflag: tar.TypeReg, Size: 1})}
+	fake.present = true
+	engine := &cleanupFailActionEngine{actionEngineFake: fake, fail: true}
+	runtime := &ActionRuntime{Engine: engine}
+	owner := testActionOwner(t)
+	out := runtime.RunAction(context.Background(), owner, testAction(), runnerclient.ActionInputs{})
+	if out.ErrorCode != "INTERNAL" || out.TerminationConfirmed || len(out.Files) != 0 || len(fake.volumes) != 1 {
+		t.Fatalf("cleanup failure acknowledged completion: %+v", out)
+	}
+	if _, err := os.Stat(filepath.Join(owner.Directory, actionRecordFile)); err != nil {
+		t.Fatal("cleanup failure discarded recovery journal", err)
+	}
+	engine.fail = false
+	if err := runtime.CleanupAction(context.Background(), owner); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.volumes) != 0 {
+		t.Fatal("recovery retained owned volume")
+	}
+	if _, err := os.Stat(filepath.Join(owner.Directory, actionRecordFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("recovery journal remained after successful cleanup", err)
+	}
+}
+
+type ambiguousActionEngine struct {
+	*actionEngineFake
+	volume    bool
+	container bool
+}
+
+func (e ambiguousActionEngine) CreateVolume(ctx context.Context, name string, labels map[string]string) error {
+	if err := e.fakeEngine.CreateVolume(ctx, name, labels); err != nil {
+		return err
+	}
+	if e.volume {
+		return errors.New("lost create response")
+	}
+	return nil
+}
+func (e ambiguousActionEngine) CreateContainer(ctx context.Context, name string, spec Spec) (string, error) {
+	id, err := e.fakeEngine.CreateContainer(ctx, name, spec)
+	if err != nil {
+		return id, err
+	}
+	if e.container {
+		return "", errors.New("lost create response")
+	}
+	return id, nil
+}
+
+func TestActionRecoveryHandlesAmbiguousAllocationResponses(t *testing.T) {
+	for _, volume := range []bool{true, false} {
+		fake := &actionEngineFake{fakeEngine: newFakeEngine()}
+		fake.present = true
+		owner := testActionOwner(t)
+		runtime := &ActionRuntime{Engine: ambiguousActionEngine{actionEngineFake: fake, volume: volume, container: !volume}}
+		out := runtime.RunAction(context.Background(), owner, testAction(), runnerclient.ActionInputs{})
+		if out.ErrorCode == "" || out.TerminationConfirmed || len(fake.volumes) != 0 || len(fake.containers) != 0 {
+			t.Fatalf("ambiguous create leaked resources: %+v", out)
+		}
+		if _, err := os.Stat(filepath.Join(owner.Directory, actionRecordFile)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("completed cleanup retained journal", err)
 		}
 	}
 }

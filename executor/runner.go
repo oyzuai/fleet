@@ -42,6 +42,7 @@ const (
 
 // Config configures one run.
 type Config struct {
+	ManagerID              int64
 	ActionDriver           ActionDriver
 	ExecutionTrustDecision string
 	Readiness              *readiness.Binding

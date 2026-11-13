@@ -56,6 +56,7 @@ type Process struct {
 	// ActionRuntimeReady must probe that engine before capability reporting.
 	ActionEngine       string
 	ActionRuntimeReady func(context.Context) error
+	ActionCleanup      func(context.Context, runnerclient.ActionOwner) error
 	// Runner is the oyzu-executor executable.
 	Runner string
 	// Args are passed to every runner before the job's own flags, such as
@@ -97,6 +98,8 @@ type Process struct {
 	// adopted holds executors a crashed predecessor left running, by job
 	// directory name; each counts as a running slot until it exits.
 	adopted map[string]record
+	// blocked retains slots whose dead executors still need action recovery.
+	blocked map[string]bool
 	// poll is how often an adopted executor is checked; survivorPoll when 0.
 	poll time.Duration
 }
@@ -133,7 +136,7 @@ func (p *Process) Facts(ctx context.Context) (Facts, error) {
 		f[FactRenovate] = "true"
 	}
 	if p.ActionEngine != "" {
-		if p.ActionRuntimeReady == nil {
+		if p.ActionRuntimeReady == nil || p.ActionCleanup == nil {
 			return nil, errors.New("action runtime probe is missing")
 		}
 		if err := p.ActionRuntimeReady(ctx); err != nil {
@@ -148,7 +151,7 @@ func (p *Process) Facts(ctx context.Context) (Facts, error) {
 func (p *Process) Capacity(context.Context) (Capacity, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	c := Capacity{Max: p.slots(), Running: len(p.inUse) + len(p.adopted)}
+	c := Capacity{Max: p.slots(), Running: len(p.inUse) + len(p.adopted) + len(p.blocked)}
 	free := p.slots() - c.Running
 	for i := 0; i < p.slots() && len(c.Ready) < free; i++ {
 		id := SlotID(strconv.Itoa(i))
@@ -168,13 +171,17 @@ func (p *Process) Start(ctx context.Context, slot SlotID, c runnerclient.Claim) 
 	if p.inUse == nil {
 		p.inUse = map[SlotID]*proc{}
 	}
-	if _, busy := p.inUse[slot]; busy {
+	if _, busy := p.inUse[slot]; busy || len(p.inUse)+len(p.adopted)+len(p.blocked) >= p.slots() {
 		p.mu.Unlock()
 		return Handle{}, fmt.Errorf("slot %s is not ready", slot)
 	}
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
-	dir := filepath.Join(p.jobsDir(), fmt.Sprintf("job-%d-%d-%s", c.JobID, c.Attempt, hex.EncodeToString(suffix)))
+	dir, err := filepath.Abs(filepath.Join(p.jobsDir(), fmt.Sprintf("job-%d-%d-%s", c.JobID, c.Attempt, hex.EncodeToString(suffix))))
+	if err != nil {
+		p.mu.Unlock()
+		return Handle{}, err
+	}
 	pr := &proc{dir: dir, done: make(chan struct{})}
 	p.inUse[slot] = pr
 	p.mu.Unlock()
@@ -197,6 +204,11 @@ func (p *Process) start(ctx context.Context, pr *proc, c runnerclient.Claim) err
 	if err != nil {
 		return err
 	}
+	if p.ActionEngine != "" {
+		if err := runnerclient.WriteActionOwner(runnerclient.ActionOwner{ManagerID: p.Manager, JobID: c.JobID, Attempt: c.Attempt, Directory: jobDir}); err != nil {
+			return err
+		}
+	}
 	tokenFile := filepath.Join(jobDir, StartupTokenFile)
 	if err := os.MkdirAll(filepath.Join(jobDir, "kind-tmp"), 0o700); err != nil {
 		return err
@@ -213,6 +225,9 @@ func (p *Process) start(ctx context.Context, pr *proc, c runnerclient.Claim) err
 	}
 	args := append(append([]string{}, p.Args...),
 		"--server", p.Server, "--startup-token-file", tokenFile, "--work-dir", filepath.Join(jobDir, "work"), "--secrets-dir", filepath.Join(jobDir, "kind-tmp"), "--job-dir", jobDir)
+	if p.ActionEngine != "" {
+		args = append(args, "--manager-id", strconv.FormatInt(p.Manager, 10))
+	}
 	if c.ExecutionTrustDecision != "" {
 		args = append(args, "--execution-trust-decision", c.ExecutionTrustDecision)
 	}
@@ -284,7 +299,7 @@ func processExit(ps *os.ProcessState, waitErr error, logName string) Exit {
 
 // Teardown implements Driver. A runner still running is interrupted, given
 // StopGrace to report, then killed.
-func (p *Process) Teardown(_ context.Context, h Handle) error {
+func (p *Process) Teardown(ctx context.Context, h Handle) error {
 	pr, err := p.proc(h)
 	if err != nil {
 		return err
@@ -312,7 +327,13 @@ func (p *Process) Teardown(_ context.Context, h Handle) error {
 		}
 		pr.log.Close()
 	}
+	if err = p.cleanupActionDirectory(ctx, pr.dir); err != nil {
+		return err
+	}
 	err = os.RemoveAll(pr.dir)
+	if err != nil {
+		return err
+	}
 	p.mu.Lock()
 	delete(p.inUse, h.Slot)
 	p.mu.Unlock()
@@ -351,6 +372,9 @@ func (p *Process) Reap(ctx context.Context, live []JobID) error {
 	for _, e := range entries {
 		if job, ok := jobOfDir(e.Name()); ok && !keepDir[e.Name()] && !keepJob[job] && p.survives(e.Name()) {
 			keepDir[e.Name()] = true
+			if _, err := os.Stat(filepath.Join(p.jobsDir(), e.Name(), runnerclient.ActionOwnerFile)); !errors.Is(err, os.ErrNotExist) {
+				p.blockActionDirectory(e.Name())
+			}
 		}
 	}
 	var errs []error
@@ -394,10 +418,19 @@ func (p *Process) Reap(ctx context.Context, live []JobID) error {
 		if !ok || keepDir[e.Name()] || keepJob[job] || blocked[e.Name()] {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(p.jobsDir(), e.Name())); err != nil {
+		directory := filepath.Join(p.jobsDir(), e.Name())
+		if err := p.cleanupActionDirectory(ctx, directory); err != nil {
+			p.blockActionDirectory(e.Name())
+			errs = append(errs, err)
+			continue
+		}
+		if err := os.RemoveAll(directory); err != nil {
 			errs = append(errs, err)
 		} else if p.Log != nil {
 			p.Log.Info("reaped a job directory", "dir", e.Name())
+		}
+		if _, err := os.Stat(directory); errors.Is(err, os.ErrNotExist) {
+			p.releaseDirectory(directory)
 		}
 	}
 	return errors.Join(errs...)
@@ -451,9 +484,23 @@ func (p *Process) watchSurvivor(name string, r record) {
 		}
 		break
 	}
-	err := os.RemoveAll(filepath.Join(p.jobsDir(), name))
+	directory := filepath.Join(p.jobsDir(), name)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	err := p.cleanupActionDirectory(ctx, directory)
+	cancel()
+	if err == nil {
+		err = os.RemoveAll(directory)
+	}
 	p.mu.Lock()
 	delete(p.adopted, name)
+	if err != nil {
+		if p.blocked == nil {
+			p.blocked = map[string]bool{}
+		}
+		p.blocked[name] = true
+	} else {
+		delete(p.blocked, name)
+	}
 	p.mu.Unlock()
 	if err != nil {
 		p.logger().Warn("an adopted executor exited; removing its directory failed, the reaper will retry", "dir", name, "error", err)

@@ -222,15 +222,18 @@ func run(args []string, log *slog.Logger) error {
 		switch *driverName {
 		case "process":
 			var actionReady func(context.Context) error
+			var actionCleanup func(context.Context, runnerclient.ActionOwner) error
 			if *actionEngine != "" {
 				eng, err := container.NewDocker(*actionEngine, container.DockerOptions{})
 				if err != nil {
 					return err
 				}
-				actionReady = (&container.ActionRuntime{Engine: eng}).Ready
+				runtime := &container.ActionRuntime{Engine: eng}
+				actionReady = runtime.Ready
+				actionCleanup = runtime.CleanupAction
 			}
 			driver = &manager.Process{
-				ActionEngine: *actionEngine, ActionRuntimeReady: actionReady,
+				ActionEngine: *actionEngine, ActionRuntimeReady: actionReady, ActionCleanup: actionCleanup,
 				Runner: *executor, Args: runnerArgs, Server: st.Server, Manager: st.ManagerID,
 				WorkDir: *workDir, LogDir: filepath.Join(*stateDir, "logs"), Slots: *concurrency, Docker: *docker,
 				Renovate: *renovate != "",
