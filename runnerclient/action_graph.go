@@ -300,6 +300,19 @@ func (g *ActionGraph) Select(a ActionAssignment) ([]ActionSelection, error) {
 	for _, o := range a.Outputs {
 		lookup := a.WorkingDirectory
 		if o.Path != "" {
+			parent := a.WorkingDirectory
+			if dir := path.Dir(o.Path); dir != "." {
+				if parent != "" {
+					parent += "/"
+				}
+				parent += dir
+			}
+			resolved, e := g.Resolve(parent, true)
+			if e != nil || resolved.Missing || resolved.Kind != "directory" {
+				return nil, errors.New("missing or dangling output parent")
+			}
+		}
+		if o.Path != "" {
 			if lookup != "" {
 				lookup += "/"
 			}
@@ -328,18 +341,8 @@ func (g *ActionGraph) Select(a ActionAssignment) ([]ActionSelection, error) {
 				return errors.New("conflicting output projection")
 			}
 			if n.Kind == "symlink" {
-				original, e := g.Resolve(n.Path, true)
-				if e != nil {
+				if _, e := g.Resolve(n.Path, true); e != nil {
 					return e
-				}
-				projected := a.WorkingDirectory
-				if projected != "" && logical != "" {
-					projected += "/"
-				}
-				projected += logical
-				rebased, e := g.Resolve(projected, true)
-				if e != nil || original.Path != rebased.Path || original.Missing != rebased.Missing {
-					return errors.New("unsafe output link projection")
 				}
 			}
 			selected[logical] = n
@@ -374,12 +377,158 @@ func (g *ActionGraph) Select(a ActionAssignment) ([]ActionSelection, error) {
 			}
 		}
 	}
+	if err := g.validateDeliveredLinks(a, selected); err != nil {
+		return nil, err
+	}
 	out := make([]ActionSelection, 0, len(selected))
 	for p, n := range selected {
 		out = append(out, ActionSelection{Logical: p, Node: n})
 	}
 	slices.SortFunc(out, func(a, b ActionSelection) int { return strings.Compare(a.Logical, b.Logical) })
 	return out, nil
+}
+
+// Delivered parents are real directories, not the input aliases that selected
+// them. Copy only bounded metadata into that namespace and preserve link text.
+func (g *ActionGraph) validateDeliveredLinks(a ActionAssignment, selected map[string]ActionNode) error {
+	hasLinks := false
+	for _, n := range selected {
+		if n.Kind == "symlink" {
+			hasLinks = true
+			break
+		}
+	}
+	if !hasLinks {
+		return nil
+	}
+	anchored := func(p string) string {
+		if a.WorkingDirectory == "" {
+			return p
+		}
+		if p == "" {
+			return a.WorkingDirectory
+		}
+		return a.WorkingDirectory + "/" + p
+	}
+	parents := map[string]string{}
+	for logical, n := range selected {
+		p := anchored(logical)
+		if n.Kind != "directory" {
+			p = path.Dir(p)
+			if p == "." {
+				p = ""
+			}
+		}
+		for p != "" {
+			lookup, e := g.Resolve(p, true)
+			if e != nil || lookup.Missing || lookup.Kind != "directory" {
+				return errors.New("invalid delivered output parent")
+			}
+			parents[p] = lookup.Path
+			p = path.Dir(p)
+			if p == "." {
+				p = ""
+			}
+		}
+	}
+	view := map[string]ActionNode{}
+	origins := map[string]string{}
+	for p, n := range g.nodes {
+		view[p] = n
+		origins[p] = p
+	}
+	ordered := make([]string, 0, len(parents))
+	for p := range parents {
+		ordered = append(ordered, p)
+	}
+	slices.SortFunc(ordered, func(a, b string) int {
+		if depth := strings.Count(a, "/") - strings.Count(b, "/"); depth != 0 {
+			return depth
+		}
+		return strings.Compare(a, b)
+	})
+	for _, logical := range ordered {
+		physical := parents[logical]
+		if physical == logical {
+			continue
+		}
+		for p := range view {
+			if p == logical || strings.HasPrefix(p, logical+"/") {
+				delete(view, p)
+				delete(origins, p)
+			}
+		}
+		for p, n := range g.nodes {
+			suffix := ""
+			if p != physical {
+				var ok bool
+				suffix, ok = strings.CutPrefix(p, physical+"/")
+				if physical == "" {
+					suffix = p
+					ok = true
+				}
+				if !ok {
+					continue
+				}
+			}
+			delivered := logical
+			if suffix != "" {
+				delivered += "/" + suffix
+			}
+			n.Path = delivered
+			view[delivered] = n
+			origins[delivered] = p
+			if len(view) > MaxActionEntries {
+				return errors.New("delivered metadata expansion exceeds limit")
+			}
+		}
+	}
+	for logical, n := range selected {
+		p := anchored(logical)
+		n.Path = p
+		view[p] = n
+		origins[p] = selected[logical].Path
+	}
+	nodes := make([]ActionNode, 0, len(view)-1)
+	for p, n := range view {
+		if p != "" {
+			nodes = append(nodes, n)
+		}
+	}
+	projected, err := NewActionGraph(nodes)
+	if err != nil {
+		return err
+	}
+	originalPath := func(p string) string {
+		if source, ok := origins[p]; ok {
+			return source
+		}
+		suffix := ""
+		for p != "" {
+			suffix = path.Base(p) + "/" + suffix
+			p = path.Dir(p)
+			if p == "." {
+				p = ""
+			}
+			if source, ok := origins[p]; ok {
+				return strings.TrimSuffix(strings.TrimPrefix(source+"/"+suffix, "/"), "/")
+			}
+		}
+		return strings.TrimSuffix(suffix, "/")
+	}
+	for logical, n := range selected {
+		if n.Kind == "symlink" {
+			before, e := g.Resolve(n.Path, true)
+			if e != nil {
+				return e
+			}
+			after, e := projected.Resolve(anchored(logical), true)
+			if e != nil || before.Path != originalPath(after.Path) || before.Missing != after.Missing {
+				return errors.New("unsafe output link projection")
+			}
+		}
+	}
+	return nil
 }
 
 func (c ActionCompletion) Validate() error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/oyzuai/fleet/runnerclient"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -12,6 +13,7 @@ func TestActionCapabilityRequiresExplicitReadyRuntime(t *testing.T) {
 	ctx := context.Background()
 	p := &Process{}
 	f, err := p.Facts(ctx)
+	nativeCPU := f[FactCPU]
 	if err != nil || f["oyzu.io/action-runtime"] != "" {
 		t.Fatalf("ordinary process advertises action: %v %v", f, err)
 	}
@@ -25,7 +27,8 @@ func TestActionCapabilityRequiresExplicitReadyRuntime(t *testing.T) {
 	}
 	p.ActionRuntimeReady = func(context.Context) error { return nil }
 	p.ActionCleanup = func(context.Context, runnerclient.ActionOwner) error { return nil }
-	p.ActionCapacity = func(context.Context) (int64, int64, error) { return 8 << 30, 4, nil }
+	nativeCores, _ := strconv.ParseInt(nativeCPU, 10, 64)
+	p.ActionCapacity = func(context.Context) (int64, int64, error) { return 8 << 30, nativeCores + 1, nil }
 	f, err = p.Facts(ctx)
 	if err != nil || f["oyzu.io/action-runtime"] != "linux-container" {
 		t.Fatalf("ready runtime not advertised: %v %v", f, err)
@@ -34,6 +37,9 @@ func TestActionCapabilityRequiresExplicitReadyRuntime(t *testing.T) {
 		if f["oyzu.io/action-feature-"+feature] != "true" {
 			t.Fatal("missing action feature")
 		}
+	}
+	if f[FactCPU] != nativeCPU || f["oyzu.io/action-cpu"] != strconv.FormatInt(nativeCores+1, 10) || f["oyzu.io/action-memory-bytes"] != "8589934592" {
+		t.Fatalf("action engine changed native capacity: %+v", f)
 	}
 	p.ExtraEnv = []string{"FLEET_ACTION_ENGINE"}
 	p.environ = func() []string { return []string{"FLEET_ACTION_ENGINE=unix:///untrusted.sock"} }

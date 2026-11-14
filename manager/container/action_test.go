@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,20 +78,21 @@ func outputArchive(t *testing.T, headers ...*tar.Header) []byte {
 
 type actionEngineFake struct {
 	*fakeEngine
-	spec          Spec
-	archive       []byte
-	verifyErr     error
-	wait          func(context.Context) error
-	stopErr       error
-	running       bool
-	stops         int
-	exitCode      int
-	inputTar      []byte
-	volumeCreates int
-	starts        []string
-	holderLost    bool
-	archiveReads  int
-	onArchive     func()
+	spec           Spec
+	archive        []byte
+	verifyErr      error
+	wait           func(context.Context) error
+	stopErr        error
+	running        bool
+	stops          int
+	exitCode       int
+	inputTar       []byte
+	volumeCreates  int
+	starts         []string
+	holderLost     atomic.Bool
+	holderObserved chan struct{}
+	archiveReads   int
+	onArchive      func()
 }
 
 func (e *actionEngineFake) CreateVolume(ctx context.Context, name string, labels map[string]string) error {
@@ -150,7 +152,14 @@ func (e *actionEngineFake) InspectContainer(ctx context.Context, id string) (Sta
 		return State{}, err
 	}
 	if c.spec.ActionControl {
-		return State{Running: c.started && !c.stopped && !e.holderLost}, nil
+		lost := e.holderLost.Load()
+		if lost && e.holderObserved != nil {
+			select {
+			case e.holderObserved <- struct{}{}:
+			default:
+			}
+		}
+		return State{Running: c.started && !c.stopped && !lost}, nil
 	}
 	return State{Running: e.running, ExitCode: e.exitCode}, nil
 }
@@ -402,14 +411,32 @@ func TestActionSnapshotSelectsLinksAliasesAndBoundsUnselectedData(t *testing.T) 
 	}
 }
 
+func TestActionHolderObservationFailureCannotRecoverIntoSuccess(t *testing.T) {
+	e := &actionEngineFake{fakeEngine: newFakeEngine(), archive: outputArchive(t, &tar.Header{Name: "work/out", Typeflag: tar.TypeReg, Size: 1}), holderObserved: make(chan struct{}, 1)}
+	e.present = true
+	e.onArchive = func() {
+		e.holderLost.Store(true)
+		select {
+		case <-e.holderObserved:
+			e.holderLost.Store(false)
+		case <-time.After(2 * time.Second):
+			t.Error("holder loss was not observed")
+		}
+	}
+	out := (&ActionRuntime{Engine: e, HelperPath: testHelper(t)}).RunAction(context.Background(), testActionOwner(t), testAction(), runnerclient.ActionInputs{})
+	if out.ErrorCode != "INTERNAL" || !out.TerminationConfirmed || len(out.Files)+len(out.Symlinks)+len(out.WorkspaceNodes) != 0 || len(e.volumes)+len(e.containers) != 0 {
+		t.Fatalf("transient observation recovered into success: %+v", out)
+	}
+}
+
 func TestActionHolderLossDiscardsOutputsAndCleansEveryRole(t *testing.T) {
 	for _, duringRead := range []bool{false, true} {
 		e := &actionEngineFake{fakeEngine: newFakeEngine(), archive: outputArchive(t, &tar.Header{Name: "work/out", Typeflag: tar.TypeReg, Size: 1})}
 		e.present = true
 		if duringRead {
-			e.onArchive = func() { e.holderLost = true }
+			e.onArchive = func() { e.holderLost.Store(true) }
 		} else {
-			e.wait = func(context.Context) error { e.holderLost = true; return errors.New("holder observation lost") }
+			e.wait = func(context.Context) error { e.holderLost.Store(true); return errors.New("holder observation lost") }
 		}
 		out := (&ActionRuntime{Engine: e, HelperPath: testHelper(t)}).RunAction(context.Background(), testActionOwner(t), testAction(), runnerclient.ActionInputs{})
 		if out.ErrorCode != "INTERNAL" || !out.TerminationConfirmed || len(out.Files)+len(out.Symlinks)+len(out.WorkspaceNodes) != 0 || len(e.volumes)+len(e.containers) != 0 {

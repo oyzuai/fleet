@@ -154,8 +154,8 @@ func (p *Process) Facts(ctx context.Context) (Facts, error) {
 		if err != nil || memory <= 0 || cpus <= 0 {
 			return nil, errors.New("action capacity is unavailable")
 		}
-		f["oyzu.io/memory"] = strconv.FormatInt(memory/(1<<20), 10) + "Mi"
-		f[FactCPU] = strconv.FormatInt(cpus, 10)
+		f["oyzu.io/action-memory-bytes"] = strconv.FormatInt(memory, 10)
+		f["oyzu.io/action-cpu"] = strconv.FormatInt(cpus, 10)
 	}
 	return f, nil
 }

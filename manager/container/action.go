@@ -165,7 +165,21 @@ func (r *ActionRuntime) RunAction(ctx context.Context, owner runnerclient.Action
 	defer cancel()
 	holderLost := make(chan struct{})
 	watchDone := make(chan struct{})
-	defer func() { cancel(); <-watchDone }()
+	lost := func() bool {
+		select {
+		case <-holderLost:
+			return true
+		default:
+			return false
+		}
+	}
+	defer func() {
+		cancel()
+		<-watchDone
+		if lost() {
+			result = runnerclient.ActionCompletion{ErrorCode: "INTERNAL", Message: "Workspace holder observation was lost.", TerminationConfirmed: result.TerminationConfirmed}
+		}
+	}()
 	go func() {
 		defer close(watchDone)
 		ticker := time.NewTicker(250 * time.Millisecond)
@@ -175,11 +189,11 @@ func (r *ActionRuntime) RunAction(ctx context.Context, owner runnerclient.Action
 			case <-runCtx.Done():
 				return
 			case <-ticker.C:
-				alive := holderAlive(runCtx)
-				if runCtx.Err() != nil {
+				state, err := r.Engine.InspectContainer(runCtx, holder)
+				if err != nil && runCtx.Err() != nil && errors.Is(err, runCtx.Err()) {
 					return
 				}
-				if !alive {
+				if err != nil || !state.Running || state.OOMKilled || state.Error != "" {
 					close(holderLost)
 					cancel()
 					return
@@ -247,7 +261,7 @@ func (r *ActionRuntime) RunAction(ctx context.Context, owner runnerclient.Action
 		result.Message = "Action outputs unavailable or over limit."
 		return result
 	}
-	if !holderAlive(ctx) {
+	if lost() || !holderAlive(ctx) {
 		result.ErrorCode = "INTERNAL"
 		result.Message = "Workspace holder was lost during collection."
 		return result
@@ -260,7 +274,7 @@ func (r *ActionRuntime) RunAction(ctx context.Context, owner runnerclient.Action
 		result.Files = nil
 		result.Directories = nil
 	} else {
-		if !holderAlive(ctx) {
+		if lost() || !holderAlive(ctx) {
 			result.ErrorCode = "INTERNAL"
 			result.Message = "Workspace holder was lost before acceptance."
 			return result

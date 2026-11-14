@@ -106,3 +106,35 @@ func TestActionLeaseLossFencesLateCompletion(t *testing.T) {
 		t.Fatalf("lease loss published late result: %v, %d", err, finishes)
 	}
 }
+
+func TestActionCancellationDiscardsSuccessfulLinkGraphBeforeFinish(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var finished runnerclient.ActionCompletion
+	finishes := 0
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/runner/v1/job/action/inputs":
+			json.NewEncoder(w).Encode(runnerclient.ActionInputs{})
+		case "/runner/v1/job/action/finish":
+			finishes++
+			json.NewDecoder(r.Body).Decode(&finished)
+			w.WriteHeader(204)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer s.Close()
+	a := &runnerclient.ActionAssignment{InstanceID: "instance", OperationID: "operation", Image: "image@sha256:" + strings.Repeat("a", 64), Arguments: []string{"tool"}, OutputStyle: "paths", WorkspaceBytes: runnerclient.MaxWorkspaceBytes, WorkspaceInodes: runnerclient.MaxWorkspaceInodes, TimeoutSeconds: 10, NanoCPUs: 1e9, MemoryBytes: 64 << 20, PidsLimit: 32}
+	cfg := Config{Client: runnerclient.New(s.URL, nil), Log: slog.New(slog.DiscardHandler), ActionDriver: actionDriverFake{run: func(context.Context) runnerclient.ActionCompletion {
+		cancel()
+		zero := 0
+		return runnerclient.ActionCompletion{ExitCode: &zero, TerminationConfirmed: true, Stdout: []byte("success"), Symlinks: []runnerclient.ActionSymlink{{Path: "out", Target: "."}}, WorkspaceNodes: []runnerclient.ActionNode{{Path: "out", Kind: "symlink", Target: "."}}}
+	}}}
+	if err := runAction(ctx, cfg, runnerclient.Started{JobToken: "live", Expires: time.Now().Add(time.Minute), Job: runnerclient.Job{Kind: runnerclient.ActionJob, Action: a}}); err != nil {
+		t.Fatal(err)
+	}
+	if finishes != 1 || finished.ErrorCode != "CANCELLED" || !finished.TerminationConfirmed || finished.ExitCode != nil || len(finished.Stdout)+len(finished.Stderr)+len(finished.Files)+len(finished.Directories)+len(finished.Symlinks)+len(finished.WorkspaceNodes) != 0 {
+		t.Fatalf("cancelled completion: %+v", finished)
+	}
+}

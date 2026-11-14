@@ -121,3 +121,41 @@ func TestActionLookupDereferenceAndTargetAggregateBounds(t *testing.T) {
 		t.Fatal("aggregate target bound not enforced")
 	}
 }
+
+func TestActionDeliveredProjectionCannotHideAliasDepth(t *testing.T) {
+	for _, target := range []string{"../../x", "file"} {
+		nodes := []ActionNode{{Path: "real", Kind: "directory"}, {Path: "real/sub", Kind: "directory"}, {Path: "real/sub/file", Kind: "file"}, {Path: "x", Kind: "file"}, {Path: "alias", Kind: "symlink", Target: "real/sub"}, {Path: "real/sub/link", Kind: "symlink", Target: target}}
+		g, err := NewActionGraph(nodes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := ActionAssignment{OutputStyle: "paths", Outputs: []ActionOutput{{Path: "alias/link", Kind: "any"}}}
+		_, err = g.Select(a)
+		if (err != nil) != (target == "../../x") {
+			t.Fatalf("projected %q: %v", target, err)
+		}
+		c := ActionCompletion{Symlinks: []ActionSymlink{{Path: "alias/link", Target: target}}, WorkspaceNodes: nodes}
+		if err = ValidateActionProjection(a, c); (err != nil) != (target == "../../x") {
+			t.Fatalf("publication projection %q: %v", target, err)
+		}
+	}
+}
+
+func TestActionMissingFinalOutputAndDanglingParentDiffer(t *testing.T) {
+	g, err := NewActionGraph([]ActionNode{{Path: "alias", Kind: "symlink", Target: "absent"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := ActionAssignment{OutputStyle: "paths", Outputs: []ActionOutput{{Path: "missing", Kind: "any"}}}
+	if selection, err := g.Select(a); err != nil || len(selection) != 0 {
+		t.Fatalf("ordinary missing output: %+v %v", selection, err)
+	}
+	a.Outputs[0].Path = "alias"
+	if selection, err := g.Select(a); err != nil || len(selection) != 1 {
+		t.Fatalf("final dangling link: %+v %v", selection, err)
+	}
+	a.Outputs[0].Path = "alias/out"
+	if _, err := g.Select(a); err == nil {
+		t.Fatal("dangling output parent omitted silently")
+	}
+}

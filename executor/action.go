@@ -45,12 +45,15 @@ func runAction(ctx context.Context, cfg Config, st runnerclient.Started) error {
 		return errLost
 	}
 	if work.Err() != nil {
-		result.Files, result.Directories = nil, nil
+		result = runnerclient.ActionCompletion{TerminationConfirmed: result.TerminationConfirmed}
 		if result.TerminationConfirmed {
 			result.ErrorCode, result.Message = "CANCELLED", "Action stopped."
 		} else {
 			result.ErrorCode, result.Message = "INTERNAL", "Action termination was not confirmed."
 		}
+	}
+	if result.ErrorCode != "" {
+		result = runnerclient.ActionCompletion{ErrorCode: result.ErrorCode, Message: result.Message, TerminationConfirmed: result.TerminationConfirmed}
 	}
 	finish, done := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
 	defer done()

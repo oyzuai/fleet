@@ -91,6 +91,8 @@ memory and 64 MiB inode allowance. Host admission adds 320 MiB for bounded
 bootstrap and in-memory transfer/lifecycle space, plus holder CPU and PIDs.
 All sums use checked signed-int64 arithmetic. Runs compares the whole host
 reservation to each manager slot's share of reported engine memory and CPU.
+These use distinct `oyzu.io/action-memory-bytes` and `oyzu.io/action-cpu` facts;
+the native process facts retain the executor host's values.
 Core's action-memory maximum retains its meaning; no tenant aggregate budget
 is introduced. Missing capacity or an unrepresentable reservation refuses work.
 
