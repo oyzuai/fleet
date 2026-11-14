@@ -87,6 +87,10 @@ type actionEngineFake struct {
 	exitCode      int
 	inputTar      []byte
 	volumeCreates int
+	starts        []string
+	holderLost    bool
+	archiveReads  int
+	onArchive     func()
 }
 
 func (e *actionEngineFake) CreateVolume(ctx context.Context, name string, labels map[string]string) error {
@@ -109,7 +113,23 @@ func (e *actionEngineFake) VerifyActionContainer(_ context.Context, _ string, s 
 	return e.verifyErr
 }
 func (e *actionEngineFake) ReadContainerArchive(context.Context, string, string) ([]byte, error) {
+	e.archiveReads++
+	if e.onArchive != nil {
+		e.onArchive()
+	}
 	return e.archive, nil
+}
+func (e *actionEngineFake) StartContainer(ctx context.Context, id string) error {
+	c, err := e.fakeEngine.container(id)
+	if err != nil {
+		return err
+	}
+	role := c.spec.Labels["oyzu.io/action-role"]
+	e.starts = append(e.starts, role)
+	if role == "prepare" {
+		return errors.New("preparation must never start")
+	}
+	return e.fakeEngine.StartContainer(ctx, id)
 }
 func (e *actionEngineFake) ContainerOutput(context.Context, string) ([]byte, []byte, error) {
 	return []byte("stdout"), []byte("stderr"), nil
@@ -130,7 +150,7 @@ func (e *actionEngineFake) InspectContainer(ctx context.Context, id string) (Sta
 		return State{}, err
 	}
 	if c.spec.ActionControl {
-		return State{Running: c.started && !c.stopped}, nil
+		return State{Running: c.started && !c.stopped && !e.holderLost}, nil
 	}
 	return State{Running: e.running, ExitCode: e.exitCode}, nil
 }
@@ -180,6 +200,9 @@ func TestActionRuntimeIsolatesAndReturnsProcessResult(t *testing.T) {
 	}
 	if e.pulls != 0 || len(e.volumes) != 0 || len(e.containers) != 0 {
 		t.Fatal("pull or resource leak")
+	}
+	if !slices.Equal(e.starts, []string{"holder", "user"}) {
+		t.Fatalf("unexpected process starts %v", e.starts)
 	}
 }
 
@@ -376,5 +399,24 @@ func TestActionSnapshotSelectsLinksAliasesAndBoundsUnselectedData(t *testing.T) 
 	archive = outputArchive(t, &tar.Header{Name: "work/out", Typeflag: tar.TypeReg, Size: 1}, &tar.Header{Name: "work/unselected", Typeflag: tar.TypeReg, Size: runnerclient.MaxActionBytes})
 	if _, err = actionSnapshot(archive, a); err == nil {
 		t.Fatal("unselected workspace bytes evaded limit")
+	}
+}
+
+func TestActionHolderLossDiscardsOutputsAndCleansEveryRole(t *testing.T) {
+	for _, duringRead := range []bool{false, true} {
+		e := &actionEngineFake{fakeEngine: newFakeEngine(), archive: outputArchive(t, &tar.Header{Name: "work/out", Typeflag: tar.TypeReg, Size: 1})}
+		e.present = true
+		if duringRead {
+			e.onArchive = func() { e.holderLost = true }
+		} else {
+			e.wait = func(context.Context) error { e.holderLost = true; return errors.New("holder observation lost") }
+		}
+		out := (&ActionRuntime{Engine: e, HelperPath: testHelper(t)}).RunAction(context.Background(), testActionOwner(t), testAction(), runnerclient.ActionInputs{})
+		if out.ErrorCode != "INTERNAL" || !out.TerminationConfirmed || len(out.Files)+len(out.Symlinks)+len(out.WorkspaceNodes) != 0 || len(e.volumes)+len(e.containers) != 0 {
+			t.Fatalf("holder loss accepted/leaked: %+v", out)
+		}
+		if !duringRead && e.archiveReads != 0 {
+			t.Fatal("read outputs after holder loss")
+		}
 	}
 }

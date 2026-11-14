@@ -191,6 +191,9 @@ func (g *ActionGraph) Resolve(p string, followFinal bool) (ActionLookup, error) 
 		if current != "" {
 			candidate = current + "/" + c.name
 		}
+		if !ActionPath(candidate) {
+			return ActionLookup{}, errors.New("workspace lookup expansion exceeds path bounds")
+		}
 		n, exists := g.nodes[candidate]
 		last := true
 		for _, v := range pending {

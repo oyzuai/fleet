@@ -1,6 +1,7 @@
 package runnerclient
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -90,5 +91,33 @@ func TestActionGraphBoundsAndPhysicalParents(t *testing.T) {
 	}
 	if HasActionFeatures(nil) || HasActionFeatures(append(append([]string{}, ActionFeatures...), "unknown")) {
 		t.Fatal("accepted missing/unknown feature")
+	}
+}
+
+func TestActionLookupDereferenceAndTargetAggregateBounds(t *testing.T) {
+	for _, count := range []int{40, 41} {
+		nodes := []ActionNode{{Path: "dir", Kind: "directory"}}
+		for n := 0; n < count; n++ {
+			target := "dir"
+			if n+1 < count {
+				target = fmt.Sprint("l", n+1)
+			}
+			nodes = append(nodes, ActionNode{Path: fmt.Sprint("l", n), Kind: "symlink", Target: target})
+		}
+		g, err := NewActionGraph(nodes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = g.Resolve("l0", true)
+		if (err != nil) != (count == 41) {
+			t.Fatalf("%d dereferences: %v", count, err)
+		}
+	}
+	nodes := []ActionNode{}
+	for n := 0; n < 257; n++ {
+		nodes = append(nodes, ActionNode{Path: fmt.Sprint("l", n), Kind: "symlink", Target: strings.Repeat("x", 4096)})
+	}
+	if _, err := NewActionGraph(nodes); err == nil {
+		t.Fatal("aggregate target bound not enforced")
 	}
 }

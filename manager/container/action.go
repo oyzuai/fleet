@@ -175,7 +175,11 @@ func (r *ActionRuntime) RunAction(ctx context.Context, owner runnerclient.Action
 			case <-runCtx.Done():
 				return
 			case <-ticker.C:
-				if !holderAlive(runCtx) {
+				alive := holderAlive(runCtx)
+				if runCtx.Err() != nil {
+					return
+				}
+				if !alive {
 					close(holderLost)
 					cancel()
 					return
@@ -256,6 +260,11 @@ func (r *ActionRuntime) RunAction(ctx context.Context, owner runnerclient.Action
 		result.Files = nil
 		result.Directories = nil
 	} else {
+		if !holderAlive(ctx) {
+			result.ErrorCode = "INTERNAL"
+			result.Message = "Workspace holder was lost before acceptance."
+			return result
+		}
 		result.Files = snapshot.Files
 		result.Directories = snapshot.Directories
 		result.Symlinks = snapshot.Symlinks
