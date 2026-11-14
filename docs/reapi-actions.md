@@ -156,11 +156,40 @@ Oyzu cache acceptance proof is owned by
 [platform #718](https://github.com/oyzuai/platform/issues/718). Unit fixtures
 alone do not establish runtime isolation or REAPI conformance.
 
-The [crash recovery reproducer](../testdata/action-crash-proof/main.go) takes a
-locally cached immutable Linux image as its argument. On a trusted controller
-with engine access, it observes a live action, kills only its own executor
-helper, reconstructs `Process` and invokes `Reap`. It checks that the recorded
-action and volume are removed, a separate task-owned foreign sentinel survives,
-and capacity becomes reusable. The reproducer removes its sentinel and scratch
-directory on exit. Its controller engine connection must never be mounted into
-the action child.
+The [runtime and crash reproducer](../testdata/action-crash-proof/main.go) uses
+the actual Docker APIs and a locally cached immutable Alpine image. It has two
+sequential invocations inside a trusted Linux controller:
+
+```sh
+export FLEET_CRASH_ENGINE=unix:///var/run/docker.sock
+export FLEET_ACTION_HELPER=/artifacts/oyzu-executor
+export TMPDIR=/state
+/artifacts/action-crash-proof runtime "$IMAGE"
+/artifacts/action-crash-proof "$IMAGE"
+```
+
+`IMAGE` is the cached `name@sha256:digest`; the driver never pulls it. The helper
+is the trusted static Linux/amd64 executor artifact. Mount artifacts read-only
+and use a private Linux volume for `/state` so owner-anchor permissions are real.
+Only the controller receives the engine socket. Record the driver/helper hashes
+from their build receipt and the actual image digest with the run's output.
+
+`runtime` checks stopped-copy/start/stop/archive persistence, contained aliases,
+literal output links, executable bits and empty directories. The fixture checks
+UID 1000, root write denial, absent socket/bootstrap/canary environment, sandbox
+controls and refused external networking. Byte exhaustion attempts 8 MiB in a
+4 MiB workspace under a separate 64 MiB action-memory cap. Inode exhaustion uses
+64 inodes and overwrites an existing result inode. Both retain unselected
+allocations through collection and compare their ENOSPC observations with the
+actual stopped archive, below transfer/message limits. The final cases stop the
+exact owned holder or cancel after an observed running-user ready marker,
+requiring observed user termination and no successful output/link/graph data.
+
+The original image-only mode kills only its own trusted child process after
+observing a live user and holder. A fresh `Process.Reap` removes the exact owned
+attempt, preserves a separate task-owned foreign sentinel and restores capacity.
+The controller then cleans its sentinel by full nonce/owner labels. This does
+not test a whole-controller restart. Both modes emit JSON with build source and
+image identities, require exact cleanup before passing, and retain recovery
+directories on incomplete cleanup. Their source and unit tests alone do not
+establish the real-engine outcomes.
