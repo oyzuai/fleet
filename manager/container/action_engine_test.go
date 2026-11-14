@@ -102,17 +102,8 @@ func TestActionEngineRejectsOversizedLogs(t *testing.T) {
 func TestActionVolumeRequiresExactTmpfsBoundsAndOwnership(t *testing.T) {
 	labels := map[string]string{"oyzu.io/action": "private", "oyzu.io/action-role": "workspace"}
 	for _, unsafe := range []bool{false, true} {
-		d, _ := newStub(t, map[string]func(http.ResponseWriter, *http.Request){
-			"POST /volumes/create": func(w http.ResponseWriter, r *http.Request) {
-				var body struct {
-					Driver     string
-					DriverOpts map[string]string
-				}
-				if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Driver != "local" || !reflect.DeepEqual(body.DriverOpts, workspaceOptions(4096, 64)) {
-					t.Errorf("unbounded volume request: %+v %v", body, err)
-				}
-				json.NewEncoder(w).Encode(map[string]string{"Name": "private"})
-			},
+		d, stub := newStub(t, map[string]func(http.ResponseWriter, *http.Request){
+			"POST /volumes/create": reply(http.StatusCreated, `{"Name":"private"}`),
 			"GET /volumes/private": func(w http.ResponseWriter, r *http.Request) {
 				options := workspaceOptions(4096, 64)
 				if unsafe {
@@ -123,6 +114,17 @@ func TestActionVolumeRequiresExactTmpfsBoundsAndOwnership(t *testing.T) {
 		})
 		if err := d.CreateActionVolume(context.Background(), "private", labels, 4096, 64); (err != nil) != unsafe {
 			t.Fatalf("volume acceptance: %v", err)
+		}
+		// newStub consumes and records the body before dispatching its handler.
+		var body struct {
+			Name, Driver       string
+			DriverOpts, Labels map[string]string
+		}
+		stub.mu.Lock()
+		raw := append([]byte{}, stub.body["POST /volumes/create"]...)
+		stub.mu.Unlock()
+		if err := json.Unmarshal(raw, &body); err != nil || body.Name != "private" || body.Driver != "local" || !reflect.DeepEqual(body.DriverOpts, workspaceOptions(4096, 64)) || !reflect.DeepEqual(body.Labels, labels) {
+			t.Fatalf("unbounded or unowned volume request: %+v %v", body, err)
 		}
 	}
 	spec := holderSpec(testAction().Image, "work", "bootstrap", labels)
