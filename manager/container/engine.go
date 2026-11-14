@@ -61,6 +61,10 @@ type Engine interface {
 
 // Info is the engine host's platform.
 type Info struct {
+	MemoryLimit     bool
+	CpuCfsQuota     bool
+	CpuCfsPeriod    bool
+	PidsLimit       bool
 	ID              string
 	ServerVersion   string
 	SecurityOptions []string
@@ -75,12 +79,21 @@ type Info struct {
 type Spec struct {
 	Image string
 	Cmd   []string
+	// Entrypoint overrides the image entrypoint when non-nil. Actions set it
+	// explicitly so the admitted argv is the process that runs.
+	Entrypoint []string
 	// User is uid:gid; jobs never run as root.
 	User   string
 	Labels map[string]string
 	// Volume is mounted at WorkDir; it is the only mount.
-	Volume  string
-	WorkDir string
+	Volume          string
+	WorkDir         string
+	VolumePath      string
+	VolumeNoCopy    bool
+	VolumeReadOnly  bool
+	BootstrapVolume string
+	// ActionControl disables image lifecycle hooks for trusted helper containers.
+	ActionControl bool
 	// NanoCPUs and MemoryBytes cap the container; 0 means no cap.
 	NanoCPUs    int64
 	MemoryBytes int64
@@ -122,8 +135,10 @@ type Network struct {
 
 // Volume is a named volume.
 type Volume struct {
-	Name   string
-	Labels map[string]string
+	Name    string
+	Labels  map[string]string
+	Driver  string
+	Options map[string]string
 }
 
 // Summary is a container in a listing.

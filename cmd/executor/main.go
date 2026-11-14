@@ -12,14 +12,28 @@ import (
 	"os"
 
 	"github.com/oyzuai/fleet/executor"
+	"github.com/oyzuai/fleet/manager/container"
 )
 
 // version is set by the release build (-X main.version).
 var version = "dev"
 
 func main() {
+	if executor.HoldWorkspace(os.Args[1:]) {
+		return
+	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if err := executor.Command(os.Args[1:], log); err != nil {
+	var driver executor.ActionDriver
+	if endpoint := os.Getenv("FLEET_ACTION_ENGINE"); endpoint != "" {
+		os.Unsetenv("FLEET_ACTION_ENGINE")
+		engine, err := container.NewDocker(endpoint, container.DockerOptions{})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "oyzu-executor:", err)
+			os.Exit(1)
+		}
+		driver = &container.ActionRuntime{Engine: engine}
+	}
+	if err := executor.CommandWithActionDriver(os.Args[1:], log, driver); err != nil {
 		fmt.Fprintln(os.Stderr, "oyzu-executor:", err)
 		os.Exit(1)
 	}
