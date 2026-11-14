@@ -65,7 +65,7 @@ func TestActionEngineVerifiesActualAllocation(t *testing.T) {
 func TestActionEngineReadinessRefusesMissingIsolation(t *testing.T) {
 	for _, profile := range []string{"linux-seccomp", "windows", "linux-no-seccomp", "linux-no-limits"} {
 		d, _ := newStub(t, map[string]func(http.ResponseWriter, *http.Request){"GET /info": func(w http.ResponseWriter, r *http.Request) {
-			info := Info{OSType: "linux", MemoryLimit: true, CpuCfsQuota: true, CpuCfsPeriod: true, PidsLimit: true,
+			info := Info{OSType: "linux", Architecture: "x86_64", MemoryLimit: true, CpuCfsQuota: true, CpuCfsPeriod: true, PidsLimit: true,
 				SecurityOptions: []string{"name=seccomp,profile=builtin"}}
 			if profile == "linux-no-limits" {
 				info.MemoryLimit = false

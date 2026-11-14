@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -20,7 +21,22 @@ import (
 )
 
 func testAction() runnerclient.ActionAssignment {
-	return runnerclient.ActionAssignment{InstanceID: "instance", OperationID: "operation", Image: "test/image@sha256:" + strings.Repeat("a", 64), Arguments: []string{"/bin/sh", "-c", "cat input > out"}, OutputPaths: []string{"out"}, TimeoutSeconds: 30, NanoCPUs: 1e9, MemoryBytes: 64 << 20, PidsLimit: 32}
+	return runnerclient.ActionAssignment{InstanceID: "instance", OperationID: "operation", Image: "test/image@sha256:" + strings.Repeat("a", 64), Arguments: []string{"/bin/sh", "-c", "cat input > out"}, OutputStyle: "paths", Outputs: []runnerclient.ActionOutput{{Path: "out", Kind: "any"}}, WorkspaceBytes: runnerclient.MaxWorkspaceBytes, WorkspaceInodes: runnerclient.MaxWorkspaceInodes, TimeoutSeconds: 30, NanoCPUs: 1e9, MemoryBytes: 64 << 20, PidsLimit: 32}
+}
+
+func testHelper(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "executor")
+	b := make([]byte, 64)
+	copy(b, []byte{0x7f, 'E', 'L', 'F', 2, 1, 1})
+	binary.LittleEndian.PutUint16(b[16:], 2)
+	binary.LittleEndian.PutUint16(b[18:], 62)
+	binary.LittleEndian.PutUint32(b[20:], 1)
+	binary.LittleEndian.PutUint16(b[52:], 64)
+	if err := os.WriteFile(p, b, 0755); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 func actionFile(p, content string) runnerclient.ActionFile {
@@ -79,6 +95,15 @@ func (e *actionEngineFake) CreateVolume(ctx context.Context, name string, labels
 }
 
 func (e *actionEngineFake) ActionReady(context.Context) error { return nil }
+func (e *actionEngineFake) CreateActionVolume(ctx context.Context, name string, labels map[string]string, bytes, inodes int64) error {
+	if bytes <= 0 || inodes <= 0 {
+		return errors.New("missing bounds")
+	}
+	return e.CreateVolume(ctx, name, labels)
+}
+func (e *actionEngineFake) VerifyActionVolume(context.Context, string, map[string]string, map[string]string) error {
+	return nil
+}
 func (e *actionEngineFake) VerifyActionContainer(_ context.Context, _ string, s Spec) error {
 	e.spec = s
 	return e.verifyErr
@@ -99,21 +124,35 @@ func (e *actionEngineFake) WaitContainer(ctx context.Context, _ string) (int, er
 	}
 	return e.exitCode, nil
 }
-func (e *actionEngineFake) InspectContainer(context.Context, string) (State, error) {
+func (e *actionEngineFake) InspectContainer(ctx context.Context, id string) (State, error) {
+	c, err := e.fakeEngine.container(id)
+	if err != nil {
+		return State{}, err
+	}
+	if c.spec.ActionControl {
+		return State{Running: c.started && !c.stopped}, nil
+	}
 	return State{Running: e.running, ExitCode: e.exitCode}, nil
 }
-func (e *actionEngineFake) StopContainer(context.Context, string, time.Duration) error {
+func (e *actionEngineFake) StopContainer(ctx context.Context, id string, grace time.Duration) error {
+	c, err := e.fakeEngine.container(id)
+	if err != nil {
+		return err
+	}
+	if c.spec.ActionControl {
+		return e.fakeEngine.StopContainer(ctx, id, grace)
+	}
 	e.stops++
 	return e.stopErr
 }
 
 func TestActionRuntimeIsolatesAndReturnsProcessResult(t *testing.T) {
-	e := &actionEngineFake{fakeEngine: newFakeEngine(), exitCode: 7, archive: outputArchive(t, &tar.Header{Name: "work/sub/out", Typeflag: tar.TypeReg, Mode: 0755, Size: 1})}
+	e := &actionEngineFake{fakeEngine: newFakeEngine(), exitCode: 7, archive: outputArchive(t, &tar.Header{Name: "work/sub", Typeflag: tar.TypeDir}, &tar.Header{Name: "work/sub/out", Typeflag: tar.TypeReg, Mode: 0755, Size: 1})}
 	e.present = true
 	a := testAction()
 	a.Environment = map[string]string{"EXPLICIT": "value"}
 	a.WorkingDirectory = "sub"
-	out := (&ActionRuntime{Engine: e}).RunAction(context.Background(), testActionOwner(t), a, runnerclient.ActionInputs{Files: []runnerclient.ActionFile{actionFile("input", "hello")}, Directories: []string{"empty"}})
+	out := (&ActionRuntime{Engine: e, HelperPath: testHelper(t)}).RunAction(context.Background(), testActionOwner(t), a, runnerclient.ActionInputs{Files: []runnerclient.ActionFile{actionFile("input", "hello")}, Directories: []string{"empty", "sub"}})
 	if out.ErrorCode != "" || !out.TerminationConfirmed || out.ExitCode == nil || *out.ExitCode != 7 || string(out.Stdout) != "stdout" || string(out.Stderr) != "stderr" || len(out.Files) != 1 || !out.Files[0].Executable {
 		t.Fatalf("result: %+v", out)
 	}
@@ -152,7 +191,7 @@ func TestActionRuntimeRefusesUnsafeInputsAndUnverifiedSandbox(t *testing.T) {
 		if unsafe {
 			in.Files = []runnerclient.ActionFile{actionFile("../token", "bad")}
 		}
-		out := (&ActionRuntime{Engine: e}).RunAction(context.Background(), testActionOwner(t), testAction(), in)
+		out := (&ActionRuntime{Engine: e, HelperPath: testHelper(t)}).RunAction(context.Background(), testActionOwner(t), testAction(), in)
 		if out.ErrorCode == "" || out.TerminationConfirmed {
 			t.Fatalf("accepted: %+v", out)
 		}
@@ -173,7 +212,7 @@ func TestActionRuntimeCancellationRequiresObservedStop(t *testing.T) {
 		e.present = true
 		ctx, cancel := context.WithCancel(context.Background())
 		e.wait = func(ctx context.Context) error { cancel(); <-ctx.Done(); return ctx.Err() }
-		out := (&ActionRuntime{Engine: e}).RunAction(ctx, testActionOwner(t), testAction(), runnerclient.ActionInputs{})
+		out := (&ActionRuntime{Engine: e, HelperPath: testHelper(t)}).RunAction(ctx, testActionOwner(t), testAction(), runnerclient.ActionInputs{})
 		expectedStops := 1
 		if running {
 			expectedStops = 2
@@ -191,11 +230,11 @@ func TestActionInputImplicitDirectoriesAndArchiveBytesBoundedBeforeAllocation(t 
 	a := testAction()
 	// Each explicit leaf contributes hundreds of distinct implicit parents.
 	for n := 0; n < 100; n++ {
-		a.OutputPaths = append(a.OutputPaths, fmt.Sprintf("tree%d/", n)+strings.Repeat("d/", 200)+"out")
+		a.Outputs = append(a.Outputs, runnerclient.ActionOutput{Path: fmt.Sprintf("tree%d/", n) + strings.Repeat("d/", 200) + "out", Kind: "any"})
 	}
 	e := &actionEngineFake{fakeEngine: newFakeEngine()}
 	e.present = true
-	out := (&ActionRuntime{Engine: e}).RunAction(context.Background(), testActionOwner(t), a, runnerclient.ActionInputs{})
+	out := (&ActionRuntime{Engine: e, HelperPath: testHelper(t)}).RunAction(context.Background(), testActionOwner(t), a, runnerclient.ActionInputs{})
 	if out.ErrorCode != "INVALID_ARGUMENT" || e.next != 0 || e.volumeCreates != 0 || len(e.volumes) != 0 {
 		t.Fatalf("implicit directory expansion allocated resources: %+v", out)
 	}
@@ -207,7 +246,7 @@ func TestActionInputImplicitDirectoriesAndArchiveBytesBoundedBeforeAllocation(t 
 	if err := in.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	out = (&ActionRuntime{Engine: e}).RunAction(context.Background(), testActionOwner(t), testAction(), in)
+	out = (&ActionRuntime{Engine: e, HelperPath: testHelper(t)}).RunAction(context.Background(), testActionOwner(t), testAction(), in)
 	if out.ErrorCode != "INVALID_ARGUMENT" || e.volumeCreates != 0 || e.next != 0 {
 		t.Fatalf("oversized encoded archive reached engine allocation: %+v", out)
 	}
@@ -229,10 +268,10 @@ func TestActionRuntimeCleanupFailureRetainsJournalAndRefusesConfirmedCompletion(
 	fake := &actionEngineFake{fakeEngine: newFakeEngine(), archive: outputArchive(t, &tar.Header{Name: "work/out", Typeflag: tar.TypeReg, Size: 1})}
 	fake.present = true
 	engine := &cleanupFailActionEngine{actionEngineFake: fake, fail: true}
-	runtime := &ActionRuntime{Engine: engine}
+	runtime := &ActionRuntime{Engine: engine, HelperPath: testHelper(t)}
 	owner := testActionOwner(t)
 	out := runtime.RunAction(context.Background(), owner, testAction(), runnerclient.ActionInputs{})
-	if out.ErrorCode != "INTERNAL" || out.TerminationConfirmed || len(out.Files) != 0 || len(fake.volumes) != 1 {
+	if out.ErrorCode != "INTERNAL" || out.TerminationConfirmed || len(out.Files) != 0 || len(fake.volumes) != 2 {
 		t.Fatalf("cleanup failure acknowledged completion: %+v", out)
 	}
 	if _, err := os.Stat(filepath.Join(owner.Directory, actionRecordFile)); err != nil {
@@ -281,7 +320,7 @@ func TestActionRecoveryHandlesAmbiguousAllocationResponses(t *testing.T) {
 		fake := &actionEngineFake{fakeEngine: newFakeEngine()}
 		fake.present = true
 		owner := testActionOwner(t)
-		runtime := &ActionRuntime{Engine: ambiguousActionEngine{actionEngineFake: fake, volume: volume, container: !volume}}
+		runtime := &ActionRuntime{Engine: ambiguousActionEngine{actionEngineFake: fake, volume: volume, container: !volume}, HelperPath: testHelper(t)}
 		out := runtime.RunAction(context.Background(), owner, testAction(), runnerclient.ActionInputs{})
 		if out.ErrorCode == "" || out.TerminationConfirmed || len(fake.volumes) != 0 || len(fake.containers) != 0 {
 			t.Fatalf("ambiguous create leaked resources: %+v", out)
@@ -308,5 +347,34 @@ func TestActionOutputRejectsEscapesLinksAndBounds(t *testing.T) {
 	f, dirs, err := actionOutputs(archive, testAction())
 	if err != nil || len(f) != 0 || !slices.Equal(dirs, []string{"out", "out/empty"}) {
 		t.Fatalf("declared directories: %v %v %v", f, dirs, err)
+	}
+}
+
+func TestActionSnapshotSelectsLinksAliasesAndBoundsUnselectedData(t *testing.T) {
+	a := testAction()
+	a.WorkingDirectory = "alias"
+	a.Outputs = []runnerclient.ActionOutput{{Path: "tree", Kind: "any"}, {Path: "dangling", Kind: "any"}}
+	archive := outputArchive(t,
+		&tar.Header{Name: "work/real", Typeflag: tar.TypeDir},
+		&tar.Header{Name: "work/real/tree", Typeflag: tar.TypeDir},
+		&tar.Header{Name: "work/real/tree/empty", Typeflag: tar.TypeDir},
+		&tar.Header{Name: "work/real/tree/file", Typeflag: tar.TypeReg, Size: 1, Mode: 0755},
+		&tar.Header{Name: "work/real/tree/link", Typeflag: tar.TypeSymlink, Linkname: "../tree/file"},
+		&tar.Header{Name: "work/real/dangling", Typeflag: tar.TypeSymlink, Linkname: "missing/../tree/file"},
+		&tar.Header{Name: "work/alias", Typeflag: tar.TypeSymlink, Linkname: "real"},
+		&tar.Header{Name: "work/unselected-image-link", Typeflag: tar.TypeSymlink, Linkname: "/usr/bin/tool"})
+	c, err := actionSnapshot(archive, a)
+	if err != nil || len(c.Files) != 1 || c.Files[0].Path != "tree/file" || !c.Files[0].Executable || len(c.Symlinks) != 2 || len(c.WorkspaceNodes) != 8 {
+		t.Fatalf("snapshot %+v %v", c, err)
+	}
+	a.OutputStyle = "legacy"
+	a.Outputs = []runnerclient.ActionOutput{{Path: "dangling", Kind: "file"}}
+	if _, err = actionSnapshot(archive, a); err == nil {
+		t.Fatal("legacy dangling link accepted")
+	}
+	a = testAction()
+	archive = outputArchive(t, &tar.Header{Name: "work/out", Typeflag: tar.TypeReg, Size: 1}, &tar.Header{Name: "work/unselected", Typeflag: tar.TypeReg, Size: runnerclient.MaxActionBytes})
+	if _, err = actionSnapshot(archive, a); err == nil {
+		t.Fatal("unselected workspace bytes evaded limit")
 	}
 }

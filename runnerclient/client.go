@@ -266,6 +266,7 @@ type Started struct {
 // server still validates the exact current startup credential and attempt.
 type StartupAssignment struct {
 	ActionRuntime          string             `json:"action_runtime,omitempty"`
+	ActionFeatures         []string           `json:"action_features,omitempty"`
 	Readiness              *readiness.Binding `json:"readiness,omitempty"`
 	ExecutionTrustDecision string             `json:"execution_trust_decision,omitempty"`
 }
@@ -277,6 +278,9 @@ var executionDecisionReference = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0
 func (a StartupAssignment) Validate() error {
 	if a.ActionRuntime != "" && a.ActionRuntime != ActionRuntime {
 		return errors.New("unsupported action runtime capability")
+	}
+	if len(a.ActionFeatures) > 0 && (a.ActionRuntime != ActionRuntime || !HasActionFeatures(a.ActionFeatures)) {
+		return errors.New("unsupported action features")
 	}
 	if a.ExecutionTrustDecision != "" && (!executionDecisionReference.MatchString(a.ExecutionTrustDecision) || a.ExecutionTrustDecision == "00000000-0000-0000-0000-000000000000") {
 		return errors.New("invalid server execution decision reference")

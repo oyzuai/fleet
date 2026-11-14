@@ -56,6 +56,7 @@ type Process struct {
 	// ActionRuntimeReady must probe that engine before capability reporting.
 	ActionEngine       string
 	ActionRuntimeReady func(context.Context) error
+	ActionCapacity     func(context.Context) (int64, int64, error)
 	ActionCleanup      func(context.Context, runnerclient.ActionOwner) error
 	// Runner is the oyzu-executor executable.
 	Runner string
@@ -143,6 +144,18 @@ func (p *Process) Facts(ctx context.Context) (Facts, error) {
 			return nil, fmt.Errorf("action runtime unavailable: %w", err)
 		}
 		f["oyzu.io/action-runtime"] = runnerclient.ActionRuntime
+		for _, feature := range runnerclient.ActionFeatures {
+			f["oyzu.io/action-feature-"+feature] = "true"
+		}
+		if p.ActionCapacity == nil {
+			return nil, errors.New("action capacity probe is missing")
+		}
+		memory, cpus, err := p.ActionCapacity(ctx)
+		if err != nil || memory <= 0 || cpus <= 0 {
+			return nil, errors.New("action capacity is unavailable")
+		}
+		f["oyzu.io/memory"] = strconv.FormatInt(memory/(1<<20), 10) + "Mi"
+		f[FactCPU] = strconv.FormatInt(cpus, 10)
 	}
 	return f, nil
 }

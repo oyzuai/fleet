@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"time"
 
@@ -19,8 +20,23 @@ const actionRecordFile = runnerclient.ActionResourcesFile
 var actionResourceName = regexp.MustCompile(`^oyzu-action-[0-9a-f]{32}$`)
 
 type actionRecord struct {
-	Owner runnerclient.ActionOwner `json:"owner"`
-	Name  string                   `json:"name"`
+	Owner     runnerclient.ActionOwner `json:"owner"`
+	Name      string                   `json:"name"`
+	Resources []actionResource         `json:"resources"`
+}
+type actionResource struct {
+	Kind string `json:"kind"`
+	Role string `json:"role"`
+	Name string `json:"name"`
+}
+
+func (r actionRecord) planned() []actionResource {
+	return []actionResource{{"container", "user", r.Name}, {"container", "prepare", r.Name + "-prepare"}, {"container", "holder", r.Name + "-holder"}, {"volume", "workspace", r.Name}, {"volume", "bootstrap", r.Name + "-bootstrap"}}
+}
+func (r actionRecord) resourceLabels(role string) map[string]string {
+	labels := r.labels()
+	labels["oyzu.io/action-role"] = role
+	return labels
 }
 
 func (r actionRecord) labels() map[string]string {
@@ -29,6 +45,9 @@ func (r actionRecord) labels() map[string]string {
 }
 
 func writeActionRecord(record actionRecord) error {
+	if !slices.Equal(record.Resources, record.planned()) {
+		return errors.New("invalid action resource plan")
+	}
 	if err := record.Owner.Validate(); err != nil {
 		return err
 	}
@@ -95,6 +114,12 @@ func (r *ActionRuntime) CleanupAction(ctx context.Context, owner runnerclient.Ac
 	if len(b) > 8192 || json.Unmarshal(b, &record) != nil || record.Owner != owner || !actionResourceName.MatchString(record.Name) {
 		return errors.New("invalid action recovery record")
 	}
+	// Legacy journals contain only one container/volume and remain recoverable.
+	if len(record.Resources) == 0 {
+		record.Resources = []actionResource{{"container", "", record.Name}, {"volume", "", record.Name}}
+	} else if !slices.Equal(record.Resources, record.planned()) {
+		return errors.New("invalid action resource plan")
+	}
 	if r == nil || r.Engine == nil {
 		return errors.New("action recovery engine unavailable")
 	}
@@ -103,10 +128,31 @@ func (r *ActionRuntime) CleanupAction(ctx context.Context, owner runnerclient.Ac
 	if err != nil {
 		return err
 	}
+	roleFor := func(kind, name string) (string, bool) {
+		for _, p := range record.Resources {
+			if p.Kind == kind && p.Name == name {
+				return p.Role, true
+			}
+		}
+		return "", false
+	}
 	for _, c := range containers {
-		if c.Name != record.Name || !actionLabelsMatch(c.Labels, labels) {
+		role, ok := roleFor("container", c.Name)
+		if !ok || !actionLabelsMatch(c.Labels, labels) || c.Labels["oyzu.io/action-role"] != role {
 			return errors.New("action container ownership differs from journal")
 		}
+	}
+	// User and preparation disappear before the final live mount holder.
+	slices.SortStableFunc(containers, func(a, b Summary) int {
+		if a.Labels["oyzu.io/action-role"] == "holder" {
+			return 1
+		}
+		if b.Labels["oyzu.io/action-role"] == "holder" {
+			return -1
+		}
+		return 0
+	})
+	for _, c := range containers {
 		state, err := r.Engine.InspectContainer(ctx, c.ID)
 		if err != nil {
 			return err
@@ -139,7 +185,8 @@ func (r *ActionRuntime) CleanupAction(ctx context.Context, owner runnerclient.Ac
 		return err
 	}
 	for _, v := range volumes {
-		if v.Name != record.Name || !actionLabelsMatch(v.Labels, labels) {
+		role, ok := roleFor("volume", v.Name)
+		if !ok || !actionLabelsMatch(v.Labels, labels) || v.Labels["oyzu.io/action-role"] != role {
 			return errors.New("action volume ownership differs from journal")
 		}
 		if err = r.Engine.RemoveVolume(ctx, v.Name); err != nil {

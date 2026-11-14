@@ -19,6 +19,8 @@ import (
 type ActionEngine interface {
 	Engine
 	ActionReady(context.Context) error
+	CreateActionVolume(context.Context, string, map[string]string, int64, int64) error
+	VerifyActionVolume(context.Context, string, map[string]string, map[string]string) error
 	VerifyActionContainer(context.Context, string, Spec) error
 	ReadContainerArchive(context.Context, string, string) ([]byte, error)
 	ContainerOutput(context.Context, string) ([]byte, []byte, error)
@@ -29,7 +31,7 @@ func (d *Docker) ActionReady(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if info.OSType != "linux" {
+	if info.OSType != "linux" || (info.Architecture != "amd64" && info.Architecture != "x86_64") || d.podman {
 		return errors.New("actions require a Linux container engine")
 	}
 	if !info.MemoryLimit || !info.CpuCfsQuota || !info.CpuCfsPeriod || !info.PidsLimit {
@@ -55,6 +57,7 @@ func (d *Docker) VerifyActionContainer(ctx context.Context, id string, spec Spec
 			Cmd, Entrypoint         []string
 			NetworkDisabled         bool
 			Labels                  map[string]string
+			Healthcheck             *struct{ Test []string }
 		}
 		HostConfig hostConfig
 		Mounts     []struct {
@@ -70,9 +73,22 @@ func (d *Docker) VerifyActionContainer(ctx context.Context, id string, spec Spec
 		!slices.Equal(actual.Config.Entrypoint, spec.Entrypoint) || !slices.Equal(actual.Config.Cmd, spec.Cmd) ||
 		!actual.Config.NetworkDisabled || h.NetworkMode != "none" || h.Privileged || !h.ReadonlyRootfs ||
 		h.NanoCpus != spec.NanoCPUs || h.Memory != spec.MemoryBytes || h.MemorySwap != spec.MemoryBytes || h.PidsLimit != spec.PidsLimit ||
-		len(actual.Mounts) != 1 || actual.Mounts[0].Type != "volume" || actual.Mounts[0].Name != spec.Volume ||
-		actual.Mounts[0].Destination != "/work" || !actual.Mounts[0].RW {
+		h.PidMode != "" || h.UTSMode != "" || len(actual.Mounts) != len(createBody(spec).HostConfig.Mounts) {
 		return errors.New("action allocation differs from required isolation")
+	}
+	for _, expected := range createBody(spec).HostConfig.Mounts {
+		found := false
+		for _, m := range actual.Mounts {
+			if m.Type == expected.Type && m.Name == expected.Source && m.Destination == expected.Target && m.RW == !expected.ReadOnly {
+				found = true
+			}
+		}
+		if !found {
+			return errors.New("action mount differs from planned allocation")
+		}
+	}
+	if spec.ActionControl && (h.Init == nil || *h.Init || h.RestartPolicy.Name != "no" || h.LogConfig.Type != "none" || actual.Config.Healthcheck == nil || !slices.Equal(actual.Config.Healthcheck.Test, []string{"NONE"})) {
+		return errors.New("image lifecycle controls not disabled")
 	}
 	if !d.podman {
 		if !h.sandbox().applied() {
@@ -126,7 +142,7 @@ func (d *Docker) actionBytes(ctx context.Context, endpoint string, query url.Val
 }
 
 func (d *Docker) ReadContainerArchive(ctx context.Context, id, p string) ([]byte, error) {
-	return d.actionBytes(ctx, "/containers/"+url.PathEscape(id)+"/archive", url.Values{"path": {p}}, 2*runnerclient.MaxActionBytes+runnerclient.MaxActionEntries*1024)
+	return d.actionBytes(ctx, "/containers/"+url.PathEscape(id)+"/archive", url.Values{"path": {p}}, runnerclient.MaxActionWire)
 }
 
 func (d *Docker) ContainerOutput(ctx context.Context, id string) ([]byte, []byte, error) {

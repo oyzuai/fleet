@@ -26,9 +26,9 @@ match a real configured isolation runtime.
 `runnerclient.Job.Kind == "action"` selects `ActionAssignment`; it never uses
 repository, source, native plan, secret or Oyzu-command preparation. Assignments
 carry the server-selected instance/operation binding, immutable image, explicit
-argv/environment, working directory, declared output paths, timeout and positive
-CPU/memory/process bounds. Input files carry bytes, SHA-256 identity, size and
-executable mode. Empty directories are preserved. Input paths are relative to
+argv/environment, working directory, typed output declarations, timeout and positive
+CPU/memory/process and workspace bounds. Input files carry bytes, SHA-256 identity, size and
+executable mode. Empty directories and contained relative symlinks are preserved. Input paths are relative to
 the private input root; output paths are relative to the command's working
 directory, and completion preserves those logical output paths.
 
@@ -54,32 +54,66 @@ The ordinary executor has no action driver. A trusted embedding injects an
 process manager enables this explicitly with `--driver process --action-engine
 <endpoint>`, using a dedicated pool eligible for those actions. It probes the
 Linux engine's required seccomp support before reporting
-`oyzu.io/action-runtime=linux-container`. The executor separately probes its
-injected runtime before advertising `action_runtime=linux-container` at startup.
+`oyzu.io/action-runtime=linux-container` and all four `oyzu.io/action-feature-*`
+facts from `runnerclient.ActionFeatures`. Every action requires every feature,
+since its output kinds are unknown before execution. The executor separately
+checks the engine and installed static Linux/amd64 helper before advertising
+`action_runtime` and `action_features` at startup. Runs refuses missing or unknown
+features before issuing a job credential, inputs or runnable assignment.
 Other process, container and Kubernetes executors do not gain this capability.
 Process pools retain their existing trusted-host restrictions for native jobs.
 
 The manager passes its explicit endpoint to the standalone executor through
 `FLEET_ACTION_ENGINE`; the executor removes that variable before dispatch. A
-container gets a fresh named work volume with image-volume copying disabled,
+container gets a fresh named tmpfs work volume with image-volume copying disabled,
 UID/GID 1000, network `none`, read-only root, no capabilities and the shared
 Fleet syscall/no-new-privileges policy. The runtime overrides image ENTRYPOINT
 and CMD with the admitted argv, verifies the actual allocation before start,
 and refuses extra mounts or missing controls. Images must already be provisioned
 by the operator under the admitted SHA-256 reference. Actions do not pull images.
-Docker and the existing qualified Podman adapter use the same engine contract;
-an engine unable to expose the required allocation before execution is refused.
+This action profile requires Docker's Linux named-tmpfs mechanism; the existing
+Podman adapter does not advertise it. Windows-hosted workers remain unqualified.
+
+The workspace defaults and ceilings are 64 MiB and 32768 inodes, enforced by
+the volume's `size` and `nr_inodes` options, including intermediate and undeclared
+writes. There is no unbounded local-volume fallback. A stopped preparation
+container receives only the installed static executor in a private bootstrap
+volume through the engine API. Preparation never starts. A credential-free
+`hold-workspace` entry point keeps the tmpfs mounted through input copy, user
+start, confirmed termination and whole-workspace collection. It runs before
+configuration, environment, logging, engine and credential loading. The holder
+gets read-only root/bootstrap/workspace, UID/GID 1000, no network, image lifecycle
+hooks or logs, 64 MiB memory with equal swap, 32 PIDs and 50000000 NanoCPUs.
+The user receives only the writable workspace and its original admitted argv.
+
+The nominal reservation is action memory plus workspace bytes, 64 MiB holder
+memory and 64 MiB inode allowance. Host admission adds 320 MiB for bounded
+bootstrap and in-memory transfer/lifecycle space, plus holder CPU and PIDs.
+All sums use checked signed-int64 arithmetic. Runs compares the whole host
+reservation to each manager slot's share of reported engine memory and CPU.
+Core's action-memory maximum retains its meaning; no tenant aggregate budget
+is introduced. Missing capacity or an unrepresentable reservation refuses work.
 
 This first profile bounds file bytes to 16 MiB per direction, combined
 stdout/stderr to 1 MiB, JSON transfer to 32 MiB and directory entries to 10,000.
 The input archive also counts implicit working/output parent directories and
 its root against the entry limit, and bounds actual tar bytes to 32 MiB before
 allocating engine resources. The private work output archive is also bounded.
-Timeout is at most one hour. Paths
-must be canonical relative portable paths. Links and special files are refused,
-including in output archives; archives are parsed in memory and never extracted
-onto the executor host. Larger transfer profiles and symlink interoperability
-remain outside this first profile.
+Timeout is at most one hour. Physical paths must be canonical and have real
+directory parents. Relative link targets retain raw `.`/`..` components and
+repeated separators, with 4096 bytes each, 1 MiB total and 40 dereferences per
+lookup. Component resolution expands targets before later parents and refuses
+root escapes, cycles and traversal through files. Dangling modern links remain
+links; legacy file/directory links require the declared referent kind. Working
+directories and output parents may be contained directory aliases. Missing
+working directories and dangling output parents refuse execution.
+
+The complete stopped archive is bounded and parsed in memory before selection;
+it is never extracted on the executor host. Hardlinks, special files, duplicate
+entries and physical link/file ancestors refuse the snapshot. Unselected image
+links remain inert private metadata. Selected outputs preserve logical paths,
+empty directories, executable bits and links. Metadata-only `workspace_nodes`
+lets Runs verify undeclared link referents without transferring their file bytes.
 
 Cancellation or lease loss stops the action runtime. Completion must distinguish
 a process exit from service failure and must not report confirmed termination
@@ -99,14 +133,18 @@ volume labels bind the same identity and a private random resource name. This
 also recovers an allocation whose engine response was lost.
 
 Normal cleanup, `Process.Teardown` and restart `Process.Reap` use that exact
-journal and full ownership labels. Cleanup stops and inspects the owned child,
-removes its container and volume, then removes the journal. A failed cleanup
+journal and full ownership labels. The journal plans exact user, preparation,
+holder, workspace and bootstrap roles before allocation. Cleanup stops and
+removes user/preparation, then holder, then both volumes and the journal. A failed cleanup
 retains recovery state and holds capacity; an adopted executor's exit follows
 the same rule. A configured action process pool releases a failed job only
 after successful teardown. Completion cannot confirm termination while cleanup
 is incomplete. Resources belonging to other owners are preserved. Recovery
 requires the trusted manager and its configured engine connection to return;
 there is no immediate-stop guarantee while both manager and executor are down.
+Holder loss or an ambiguous engine observation stops the user and discards all
+outputs. The holder is never recreated to continue an attempt. Recovery removes
+interrupted ephemeral storage; it never resumes its bytes.
 
 ## Verification
 

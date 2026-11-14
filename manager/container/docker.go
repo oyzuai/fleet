@@ -354,6 +354,9 @@ func (d *Docker) ListVolumes(ctx context.Context, labels map[string]string) ([]V
 // isolation. The fixed daemonless syscall/proc policy is explicit; AppArmor and
 // private PID, IPC and UTS namespaces retain the engine's normal configuration.
 type hostConfig struct {
+	Init                                                *bool                 `json:",omitempty"`
+	RestartPolicy                                       struct{ Name string } `json:",omitempty"`
+	LogConfig                                           struct{ Type string } `json:",omitempty"`
 	Privileged                                          bool
 	CapDrop                                             []string
 	CapAdd                                              []string `json:",omitempty"`
@@ -382,6 +385,7 @@ type mount struct {
 	Type          string
 	Source        string
 	Target        string
+	ReadOnly      bool
 	VolumeOptions *volumeOptions `json:",omitempty"`
 }
 
@@ -389,6 +393,7 @@ type volumeOptions struct{ NoCopy bool }
 
 // containerConfig is the body of a create request.
 type containerConfig struct {
+	Healthcheck     *struct{ Test []string } `json:",omitempty"`
 	Image           string
 	Cmd             []string
 	Entrypoint      []string `json:",omitempty"`
@@ -419,13 +424,22 @@ func createBody(spec Spec) containerConfig {
 		PidsLimit:   spec.PidsLimit,
 	}
 	if spec.Volume != "" {
-		hc.Mounts = []mount{{Type: "volume", Source: spec.Volume, Target: spec.WorkDir}}
+		hc.Mounts = []mount{{Type: "volume", Source: spec.Volume, Target: spec.WorkDir, ReadOnly: spec.VolumeReadOnly}}
 		if spec.VolumePath != "" {
 			hc.Mounts[0].Target = spec.VolumePath
 		}
 		if spec.VolumeNoCopy {
 			hc.Mounts[0].VolumeOptions = &volumeOptions{NoCopy: true}
 		}
+	}
+	if spec.BootstrapVolume != "" {
+		hc.Mounts = append(hc.Mounts, mount{Type: "volume", Source: spec.BootstrapVolume, Target: "/bootstrap", ReadOnly: true, VolumeOptions: &volumeOptions{NoCopy: true}})
+	}
+	if spec.ActionControl {
+		disabled := false
+		hc.Init = &disabled
+		hc.RestartPolicy.Name = "no"
+		hc.LogConfig.Type = "none"
 	}
 	hc.ReadonlyRootfs = spec.ReadOnly
 	if spec.MemoryBytes > 0 {
@@ -441,11 +455,15 @@ func createBody(spec Spec) containerConfig {
 		exposed[key] = struct{}{}
 		hc.PortBindings[key] = []portBinding{{HostIp: "127.0.0.1"}}
 	}
-	return containerConfig{
+	body := containerConfig{
 		Image: spec.Image, Cmd: spec.Cmd, Entrypoint: spec.Entrypoint, User: spec.User, WorkingDir: spec.WorkDir,
 		Labels: spec.Labels, Env: append([]string{"HOME=" + spec.WorkDir}, spec.Env...), ExposedPorts: exposed,
 		NetworkDisabled: spec.Network == "none", HostConfig: hc,
 	}
+	if spec.ActionControl {
+		body.Healthcheck = &struct{ Test []string }{Test: []string{"NONE"}}
+	}
+	return body
 }
 
 // CreateContainer implements Engine.

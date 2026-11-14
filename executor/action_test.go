@@ -45,7 +45,7 @@ func TestActionDispatchNeverUsesNativeSource(t *testing.T) {
 					if (startup.ActionRuntime == runnerclient.ActionRuntime) == missing {
 						t.Error("wrong runtime advertisement")
 					}
-					json.NewEncoder(w).Encode(runnerclient.Started{JobToken: "job", Expires: time.Now().Add(time.Minute), Job: runnerclient.Job{ID: 1, Attempt: 1, Kind: runnerclient.ActionJob, Action: &runnerclient.ActionAssignment{InstanceID: "instance", OperationID: "operation", Image: "image@sha256:" + strings.Repeat("a", 64), Arguments: []string{"tool"}, TimeoutSeconds: 10, NanoCPUs: 1e9, MemoryBytes: 64 << 20, PidsLimit: 32}}})
+					json.NewEncoder(w).Encode(runnerclient.Started{JobToken: "job", Expires: time.Now().Add(time.Minute), Job: runnerclient.Job{ID: 1, Attempt: 1, Kind: runnerclient.ActionJob, Action: &runnerclient.ActionAssignment{InstanceID: "instance", OperationID: "operation", Image: "image@sha256:" + strings.Repeat("a", 64), OutputStyle: "paths", WorkspaceBytes: runnerclient.MaxWorkspaceBytes, WorkspaceInodes: runnerclient.MaxWorkspaceInodes, Arguments: []string{"tool"}, TimeoutSeconds: 10, NanoCPUs: 1e9, MemoryBytes: 64 << 20, PidsLimit: 32}}})
 				case "/runner/v1/job/action/inputs":
 					json.NewEncoder(w).Encode(runnerclient.ActionInputs{})
 				case "/runner/v1/job/action/finish":
@@ -96,7 +96,7 @@ func TestActionLeaseLossFencesLateCompletion(t *testing.T) {
 		}
 	}))
 	defer s.Close()
-	a := &runnerclient.ActionAssignment{InstanceID: "instance", OperationID: "operation", Image: "image@sha256:" + strings.Repeat("a", 64), Arguments: []string{"tool"}, TimeoutSeconds: 10, NanoCPUs: 1e9, MemoryBytes: 64 << 20, PidsLimit: 32}
+	a := &runnerclient.ActionAssignment{InstanceID: "instance", OperationID: "operation", Image: "image@sha256:" + strings.Repeat("a", 64), OutputStyle: "paths", WorkspaceBytes: runnerclient.MaxWorkspaceBytes, WorkspaceInodes: runnerclient.MaxWorkspaceInodes, Arguments: []string{"tool"}, TimeoutSeconds: 10, NanoCPUs: 1e9, MemoryBytes: 64 << 20, PidsLimit: 32}
 	cfg := Config{Client: runnerclient.New(s.URL, nil), Log: slog.New(slog.NewTextHandler(io.Discard, nil)), ActionDriver: actionDriverFake{run: func(ctx context.Context) runnerclient.ActionCompletion {
 		<-ctx.Done()
 		return runnerclient.ActionCompletion{TerminationConfirmed: true}

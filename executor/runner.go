@@ -112,6 +112,7 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 			return fmt.Errorf("action runtime unavailable: %w", err)
 		}
 		assignment.ActionRuntime = runnerclient.ActionRuntime
+		assignment.ActionFeatures = append([]string{}, runnerclient.ActionFeatures...)
 	}
 	if err := assignment.Validate(); err != nil {
 		return err

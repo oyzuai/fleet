@@ -19,6 +19,9 @@ import (
 var version = "dev"
 
 func main() {
+	if executor.HoldWorkspace(os.Args[1:]) {
+		return
+	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	var driver executor.ActionDriver
 	if endpoint := os.Getenv("FLEET_ACTION_ENGINE"); endpoint != "" {

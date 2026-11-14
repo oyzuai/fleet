@@ -35,7 +35,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	runtime := &container.ActionRuntime{Engine: engine}
+	runtime := &container.ActionRuntime{Engine: engine, HelperPath: os.Getenv("FLEET_ACTION_HELPER")}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if os.Args[1] == "helper" {
@@ -46,7 +46,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		result := runtime.RunAction(ctx, owner, runnerclient.ActionAssignment{InstanceID: "crash-proof", OperationID: "crash-proof", Image: os.Args[3], Arguments: []string{"/bin/sleep", "300"}, TimeoutSeconds: 300, NanoCPUs: 1e9, MemoryBytes: 64 << 20, PidsLimit: 32}, runnerclient.ActionInputs{})
+		result := runtime.RunAction(ctx, owner, runnerclient.ActionAssignment{InstanceID: "crash-proof", OperationID: "crash-proof", Image: os.Args[3], OutputStyle: "paths", WorkspaceBytes: runnerclient.MaxWorkspaceBytes, WorkspaceInodes: runnerclient.MaxWorkspaceInodes, Arguments: []string{"/bin/sleep", "300"}, TimeoutSeconds: 300, NanoCPUs: 1e9, MemoryBytes: 64 << 20, PidsLimit: 32}, runnerclient.ActionInputs{})
 		return fmt.Errorf("helper unexpectedly completed: %+v", result)
 	}
 	image := os.Args[1]
@@ -124,7 +124,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		if len(rows) == 1 && rows[0].State == "running" {
+		if len(rows) == 2 && rows[0].State == "running" && rows[1].State == "running" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -141,7 +141,7 @@ func run() error {
 	cmd.Wait()
 	waited = true
 	rows, err := engine.ListContainers(ctx, labels)
-	if err != nil || len(rows) != 1 || rows[0].State != "running" {
+	if err != nil || len(rows) != 2 || rows[0].State != "running" || rows[1].State != "running" {
 		return fmt.Errorf("crash fixture did not leave a live isolated child: %v %v", rows, err)
 	}
 	if err = p.Reap(ctx, nil); err != nil {

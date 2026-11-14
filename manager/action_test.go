@@ -25,9 +25,15 @@ func TestActionCapabilityRequiresExplicitReadyRuntime(t *testing.T) {
 	}
 	p.ActionRuntimeReady = func(context.Context) error { return nil }
 	p.ActionCleanup = func(context.Context, runnerclient.ActionOwner) error { return nil }
+	p.ActionCapacity = func(context.Context) (int64, int64, error) { return 8 << 30, 4, nil }
 	f, err = p.Facts(ctx)
 	if err != nil || f["oyzu.io/action-runtime"] != "linux-container" {
 		t.Fatalf("ready runtime not advertised: %v %v", f, err)
+	}
+	for _, feature := range runnerclient.ActionFeatures {
+		if f["oyzu.io/action-feature-"+feature] != "true" {
+			t.Fatal("missing action feature")
+		}
 	}
 	p.ExtraEnv = []string{"FLEET_ACTION_ENGINE"}
 	p.environ = func() []string { return []string{"FLEET_ACTION_ENGINE=unix:///untrusted.sock"} }
