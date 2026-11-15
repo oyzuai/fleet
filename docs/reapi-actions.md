@@ -63,6 +63,29 @@ features before issuing a job credential, inputs or runnable assignment.
 Other process, container and Kubernetes executors do not gain this capability.
 Process pools retain their existing trusted-host restrictions for native jobs.
 
+### Provisioning the action executor
+
+The action helper must be a static Linux/amd64 executable. Build the dedicated
+command target on a Linux/amd64 host with the repository's pinned tools:
+
+```sh
+oyzu build action-executor --platform linux/amd64
+oyzu inspect dist --json
+```
+
+Use the `primary` artifact from that build's manifest. With the default bundle
+destination, its path is
+`dist/action-executor/linux/x86_64/action-executor-<version>`. Install those bytes
+as `oyzu-executor`, or pass their installed path to the process manager with
+`--executor <path>`. The manager uses that same executable for readiness and job
+execution.
+
+The command's `oyzu.toml` sets `CGO_ENABLED=0` for this target. Select it explicitly;
+it is excluded from argument-free builds. The default `fleet` target retains its
+whole-module build and tests and may produce a dynamically linked executor.
+The action runtime refuses that artifact as its helper. The release workflow
+already builds the executor statically.
+
 The manager passes its explicit endpoint to the standalone executor through
 `FLEET_ACTION_ENGINE`; the executor removes that variable before dispatch. A
 container gets a fresh named tmpfs work volume with image-volume copying disabled,
