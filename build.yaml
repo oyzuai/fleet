@@ -1,7 +1,14 @@
-# Build targets for fleet. `oyzu build` builds them all.
+# Build targets for fleet. `oyzu build` builds the default module target.
 builds:
   # The Go module: one binary per cmd/ directory, `manager` (released as
   # oyzu-pool-manager) and `executor` (released as oyzu-executor).
   fleet:
     uses: go/app
     path: .
+
+  # Static Linux helper for isolated actions. Provision explicitly on Linux/amd64.
+  action-executor:
+    uses: go/app
+    path: cmd/executor
+    default: false
+    platforms: [linux/amd64]

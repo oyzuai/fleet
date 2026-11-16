@@ -25,6 +25,12 @@ import (
 // built-in kinds (the platform's pool image) can build the same program from
 // this module at the version it pins.
 func Command(args []string, log *slog.Logger) error {
+	return CommandWithActionDriver(args, log, nil)
+}
+
+// CommandWithActionDriver composes a trusted host runtime explicitly. Ordinary
+// pool executors call Command and cannot advertise action execution.
+func CommandWithActionDriver(args []string, log *slog.Logger, action ActionDriver) error {
 	if len(args) > 0 && args[0] == "gateway" {
 		return egressgate.Command(args[1:], log)
 	}
@@ -35,6 +41,7 @@ func Command(args []string, log *slog.Logger) error {
 	tokenEnv := fs.String("startup-token-env", "", "variable holding the job's startup token; unset once read")
 	secretsDir := fs.String("secrets-dir", "", "private job temporary directory; defaults to the system temp directory")
 	jobDir := fs.String("job-dir", "", "job directory the process manager reaps")
+	managerID := fs.Int64("manager-id", 0, "trusted process manager identity for action recovery")
 	workDir := fs.String("work-dir", "", "where the commit is checked out")
 	oyzu := fs.String("oyzu", "oyzu", "the oyzu executable")
 	git := fs.String("git", "git", "the git executable")
@@ -87,6 +94,8 @@ func Command(args []string, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(telemetry.WithParent(context.Background(), tcfg.Parent), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return Run(ctx, Config{
+		ManagerID:              *managerID,
+		ActionDriver:           action,
 		ExecutionTrustDecision: *decision,
 		Client:                 runnerclient.New(*server, nil),
 		Readiness:              binding,

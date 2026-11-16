@@ -137,3 +137,23 @@ components = []
 [resolution."sha256:ff28b4b7c4cbc47e49f53873e8e6517e32ff80a026c3729be7e0e978bbecef6e".inputs.archive]
 url = "https://dl.google.com/go/go1.24.13.darwin-arm64.tar.gz"
 digest = "sha256:f282d882c3353485e2fc6c634606d85caf36e855167d59b996dbeae19fa7629a"
+
+[[plugin]]
+reference = "go/app"
+profile = "app"
+package = "oyzu/go"
+major = 0
+version = "0.1.2"
+release = "sha256:d38742b0e3235331fbeb95d27fd719ef95b2b9d2d08b7faba8be37ae4058ce21"
+
+[[plugin.payloads]]
+os = "linux"
+arch = "amd64"
+abi = "musl"
+digest = "sha256:775f6a8ba4967cc0a249ea13c97775550b23321fd82d286a599aab9a33f5e14a"
+
+[[plugin.payloads]]
+os = "windows"
+arch = "amd64"
+abi = "msvc"
+digest = "sha256:336d867ac78410fdb9d4ada6dcf65e95d698d529e1f4e06df4a9f5b5a43ee0e0"

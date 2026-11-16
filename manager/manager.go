@@ -520,20 +520,33 @@ func (m *Manager) watch(ctx context.Context, log *slog.Logger, h Handle, c runne
 		}
 	}
 	clean = exit.Clean()
+	deferRelease := false
+	if process, ok := d.(*Process); ok {
+		deferRelease = process.ActionEngine != "" || process.ActionCleanup != nil
+	}
 	if clean {
 		log.Info("job runner exited")
 	} else {
 		log.Warn("job runner ended badly", "exit", exit.String())
 		// Released first so the job is offered again while teardown runs.
-		m.release(ctx, log, c, exit)
+		if !deferRelease {
+			m.release(ctx, log, c, exit)
+		}
 	}
 	if h.Ref == "" {
+		if !clean && deferRelease {
+			m.release(ctx, log, c, exit)
+		}
 		return clean
 	}
 	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.cfg.TeardownTimeout)
 	defer cancel()
 	if err := d.Teardown(tctx, h); err != nil {
 		log.Warn("teardown failed; the reaper will retry", "error", err)
+		return false
+	}
+	if !clean && deferRelease {
+		m.release(ctx, log, c, exit)
 	}
 	return clean
 }

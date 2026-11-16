@@ -10,6 +10,7 @@ import (
 // driverFlags lists which drivers each driver-specific `run` flag applies to.
 // A flag set explicitly for a driver that ignores it is an error, not a no-op.
 var driverFlags = map[string][]string{
+	"action-engine":          {"process"},
 	"executor":               {"process"},
 	"oyzu":                   {"process"},
 	"renovate":               {"process"},

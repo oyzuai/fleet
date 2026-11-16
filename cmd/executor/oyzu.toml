@@ -1,0 +1,3 @@
+# The action workspace holder runs this executable inside the admitted image.
+[env]
+CGO_ENABLED = "0"
