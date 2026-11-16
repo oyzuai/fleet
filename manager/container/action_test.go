@@ -93,6 +93,9 @@ type actionEngineFake struct {
 	holderObserved chan struct{}
 	archiveReads   int
 	onArchive      func()
+	output         []byte
+	attachErr      error
+	attached       bool
 }
 
 func (e *actionEngineFake) CreateVolume(ctx context.Context, name string, labels map[string]string) error {
@@ -131,10 +134,21 @@ func (e *actionEngineFake) StartContainer(ctx context.Context, id string) error 
 	if role == "prepare" {
 		return errors.New("preparation must never start")
 	}
+	if role == "user" && !e.attached {
+		return errors.New("action started without output attached")
+	}
 	return e.fakeEngine.StartContainer(ctx, id)
 }
-func (e *actionEngineFake) ContainerOutput(context.Context, string) ([]byte, []byte, error) {
-	return []byte("stdout"), []byte("stderr"), nil
+func (e *actionEngineFake) AttachActionOutput(context.Context, string) (io.ReadCloser, error) {
+	if e.attachErr != nil {
+		return nil, e.attachErr
+	}
+	e.attached = true
+	b := e.output
+	if b == nil {
+		b = append(actionLogFrame(1, "stdout"), actionLogFrame(2, "stderr")...)
+	}
+	return io.NopCloser(bytes.NewReader(b)), nil
 }
 func (e *actionEngineFake) CopyFiles(ctx context.Context, id, p string, b []byte) error {
 	e.inputTar = slices.Clone(b)
@@ -235,6 +249,34 @@ func TestActionRuntimeRefusesUnsafeInputsAndUnverifiedSandbox(t *testing.T) {
 		if len(e.volumes) != 0 || len(e.containers) != 0 {
 			t.Fatal("refusal leaked resources")
 		}
+	}
+}
+
+func TestActionRuntimeOversizedOutputStopsAndCannotPublishTruncatedSuccess(t *testing.T) {
+	// A rotating diagnostic file could retain only the final short frame.
+	// The authoritative attachment must count the whole stdout/stderr stream.
+	output := make([]byte, 0, runnerclient.MaxActionLogs*5)
+	for i := 0; i < runnerclient.MaxActionLogs/4+1; i++ {
+		output = append(output, actionLogFrame(byte(1+i%2), "abc\n")...)
+	}
+	e := &actionEngineFake{fakeEngine: newFakeEngine(), output: output, archive: outputArchive(t, &tar.Header{Name: "work/out", Typeflag: tar.TypeReg, Size: 1})}
+	e.present = true
+	e.wait = func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+	result := (&ActionRuntime{Engine: e, HelperPath: testHelper(t)}).RunAction(context.Background(), testActionOwner(t), testAction(), runnerclient.ActionInputs{})
+	if result.ErrorCode != "RESOURCE_EXHAUSTED" || !result.TerminationConfirmed || result.ExitCode != nil || len(result.Stdout)+len(result.Stderr)+len(result.Files)+len(result.WorkspaceNodes) != 0 || e.archiveReads != 0 || e.stops != 1 {
+		t.Fatalf("oversized output accepted or not stopped: %+v, stops=%d archives=%d", result, e.stops, e.archiveReads)
+	}
+	if len(e.volumes)+len(e.containers) != 0 {
+		t.Fatal("oversized output leaked resources")
+	}
+}
+
+func TestActionRuntimeOutputAttachmentFailureNeverStartsUser(t *testing.T) {
+	e := &actionEngineFake{fakeEngine: newFakeEngine(), attachErr: errors.New("attachment unavailable")}
+	e.present = true
+	result := (&ActionRuntime{Engine: e, HelperPath: testHelper(t)}).RunAction(context.Background(), testActionOwner(t), testAction(), runnerclient.ActionInputs{})
+	if result.ErrorCode != "INTERNAL" || slices.Contains(e.starts, "user") || e.archiveReads != 0 || len(e.volumes)+len(e.containers) != 0 {
+		t.Fatalf("started or leaked without complete output capture: %+v starts=%v", result, e.starts)
 	}
 }
 

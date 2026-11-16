@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/oyzuai/fleet/runnerclient"
 )
@@ -24,7 +25,8 @@ type ActionEngine interface {
 	VerifyActionVolume(context.Context, string, map[string]string, map[string]string) error
 	VerifyActionContainer(context.Context, string, Spec) error
 	ReadContainerArchive(context.Context, string, string) ([]byte, error)
-	ContainerOutput(context.Context, string) ([]byte, []byte, error)
+	// AttachActionOutput subscribes before start. Closing it must unblock reads.
+	AttachActionOutput(context.Context, string) (io.ReadCloser, error)
 }
 
 func (d *Docker) ActionReady(ctx context.Context) error {
@@ -150,28 +152,72 @@ func (d *Docker) ReadContainerArchive(ctx context.Context, id, p string) ([]byte
 	return d.actionBytes(ctx, "/containers/"+url.PathEscape(id)+"/archive", url.Values{"path": {p}}, runnerclient.MaxActionWire)
 }
 
-func (d *Docker) ContainerOutput(ctx context.Context, id string) ([]byte, []byte, error) {
-	b, err := d.actionBytes(ctx, "/containers/"+url.PathEscape(id)+"/logs", url.Values{"stdout": {"1"}, "stderr": {"1"}}, runnerclient.MaxActionLogs+8*runnerclient.MaxActionLogs)
+type actionOutputStream struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+	stop   func() bool
+}
+
+func (s *actionOutputStream) Close() error {
+	s.stop()
+	s.cancel()
+	return s.ReadCloser.Close()
+}
+
+func (d *Docker) AttachActionOutput(ctx context.Context, id string) (io.ReadCloser, error) {
+	streamCtx, cancel := context.WithCancel(ctx)
+	// Bound the handshake separately; the admitted action deadline bounds reads.
+	timer := time.AfterFunc(d.callTimeout, cancel)
+	u := d.base + "/containers/" + url.PathEscape(id) + "/attach?stream=1&stdout=1&stderr=1&logs=0"
+	req, err := http.NewRequestWithContext(streamCtx, http.MethodPost, u, nil)
 	if err != nil {
-		return nil, nil, err
+		timer.Stop()
+		cancel()
+		return nil, err
 	}
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "tcp")
+	resp, err := d.client.Do(req)
+	timer.Stop()
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols || !strings.EqualFold(resp.Header.Get("Upgrade"), "tcp") || streamCtx.Err() != nil {
+		resp.Body.Close()
+		cancel()
+		return nil, errors.New("action output attachment unavailable")
+	}
+	// An upgraded HTTP body outlives the request; explicitly close it on cancel.
+	stop := context.AfterFunc(streamCtx, func() { resp.Body.Close() })
+	return &actionOutputStream{ReadCloser: resp.Body, cancel: cancel, stop: stop}, nil
+}
+
+func readActionOutput(r io.Reader) ([]byte, []byte, error) {
 	var stdout, stderr []byte
-	for len(b) > 0 {
-		if len(b) < 8 || (b[0] != 1 && b[0] != 2) || b[1] != 0 || b[2] != 0 || b[3] != 0 {
+	var wireBytes int64
+	for {
+		var header [8]byte
+		nread, err := io.ReadFull(r, header[:])
+		if err == io.EOF && nread == 0 {
+			return stdout, stderr, nil
+		}
+		if err != nil || (header[0] != 1 && header[0] != 2) || header[1] != 0 || header[2] != 0 || header[3] != 0 {
 			return nil, nil, errors.New("invalid action log stream")
 		}
-		n := int64(binary.BigEndian.Uint32(b[4:8]))
-		stream := b[0]
-		b = b[8:]
-		if n > int64(len(b)) || int64(len(stdout)+len(stderr))+n > runnerclient.MaxActionLogs {
+		n := int64(binary.BigEndian.Uint32(header[4:]))
+		wireBytes += 8 + n
+		if int64(len(stdout)+len(stderr))+n > runnerclient.MaxActionLogs || wireBytes > 9*runnerclient.MaxActionLogs {
 			return nil, nil, fmt.Errorf("action logs truncated or over limit")
 		}
-		if stream == 1 {
-			stdout = append(stdout, b[:n]...)
-		} else {
-			stderr = append(stderr, b[:n]...)
+		payload := make([]byte, n)
+		if _, err := io.ReadFull(r, payload); err != nil {
+			return nil, nil, errors.New("truncated action log frame")
 		}
-		b = b[n:]
+		if header[0] == 1 {
+			stdout = append(stdout, payload...)
+		} else {
+			stderr = append(stderr, payload...)
+		}
 	}
-	return stdout, stderr, nil
 }

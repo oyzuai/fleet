@@ -19,6 +19,8 @@ type ActionRuntime struct {
 	HelperPath string
 }
 
+var errActionLogs = errors.New("action logs unavailable or over limit")
+
 func (r *ActionRuntime) Ready(ctx context.Context) error {
 	if r == nil || r.Engine == nil {
 		return errors.New("missing action container engine")
@@ -161,8 +163,15 @@ func (r *ActionRuntime) RunAction(ctx context.Context, owner runnerclient.Action
 	if !holderAlive(ctx) {
 		return actionError("INTERNAL", "Workspace holder was lost before user start.")
 	}
-	runCtx, cancel := context.WithTimeout(ctx, time.Duration(a.TimeoutSeconds)*time.Second)
-	defer cancel()
+	deadlineCtx, deadlineCancel := context.WithTimeout(ctx, time.Duration(a.TimeoutSeconds)*time.Second)
+	defer deadlineCancel()
+	runCtx, cancel := context.WithCancelCause(deadlineCtx)
+	defer cancel(nil)
+	output, err := r.Engine.AttachActionOutput(runCtx, id)
+	if err != nil {
+		return actionError("INTERNAL", "Could not attach complete action output before start.")
+	}
+	defer output.Close()
 	holderLost := make(chan struct{})
 	watchDone := make(chan struct{})
 	lost := func() bool {
@@ -174,7 +183,7 @@ func (r *ActionRuntime) RunAction(ctx context.Context, owner runnerclient.Action
 		}
 	}
 	defer func() {
-		cancel()
+		cancel(nil)
 		<-watchDone
 		if lost() {
 			result = runnerclient.ActionCompletion{ErrorCode: "INTERNAL", Message: "Workspace holder observation was lost.", TerminationConfirmed: result.TerminationConfirmed}
@@ -195,7 +204,7 @@ func (r *ActionRuntime) RunAction(ctx context.Context, owner runnerclient.Action
 				}
 				if err != nil || !state.Running || state.OOMKilled || state.Error != "" {
 					close(holderLost)
-					cancel()
+					cancel(nil)
 					return
 				}
 			}
@@ -204,8 +213,27 @@ func (r *ActionRuntime) RunAction(ctx context.Context, owner runnerclient.Action
 	// Start errors may be ambiguous: always stop and inspect after attempting it.
 	startErr := r.Engine.StartContainer(runCtx, id)
 	waitErr := startErr
+	var stdout, stderr []byte
+	outputDone := make(chan struct{})
 	if startErr == nil {
+		go func() {
+			defer close(outputDone)
+			var outputErr error
+			stdout, stderr, outputErr = readActionOutput(output)
+			if outputErr == nil {
+				state, err := r.Engine.InspectContainer(runCtx, id)
+				if err != nil || state.Running {
+					outputErr = errActionLogs
+				}
+			}
+			if outputErr != nil {
+				cancel(errActionLogs)
+			}
+		}()
+		defer func() { cancel(nil); output.Close(); <-outputDone }()
 		_, waitErr = r.Engine.WaitContainer(runCtx, id)
+	} else {
+		close(outputDone)
 	}
 	observe, done := context.WithTimeout(context.WithoutCancel(ctx), 45*time.Second)
 	defer done()
@@ -219,6 +247,13 @@ func (r *ActionRuntime) RunAction(ctx context.Context, owner runnerclient.Action
 		return actionError("INTERNAL", "Action termination could not be confirmed.")
 	}
 	result.TerminationConfirmed = true
+	select {
+	case <-outputDone:
+	case <-observe.Done():
+		result.ErrorCode = "RESOURCE_EXHAUSTED"
+		result.Message = "Complete action logs unavailable."
+		return result
+	}
 	select {
 	case <-holderLost:
 		result.ErrorCode = "INTERNAL"
@@ -236,6 +271,11 @@ func (r *ActionRuntime) RunAction(ctx context.Context, owner runnerclient.Action
 		result.Message = "Action stopped."
 		return result
 	}
+	if errors.Is(context.Cause(runCtx), errActionLogs) {
+		result.ErrorCode = "RESOURCE_EXHAUSTED"
+		result.Message = "Action logs unavailable or over limit."
+		return result
+	}
 	if runCtx.Err() != nil {
 		result.ErrorCode = "DEADLINE_EXCEEDED"
 		result.Message = "Action exceeded its admitted timeout."
@@ -247,12 +287,7 @@ func (r *ActionRuntime) RunAction(ctx context.Context, owner runnerclient.Action
 		return result
 	}
 	result.ExitCode = &state.ExitCode
-	result.Stdout, result.Stderr, err = r.Engine.ContainerOutput(ctx, id)
-	if err != nil {
-		result.ErrorCode = "RESOURCE_EXHAUSTED"
-		result.Message = "Action logs unavailable or over limit."
-		return result
-	}
+	result.Stdout, result.Stderr = stdout, stderr
 	// Read only the private work volume after termination, without extracting
 	// untrusted archives onto the executor's host filesystem.
 	archive, err = r.Engine.ReadContainerArchive(ctx, id, "/work")

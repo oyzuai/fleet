@@ -1,9 +1,11 @@
 package container
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"io"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -13,25 +15,44 @@ import (
 	"github.com/oyzuai/fleet/runnerclient"
 )
 
-func TestActionEnginePreservesSeparatedLogsAndRejectsTruncation(t *testing.T) {
-	frame := func(stream byte, s string) []byte {
-		b := make([]byte, 8)
-		b[0] = stream
-		binary.BigEndian.PutUint32(b[4:], uint32(len(s)))
-		return append(b, []byte(s)...)
+func actionLogFrame(stream byte, s string) []byte {
+	b := make([]byte, 8, 8+len(s))
+	b[0] = stream
+	binary.BigEndian.PutUint32(b[4:], uint32(len(s)))
+	return append(b, s...)
+}
+
+func attachActionFrames(t *testing.T, w http.ResponseWriter, r *http.Request, b []byte) {
+	t.Helper()
+	if r.URL.Query().Get("logs") != "0" || r.URL.Query().Get("stream") != "1" || r.Header.Get("Upgrade") != "tcp" {
+		t.Error("action output did not attach to the live stream")
 	}
+	conn, rw, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	defer conn.Close()
+	rw.WriteString("HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+	rw.Write(b)
+	rw.Flush()
+}
+
+func TestActionEnginePreservesSeparatedLogsAndRejectsTruncation(t *testing.T) {
 	for _, broken := range []bool{false, true} {
-		d, _ := newStub(t, map[string]func(http.ResponseWriter, *http.Request){"GET /containers/action/logs": func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Query().Get("tail") != "" {
-				t.Error("action logs were tailed")
-			}
-			b := append(frame(1, "out"), frame(2, "err")...)
+		d, _ := newStub(t, map[string]func(http.ResponseWriter, *http.Request){"POST /containers/action/attach": func(w http.ResponseWriter, r *http.Request) {
+			b := append(actionLogFrame(1, "out"), actionLogFrame(2, "err")...)
 			if broken {
 				b = b[:len(b)-1]
 			}
-			w.Write(b)
+			attachActionFrames(t, w, r, b)
 		}})
-		out, stderr, err := d.ContainerOutput(context.Background(), "action")
+		stream, err := d.AttachActionOutput(context.Background(), "action")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, stderr, err := readActionOutput(stream)
+		stream.Close()
 		if broken {
 			if err == nil {
 				t.Fatal("accepted truncated logs")
@@ -113,16 +134,61 @@ func TestActionEngineReadinessRefusesMissingIsolation(t *testing.T) {
 }
 
 func TestActionEngineRejectsOversizedLogs(t *testing.T) {
-	d, _ := newStub(t, map[string]func(http.ResponseWriter, *http.Request){"GET /containers/action/logs": func(w http.ResponseWriter, r *http.Request) {
-		b := make([]byte, 8)
-		b[0] = 1
-		binary.BigEndian.PutUint32(b[4:], runnerclient.MaxActionLogs+1)
-		w.Write(b)
-		w.Write([]byte(strings.Repeat("x", runnerclient.MaxActionLogs+1)))
+	d, _ := newStub(t, map[string]func(http.ResponseWriter, *http.Request){"POST /containers/action/attach": func(w http.ResponseWriter, r *http.Request) {
+		attachActionFrames(t, w, r, actionLogFrame(1, strings.Repeat("x", runnerclient.MaxActionLogs+1)))
 	}})
-	if _, _, err := d.ContainerOutput(context.Background(), "action"); err == nil {
+	stream, err := d.AttachActionOutput(context.Background(), "action")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	if _, _, err := readActionOutput(stream); err == nil {
 		t.Fatal("accepted oversized logs")
 	}
+}
+
+func TestActionOutputShortLinesAndExactLimitNeverReset(t *testing.T) {
+	for _, size := range []int{200 << 10, runnerclient.MaxActionLogs, runnerclient.MaxActionLogs + 1} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			frames := bytes.Repeat(actionLogFrame(1, "\n"), size)
+			out, stderr, err := readActionOutput(bytes.NewReader(frames))
+			if size > runnerclient.MaxActionLogs {
+				if err == nil || out != nil || stderr != nil {
+					t.Fatal("accepted oversized short-line stream")
+				}
+			} else if err != nil || len(out) != size || len(stderr) != 0 {
+				t.Fatalf("short-line output was lost: bytes=%d err=%v", len(out), err)
+			}
+		})
+	}
+}
+
+func TestActionAttachmentCancellationUnblocksUpgradedRead(t *testing.T) {
+	done := make(chan struct{})
+	d, _ := newStub(t, map[string]func(http.ResponseWriter, *http.Request){"POST /containers/action/attach": func(w http.ResponseWriter, r *http.Request) {
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		rw.WriteString("HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+		rw.Flush()
+		io.Copy(io.Discard, conn)
+		close(done)
+	}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, err := d.AttachActionOutput(ctx, "action")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	cancel()
+	if _, _, err := readActionOutput(stream); err == nil {
+		t.Fatal("canceled output read succeeded")
+	}
+	<-done
 }
 
 func TestActionVolumeRequiresExactTmpfsBoundsAndOwnership(t *testing.T) {

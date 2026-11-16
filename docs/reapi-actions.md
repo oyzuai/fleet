@@ -100,8 +100,12 @@ and CMD with the admitted argv, verifies the actual allocation before start,
 and refuses extra mounts or missing controls. Images must already be provisioned
 by the operator under the admitted SHA-256 reference. Actions do not pull images.
 The runtime pins init off, disables image HEALTHCHECK and restart behavior, and
-caps the action's json-file logs at 1 MiB with one file. Actual container
-inspection verifies these settings before the action starts.
+caps diagnostic json-file logs at 1 MiB with one file. Result stdout/stderr comes
+from a live attachment established before user start, independently of diagnostic
+log rotation. A cumulative 1 MiB limit across both streams never resets;
+overflow or an incomplete stream stops the action and refuses successful output
+publication. Actual container inspection verifies the lifecycle and diagnostic
+log settings before the action starts.
 This action profile requires Docker's Linux named-tmpfs mechanism; the existing
 Podman adapter does not advertise it. Windows-hosted workers remain unqualified.
 
@@ -215,6 +219,9 @@ allocations through collection and compare their ENOSPC observations with the
 actual stopped archive, below transfer/message limits. The final cases stop the
 exact owned holder or cancel after an observed running-user ready marker,
 requiring observed user termination and no successful output/link/graph data.
+Short-line logging also checks that 200,000 payload bytes remain complete despite
+diagnostic rotation, and that a stream exceeding 1 MiB fails with
+`RESOURCE_EXHAUSTED` without publishing output.
 
 The original image-only mode kills only its own trusted child process after
 observing a live user and holder. A fresh `Process.Reap` removes the exact owned

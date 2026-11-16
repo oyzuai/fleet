@@ -543,6 +543,8 @@ test "$n" -lt 64
 printf 'inodes-enospc\n' > result
 printf 'inodes-enospc %s\n' "$n"
 `, 4 << 20, 64, ""},
+		{"logs-short-lines", "printf complete > result; awk 'BEGIN { for (i=0; i<100000; i++) print \"x\" }'", 4 << 20, 64, ""},
+		{"logs-overflow", "printf must-not-publish > result; awk 'BEGIN { for (i=0; i<600000; i++) print \"x\" }'", 4 << 20, 64, ""},
 		{"holder-loss", "printf must-not-publish > result; ln -s result output-link; printf 'proof-ready\\n'; sleep 30", 4 << 20, 64, "holder-loss"},
 		{"cancellation", "printf must-not-publish > result; ln -s result output-link; printf 'proof-ready\\n'; sleep 30", 4 << 20, 64, "cancel"},
 	}
@@ -606,7 +608,11 @@ printf 'inodes-enospc %s\n' "$n"
 		if result.ExitCode != nil {
 			exit = strconv.Itoa(*result.ExitCode)
 		}
-		if fixture.control != "" {
+		if fixture.name == "logs-overflow" {
+			if result.ErrorCode != "RESOURCE_EXHAUSTED" || !result.TerminationConfirmed || result.ExitCode != nil || observed.archiveChecked || len(result.Stdout)+len(result.Stderr)+len(result.Files)+len(result.Directories)+len(result.Symlinks)+len(result.WorkspaceNodes) != 0 {
+				return fmt.Errorf("oversized output accepted or published after truncation: code=%s termination=%t archive=%t", result.ErrorCode, result.TerminationConfirmed, observed.archiveChecked)
+			}
+		} else if fixture.control != "" {
 			want := "INTERNAL"
 			if fixture.control == "cancel" {
 				want = "CANCELLED"
@@ -619,6 +625,10 @@ printf 'inodes-enospc %s\n' "$n"
 				return fmt.Errorf("%s action failed: code=%s message=%q exit=%s termination=%t stdout=%q stderr=%q", fixture.name, result.ErrorCode, result.Message, exit, result.TerminationConfirmed, result.Stdout, result.Stderr)
 			}
 			switch fixture.name {
+			case "logs-short-lines":
+				if !bytes.Equal(result.Stdout, bytes.Repeat([]byte("x\n"), 100000)) || len(result.Stderr) != 0 || string(result.Files[0].Data) != "complete" {
+					return errors.New("short-line output was lost to diagnostic log rotation")
+				}
 			case "normal":
 				links := map[string]string{}
 				for _, l := range result.Symlinks {
