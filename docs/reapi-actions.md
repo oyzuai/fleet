@@ -23,6 +23,11 @@ workload or incomplete authority refuses the action; it never dispatches the
 action as a native build or host command. An executor's action capability must
 match a real configured isolation runtime.
 
+An executor configured with an action driver accepts only action jobs. Native
+and kind-operation assignments are refused before source preparation or command
+execution. Action-enabled process managers therefore require dedicated action
+pools; native jobs use a separate executor without the engine connection.
+
 `runnerclient.Job.Kind == "action"` selects `ActionAssignment`; it never uses
 repository, source, native plan, secret or Oyzu-command preparation. Assignments
 carry the server-selected instance/operation binding, immutable image, explicit
@@ -94,6 +99,9 @@ Fleet syscall/no-new-privileges policy. The runtime overrides image ENTRYPOINT
 and CMD with the admitted argv, verifies the actual allocation before start,
 and refuses extra mounts or missing controls. Images must already be provisioned
 by the operator under the admitted SHA-256 reference. Actions do not pull images.
+The runtime pins init off, disables image HEALTHCHECK and restart behavior, and
+caps the action's json-file logs at 1 MiB with one file. Actual container
+inspection verifies these settings before the action starts.
 This action profile requires Docker's Linux named-tmpfs mechanism; the existing
 Podman adapter does not advertise it. Windows-hosted workers remain unqualified.
 

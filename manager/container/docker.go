@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/oyzuai/fleet/runnerclient"
 )
 
 // apiVersion is the Docker Engine API version the client speaks. Docker 20.10
@@ -354,9 +356,12 @@ func (d *Docker) ListVolumes(ctx context.Context, labels map[string]string) ([]V
 // isolation. The fixed daemonless syscall/proc policy is explicit; AppArmor and
 // private PID, IPC and UTS namespaces retain the engine's normal configuration.
 type hostConfig struct {
-	Init                                                *bool                 `json:",omitempty"`
-	RestartPolicy                                       struct{ Name string } `json:",omitempty"`
-	LogConfig                                           struct{ Type string } `json:",omitempty"`
+	Init          *bool                 `json:",omitempty"`
+	RestartPolicy struct{ Name string } `json:",omitempty"`
+	LogConfig     struct {
+		Type   string
+		Config map[string]string `json:",omitempty"`
+	} `json:",omitempty"`
 	Privileged                                          bool
 	CapDrop                                             []string
 	CapAdd                                              []string `json:",omitempty"`
@@ -435,11 +440,16 @@ func createBody(spec Spec) containerConfig {
 	if spec.BootstrapVolume != "" {
 		hc.Mounts = append(hc.Mounts, mount{Type: "volume", Source: spec.BootstrapVolume, Target: "/bootstrap", ReadOnly: true, VolumeOptions: &volumeOptions{NoCopy: true}})
 	}
-	if spec.ActionControl {
+	if spec.ActionControl || spec.ActionUser {
 		disabled := false
 		hc.Init = &disabled
 		hc.RestartPolicy.Name = "no"
-		hc.LogConfig.Type = "none"
+		if spec.ActionControl {
+			hc.LogConfig.Type = "none"
+		} else {
+			hc.LogConfig.Type = "json-file"
+			hc.LogConfig.Config = map[string]string{"max-size": strconv.Itoa(runnerclient.MaxActionLogs), "max-file": "1"}
+		}
 	}
 	hc.ReadonlyRootfs = spec.ReadOnly
 	if spec.MemoryBytes > 0 {
@@ -460,7 +470,7 @@ func createBody(spec Spec) containerConfig {
 		Labels: spec.Labels, Env: append([]string{"HOME=" + spec.WorkDir}, spec.Env...), ExposedPorts: exposed,
 		NetworkDisabled: spec.Network == "none", HostConfig: hc,
 	}
-	if spec.ActionControl {
+	if spec.ActionControl || spec.ActionUser {
 		body.Healthcheck = &struct{ Test []string }{Test: []string{"NONE"}}
 	}
 	return body

@@ -182,6 +182,9 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	if job.Kind == runnerclient.ActionJob {
 		return runAction(ctx, cfg, st)
 	}
+	if cfg.ActionDriver != nil {
+		return errors.New("native jobs are refused by an action-enabled executor")
+	}
 	if job.Action != nil {
 		return errors.New("action payload on a native job refused")
 	}

@@ -94,6 +94,8 @@ type Spec struct {
 	BootstrapVolume string
 	// ActionControl disables image lifecycle hooks for trusted helper containers.
 	ActionControl bool
+	// ActionUser pins lifecycle controls and bounds logs for admitted action code.
+	ActionUser bool
 	// NanoCPUs and MemoryBytes cap the container; 0 means no cap.
 	NanoCPUs    int64
 	MemoryBytes int64

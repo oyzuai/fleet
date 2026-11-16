@@ -147,7 +147,7 @@ func (r *ActionRuntime) RunAction(ctx context.Context, owner runnerclient.Action
 	slices.Sort(env)
 	spec := Spec{Image: a.Image, Entrypoint: []string{a.Arguments[0]}, Cmd: append([]string{}, a.Arguments[1:]...), User: "1000:1000", Labels: labels,
 		Volume: name, VolumePath: "/work", VolumeNoCopy: true, WorkDir: path.Join("/work", a.WorkingDirectory), Network: "none", ReadOnly: true,
-		Env: env, NanoCPUs: a.NanoCPUs, MemoryBytes: a.MemoryBytes, PidsLimit: a.PidsLimit}
+		Env: env, NanoCPUs: a.NanoCPUs, MemoryBytes: a.MemoryBytes, PidsLimit: a.PidsLimit, ActionUser: true}
 	id, err := r.Engine.CreateContainer(ctx, name, spec)
 	if err != nil {
 		return actionError("INTERNAL", "Could not create isolated action container.")

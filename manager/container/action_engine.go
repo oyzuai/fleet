@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -51,6 +52,9 @@ func (d *Docker) ActionReady(ctx context.Context) error {
 // VerifyActionContainer observes the fixed allocation before admitted code can
 // start. Unknown controls or extra image-declared volumes refuse execution.
 func (d *Docker) VerifyActionContainer(ctx context.Context, id string, spec Spec) error {
+	if spec.ActionControl == spec.ActionUser {
+		return errors.New("action container must have exactly one action role")
+	}
 	var actual struct {
 		Config struct {
 			Image, User, WorkingDir string
@@ -87,8 +91,9 @@ func (d *Docker) VerifyActionContainer(ctx context.Context, id string, spec Spec
 			return errors.New("action mount differs from planned allocation")
 		}
 	}
-	if spec.ActionControl && (h.Init == nil || *h.Init || h.RestartPolicy.Name != "no" || h.LogConfig.Type != "none" || actual.Config.Healthcheck == nil || !slices.Equal(actual.Config.Healthcheck.Test, []string{"NONE"})) {
-		return errors.New("image lifecycle controls not disabled")
+	expectedLogs := createBody(spec).HostConfig.LogConfig
+	if h.Init == nil || *h.Init || h.RestartPolicy.Name != "no" || h.LogConfig.Type != expectedLogs.Type || !maps.Equal(h.LogConfig.Config, expectedLogs.Config) || actual.Config.Healthcheck == nil || !slices.Equal(actual.Config.Healthcheck.Test, []string{"NONE"}) {
+		return errors.New("action lifecycle or log policy differs from required allocation")
 	}
 	if !d.podman {
 		if !h.sandbox().applied() {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -43,23 +44,48 @@ func TestActionEnginePreservesSeparatedLogsAndRejectsTruncation(t *testing.T) {
 
 func TestActionEngineVerifiesActualAllocation(t *testing.T) {
 	a := testAction()
-	spec := Spec{Image: a.Image, Entrypoint: []string{"tool"}, Cmd: []string{}, User: "1000:1000", Volume: "private", VolumePath: "/work", VolumeNoCopy: true, WorkDir: "/work/sub", Network: "none", ReadOnly: true, NanoCPUs: 1e9, MemoryBytes: 64 << 20, PidsLimit: 32}
+	spec := Spec{Image: a.Image, Entrypoint: []string{"tool"}, Cmd: []string{}, User: "1000:1000", Volume: "private", VolumePath: "/work", VolumeNoCopy: true, WorkDir: "/work/sub", Network: "none", ReadOnly: true, NanoCPUs: 1e9, MemoryBytes: 64 << 20, PidsLimit: 32, ActionUser: true}
 	body := createBody(spec)
 	if body.Entrypoint[0] != "tool" || body.HostConfig.Mounts[0].Target != "/work" || body.HostConfig.Mounts[0].VolumeOptions == nil || !body.HostConfig.Mounts[0].VolumeOptions.NoCopy {
 		t.Fatal("image entrypoint or volume copy not overridden")
 	}
-	for _, unsafe := range []bool{false, true} {
-		d, _ := newStub(t, map[string]func(http.ResponseWriter, *http.Request){"GET /containers/action/json": func(w http.ResponseWriter, r *http.Request) {
-			mounts := []map[string]any{{"Type": "volume", "Name": "private", "Destination": "/work", "RW": true}}
-			if unsafe {
-				mounts = append(mounts, map[string]any{"Type": "bind", "Destination": "/run/engine.sock"})
+	if body.HostConfig.LogConfig.Type != "json-file" || body.HostConfig.LogConfig.Config["max-size"] != strconv.Itoa(runnerclient.MaxActionLogs) || body.HostConfig.LogConfig.Config["max-file"] != "1" || body.HostConfig.Init == nil || *body.HostConfig.Init || body.HostConfig.RestartPolicy.Name != "no" || body.Healthcheck == nil || !reflect.DeepEqual(body.Healthcheck.Test, []string{"NONE"}) {
+		t.Fatalf("unbounded logs or inherited lifecycle controls: %+v", body)
+	}
+	for _, test := range []struct {
+		name   string
+		change func(*containerConfig)
+	}{
+		{"valid", nil},
+		{"extra mount", nil},
+		{"default log driver", func(b *containerConfig) { b.HostConfig.LogConfig.Type = "" }},
+		{"missing log bounds", func(b *containerConfig) { b.HostConfig.LogConfig.Config = nil }},
+		{"oversized logs", func(b *containerConfig) {
+			b.HostConfig.LogConfig.Config["max-size"] = strconv.Itoa(runnerclient.MaxActionLogs * 2)
+		}},
+		{"extra log files", func(b *containerConfig) { b.HostConfig.LogConfig.Config["max-file"] = "2" }},
+		{"inherited init", func(b *containerConfig) { b.HostConfig.Init = nil }},
+		{"enabled init", func(b *containerConfig) { enabled := true; b.HostConfig.Init = &enabled }},
+		{"image healthcheck", func(b *containerConfig) { b.Healthcheck.Test = []string{"CMD", "unexpected"} }},
+		{"restart enabled", func(b *containerConfig) { b.HostConfig.RestartPolicy.Name = "always" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			d, _ := newStub(t, map[string]func(http.ResponseWriter, *http.Request){"GET /containers/action/json": func(w http.ResponseWriter, r *http.Request) {
+				body := createBody(spec)
+				if test.change != nil {
+					test.change(&body)
+				}
+				mounts := []map[string]any{{"Type": "volume", "Name": "private", "Destination": "/work", "RW": true}}
+				if test.name == "extra mount" {
+					mounts = append(mounts, map[string]any{"Type": "bind", "Destination": "/run/engine.sock"})
+				}
+				json.NewEncoder(w).Encode(map[string]any{"Config": body, "HostConfig": body.HostConfig, "Mounts": mounts})
+			}})
+			err := d.VerifyActionContainer(context.Background(), "action", spec)
+			if (err != nil) != (test.name != "valid") {
+				t.Fatalf("allocation acceptance: %v", err)
 			}
-			json.NewEncoder(w).Encode(map[string]any{"Config": body, "HostConfig": body.HostConfig, "Mounts": mounts})
-		}})
-		err := d.VerifyActionContainer(context.Background(), "action", spec)
-		if (err != nil) != unsafe {
-			t.Fatalf("allocation acceptance: %v", err)
-		}
+		})
 	}
 }
 

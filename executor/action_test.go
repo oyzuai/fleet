@@ -28,6 +28,42 @@ func (d actionDriverFake) RunAction(ctx context.Context, _ runnerclient.ActionOw
 	return d.run(ctx)
 }
 
+func TestActionExecutorRefusesNativeAssignments(t *testing.T) {
+	for _, kind := range []string{"build", runnerclient.KindOperationJob} {
+		t.Run(kind, func(t *testing.T) {
+			starts := 0
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/runner/v1/job/start" {
+					t.Errorf("native preparation or execution route called: %s", r.URL.Path)
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				starts++
+				json.NewEncoder(w).Encode(runnerclient.Started{JobToken: "job", Expires: time.Now().Add(time.Minute), Job: runnerclient.Job{ID: 1, Attempt: 1, Kind: kind}})
+			}))
+			defer s.Close()
+			dir := t.TempDir()
+			token := filepath.Join(dir, "startup")
+			if err := os.WriteFile(token, []byte("once"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := Config{Client: runnerclient.New(s.URL, nil), StartupTokenFile: token, WorkDir: filepath.Join(dir, "source"), Git: "must-not-run", Oyzu: "must-not-run", ActionDriver: actionDriverFake{run: func(context.Context) runnerclient.ActionCompletion {
+				t.Fatal("action driver invoked for native assignment")
+				return runnerclient.ActionCompletion{}
+			}}}
+			if err := Run(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "native jobs are refused") {
+				t.Fatalf("native assignment was not explicitly refused: %v", err)
+			}
+			if starts != 1 {
+				t.Fatalf("unexpected startup calls: %d", starts)
+			}
+			if _, err := os.Stat(cfg.WorkDir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("native work directory was created")
+			}
+		})
+	}
+}
+
 func TestActionDispatchNeverUsesNativeSource(t *testing.T) {
 	for _, missing := range []bool{false, true} {
 		t.Run(map[bool]string{false: "driver", true: "missing driver"}[missing], func(t *testing.T) {
