@@ -29,8 +29,16 @@ func (d actionDriverFake) RunAction(ctx context.Context, _ runnerclient.ActionOw
 }
 
 func TestActionExecutorRefusesNativeAssignments(t *testing.T) {
-	for _, kind := range []string{"build", runnerclient.KindOperationJob} {
-		t.Run(kind, func(t *testing.T) {
+	for _, assignment := range []struct {
+		name   string
+		kind   string
+		action *runnerclient.ActionAssignment
+	}{
+		{name: "build", kind: "build"},
+		{name: "kind", kind: runnerclient.KindOperationJob},
+		{name: "native with action payload", kind: "build", action: &runnerclient.ActionAssignment{}},
+	} {
+		t.Run(assignment.name, func(t *testing.T) {
 			starts := 0
 			finishes := 0
 			var outcome runnerclient.Outcome
@@ -52,7 +60,7 @@ func TestActionExecutorRefusesNativeAssignments(t *testing.T) {
 					return
 				}
 				starts++
-				json.NewEncoder(w).Encode(runnerclient.Started{JobToken: "job", Expires: time.Now().Add(time.Minute), Job: runnerclient.Job{ID: 1, Attempt: 1, Kind: kind}})
+				json.NewEncoder(w).Encode(runnerclient.Started{JobToken: "job", Expires: time.Now().Add(time.Minute), Job: runnerclient.Job{ID: 1, Attempt: 1, Kind: assignment.kind, Action: assignment.action}})
 			}))
 			defer s.Close()
 			dir := t.TempDir()

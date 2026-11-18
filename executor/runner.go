@@ -182,7 +182,7 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	if job.Kind == runnerclient.ActionJob {
 		return runAction(ctx, cfg, st)
 	}
-	if job.Action != nil {
+	if job.Action != nil && cfg.ActionDriver == nil {
 		return errors.New("action payload on a native job refused")
 	}
 	span.Int("oyzu.fleet.job", job.ID)
