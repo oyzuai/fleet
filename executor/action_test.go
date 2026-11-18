@@ -33,22 +33,47 @@ func TestActionExecutorRefusesNativeAssignments(t *testing.T) {
 		name   string
 		kind   string
 		action *runnerclient.ActionAssignment
+		cancel bool
+		revoke bool
 	}{
 		{name: "build", kind: "build"},
 		{name: "kind", kind: runnerclient.KindOperationJob},
+		{name: "cancelled kind", kind: runnerclient.KindOperationJob, cancel: true},
+		{name: "revoked kind", kind: runnerclient.KindOperationJob, revoke: true},
 		{name: "native with action payload", kind: "build", action: &runnerclient.ActionAssignment{}},
 	} {
 		t.Run(assignment.name, func(t *testing.T) {
 			starts := 0
 			finishes := 0
+			beats := 0
 			var outcome runnerclient.Outcome
+			var kindOutcome struct {
+				NoResult  *runnerclient.KindNoResult      `json:"no_result"`
+				Result    json.RawMessage                 `json:"result"`
+				Execution *runnerclient.ExecutionEvidence `json:"execution"`
+			}
+			finishPath, jobToken := "/runner/v1/job/finish", "oyzu_job_current"
+			kind := assignment.kind == runnerclient.KindOperationJob
+			if kind {
+				finishPath, jobToken = "/runner/v1/job/kind/finish", "oyzu_kjob_current"
+			}
 			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/runner/v1/job/finish" {
-					if r.Header.Get("Authorization") != "Bearer job" {
-						t.Error("finish did not use the current job token")
+				if r.URL.Path == finishPath || kind && r.URL.Path == "/runner/v1/job/kind/heartbeat" {
+					if r.Header.Get("Authorization") != "Bearer "+jobToken || assignment.revoke {
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+					if r.URL.Path == "/runner/v1/job/kind/heartbeat" {
+						beats++
+						json.NewEncoder(w).Encode(runnerclient.KindBeat{Expires: time.Now().Add(time.Minute), Cancel: assignment.cancel})
+						return
 					}
 					finishes++
-					if err := json.NewDecoder(r.Body).Decode(&outcome); err != nil {
+					var target any = &outcome
+					if kind {
+						target = &kindOutcome
+					}
+					if err := json.NewDecoder(r.Body).Decode(target); err != nil {
 						t.Error(err)
 					}
 					w.WriteHeader(http.StatusNoContent)
@@ -56,11 +81,11 @@ func TestActionExecutorRefusesNativeAssignments(t *testing.T) {
 				}
 				if r.URL.Path != "/runner/v1/job/start" {
 					t.Errorf("native preparation or execution route called: %s", r.URL.Path)
-					w.WriteHeader(http.StatusInternalServerError)
+					w.WriteHeader(http.StatusUnauthorized)
 					return
 				}
 				starts++
-				json.NewEncoder(w).Encode(runnerclient.Started{JobToken: "job", Expires: time.Now().Add(time.Minute), Job: runnerclient.Job{ID: 1, Attempt: 1, Kind: assignment.kind, Action: assignment.action}})
+				json.NewEncoder(w).Encode(runnerclient.Started{JobToken: jobToken, Expires: time.Now().Add(time.Minute), Job: runnerclient.Job{ID: 1, Attempt: 1, Kind: assignment.kind, Action: assignment.action}})
 			}))
 			defer s.Close()
 			dir := t.TempDir()
@@ -72,10 +97,24 @@ func TestActionExecutorRefusesNativeAssignments(t *testing.T) {
 				t.Fatal("action driver invoked for native assignment")
 				return runnerclient.ActionCompletion{}
 			}}}
-			if err := Run(context.Background(), cfg); err != nil {
+			err := Run(context.Background(), cfg)
+			if assignment.revoke {
+				if !errors.Is(err, runnerclient.ErrUnauthenticated) || starts != 1 || finishes != 0 {
+					t.Fatalf("revoked kind reported completion: starts=%d finishes=%d error=%v", starts, finishes, err)
+				}
+			} else if err != nil {
 				t.Fatal(err)
-			}
-			if starts != 1 || finishes != 1 || outcome.State != "failed" || outcome.ReasonCode != "RUNNER_ERROR" || !strings.Contains(outcome.Summary, "Native jobs are refused") {
+			} else if starts != 1 || finishes != 1 {
+				t.Fatalf("assignment not finished: starts=%d finishes=%d", starts, finishes)
+			} else if kind {
+				code := "kind-not-started"
+				if assignment.cancel {
+					code = "cancelled"
+				}
+				if beats != 1 || kindOutcome.NoResult == nil || kindOutcome.NoResult.Started || kindOutcome.NoResult.Code != code || len(kindOutcome.Result) != 0 || kindOutcome.Execution != nil {
+					t.Fatalf("kind was not refused without execution: beats=%d outcome=%+v", beats, kindOutcome)
+				}
+			} else if outcome.State != "failed" || outcome.ReasonCode != "RUNNER_ERROR" || !strings.Contains(outcome.Summary, "Native jobs are refused") {
 				t.Fatalf("assignment did not finish failed: starts=%d finishes=%d outcome=%+v", starts, finishes, outcome)
 			}
 			if outcome.ExitCode != nil || len(outcome.Outputs) != 0 || len(outcome.Plan) != 0 || outcome.Execution != nil {

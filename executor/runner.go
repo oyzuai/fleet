@@ -190,7 +190,25 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	span.Str("oyzu.fleet.kind", job.Kind)
 	span.Str("oyzu.fleet.operation", job.Operation)
 	span.Int("oyzu.fleet.heartbeat_seconds", int64(st.HeartbeatSeconds))
-	if job.Kind == runnerclient.KindOperationJob && cfg.ActionDriver == nil {
+	if job.Kind == runnerclient.KindOperationJob {
+		if cfg.ActionDriver != nil {
+			finishCtx, done := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
+			defer done()
+			// Kind attempts have separate credentials and terminal reporting.
+			// Recheck their lease without preparing or starting the kind.
+			beat, err := cfg.Client.KindHeartbeat(finishCtx, st.JobToken)
+			if err != nil {
+				return fmt.Errorf("check refused kind assignment: %w", err)
+			}
+			none := &runnerclient.KindNoResult{Code: "kind-not-started", Message: "Native jobs are refused by an action-enabled executor."}
+			if beat.Cancel {
+				none.Code, none.Message = "cancelled", "Kind cancelled before execution."
+			}
+			if err := cfg.Client.KindFinish(finishCtx, st.JobToken, nil, none); err != nil {
+				return fmt.Errorf("report refused kind assignment: %w", err)
+			}
+			return nil
+		}
 		return kindrunner.Run(ctx, kindrunner.Config{
 			Client: cfg.Client, Token: st.JobToken, LeaseExpires: st.Expires, HeartbeatEvery: time.Duration(st.HeartbeatSeconds) * time.Second,
 			KindsDir: cfg.KindsDir, StateDir: cfg.KindStateDir, WorkDir: cfg.WorkDir, SecretsDir: cfg.SecretsDir, Owner: cfg.JobDir, Docker: cfg.Docker, DockerNetwork: cfg.DockerNetwork, DockerEnv: cfg.DockerEnv, Log: cfg.Log,

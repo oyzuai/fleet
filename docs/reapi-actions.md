@@ -25,8 +25,11 @@ match a real configured isolation runtime.
 
 An executor configured with an action driver accepts only action jobs. Native
 and kind-operation assignments are refused before source preparation or command
-execution and reported failed through the ordinary job finish route, using the
-current attempt's job token and lease. Action-enabled process managers therefore
+execution and reported failed through their workload's finish route, using the
+current attempt's job token and lease. Kind operations use the kind heartbeat and
+finish routes with a `kind-not-started` no-result report and `started: false`;
+a current cancellation returns the existing `cancelled` no-result code.
+Action-enabled process managers therefore
 require dedicated action pools; native jobs use a separate executor without the
 engine connection.
 
