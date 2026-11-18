@@ -32,7 +32,20 @@ func TestActionExecutorRefusesNativeAssignments(t *testing.T) {
 	for _, kind := range []string{"build", runnerclient.KindOperationJob} {
 		t.Run(kind, func(t *testing.T) {
 			starts := 0
+			finishes := 0
+			var outcome runnerclient.Outcome
 			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/runner/v1/job/finish" {
+					if r.Header.Get("Authorization") != "Bearer job" {
+						t.Error("finish did not use the current job token")
+					}
+					finishes++
+					if err := json.NewDecoder(r.Body).Decode(&outcome); err != nil {
+						t.Error(err)
+					}
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
 				if r.URL.Path != "/runner/v1/job/start" {
 					t.Errorf("native preparation or execution route called: %s", r.URL.Path)
 					w.WriteHeader(http.StatusInternalServerError)
@@ -51,11 +64,17 @@ func TestActionExecutorRefusesNativeAssignments(t *testing.T) {
 				t.Fatal("action driver invoked for native assignment")
 				return runnerclient.ActionCompletion{}
 			}}}
-			if err := Run(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "native jobs are refused") {
-				t.Fatalf("native assignment was not explicitly refused: %v", err)
+			if err := Run(context.Background(), cfg); err != nil {
+				t.Fatal(err)
 			}
-			if starts != 1 {
-				t.Fatalf("unexpected startup calls: %d", starts)
+			if starts != 1 || finishes != 1 || outcome.State != "failed" || outcome.ReasonCode != "RUNNER_ERROR" || !strings.Contains(outcome.Summary, "Native jobs are refused") {
+				t.Fatalf("assignment did not finish failed: starts=%d finishes=%d outcome=%+v", starts, finishes, outcome)
+			}
+			if outcome.ExitCode != nil || len(outcome.Outputs) != 0 || len(outcome.Plan) != 0 || outcome.Execution != nil {
+				t.Fatalf("refused assignment returned execution results: %+v", outcome)
+			}
+			if _, err := os.Stat(token); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("startup token file still exists: %v", err)
 			}
 			if _, err := os.Stat(cfg.WorkDir); !errors.Is(err, os.ErrNotExist) {
 				t.Fatal("native work directory was created")

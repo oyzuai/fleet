@@ -182,9 +182,6 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	if job.Kind == runnerclient.ActionJob {
 		return runAction(ctx, cfg, st)
 	}
-	if cfg.ActionDriver != nil {
-		return errors.New("native jobs are refused by an action-enabled executor")
-	}
 	if job.Action != nil {
 		return errors.New("action payload on a native job refused")
 	}
@@ -193,7 +190,7 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	span.Str("oyzu.fleet.kind", job.Kind)
 	span.Str("oyzu.fleet.operation", job.Operation)
 	span.Int("oyzu.fleet.heartbeat_seconds", int64(st.HeartbeatSeconds))
-	if job.Kind == runnerclient.KindOperationJob {
+	if job.Kind == runnerclient.KindOperationJob && cfg.ActionDriver == nil {
 		return kindrunner.Run(ctx, kindrunner.Config{
 			Client: cfg.Client, Token: st.JobToken, LeaseExpires: st.Expires, HeartbeatEvery: time.Duration(st.HeartbeatSeconds) * time.Second,
 			KindsDir: cfg.KindsDir, StateDir: cfg.KindStateDir, WorkDir: cfg.WorkDir, SecretsDir: cfg.SecretsDir, Owner: cfg.JobDir, Docker: cfg.Docker, DockerNetwork: cfg.DockerNetwork, DockerEnv: cfg.DockerEnv, Log: cfg.Log,
@@ -217,7 +214,11 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	}()
 
 	completion := nativeCompletion{}
-	outcome, capture := execute(buildCtx, cfg, st.JobToken, startup, job, log, &completion)
+	outcome := failed("Native jobs are refused by an action-enabled executor.")
+	var capture *logCapture
+	if cfg.ActionDriver == nil {
+		outcome, capture = execute(buildCtx, cfg, st.JobToken, startup, job, log, &completion)
+	}
 	drain := cfg.LogDrainTimeout
 	if drain <= 0 || drain > logDrainWindow {
 		drain = logDrainWindow
