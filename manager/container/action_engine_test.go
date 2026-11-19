@@ -85,6 +85,7 @@ func TestActionEngineVerifiesActualAllocation(t *testing.T) {
 			b.HostConfig.LogConfig.Config["max-size"] = strconv.Itoa(runnerclient.MaxActionLogs * 2)
 		}},
 		{"extra log files", func(b *containerConfig) { b.HostConfig.LogConfig.Config["max-file"] = "2" }},
+		{"daemon log option", func(b *containerConfig) { b.HostConfig.LogConfig.Config["labels"] = "pool" }},
 		{"inherited init", func(b *containerConfig) { b.HostConfig.Init = nil }},
 		{"enabled init", func(b *containerConfig) { enabled := true; b.HostConfig.Init = &enabled }},
 		{"image healthcheck", func(b *containerConfig) { b.Healthcheck.Test = []string{"CMD", "unexpected"} }},

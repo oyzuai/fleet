@@ -143,17 +143,17 @@ reference = "go/app"
 profile = "app"
 package = "oyzu/go"
 major = 0
-version = "0.1.2"
-release = "sha256:d38742b0e3235331fbeb95d27fd719ef95b2b9d2d08b7faba8be37ae4058ce21"
+version = "0.1.3"
+release = "sha256:5e1be040df33ffea376a73409bb5050a29fa03b0e4f77a736e9f313fdc49c7f9"
 
 [[plugin.payloads]]
 os = "linux"
 arch = "amd64"
 abi = "musl"
-digest = "sha256:775f6a8ba4967cc0a249ea13c97775550b23321fd82d286a599aab9a33f5e14a"
+digest = "sha256:5a48d6d9a424f6532967496b5421992c534b0cbfac0194b413179ea3880eb48f"
 
 [[plugin.payloads]]
 os = "windows"
 arch = "amd64"
 abi = "msvc"
-digest = "sha256:336d867ac78410fdb9d4ada6dcf65e95d698d529e1f4e06df4a9f5b5a43ee0e0"
+digest = "sha256:41d947a793e899743c18beca0319a474a82862686235b21a0fc3950bbc12f141"
