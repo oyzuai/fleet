@@ -16,9 +16,10 @@ git() {
   local location="$2"
   shift 2
   case "$1" in
-    rev-parse) case "$2" in --is-inside-work-tree) echo true ;; --show-prefix) echo ;; HEAD) echo fixture-sha ;; esac ;;
+    rev-parse) case "$2" in --is-inside-work-tree) echo true ;; --show-prefix) echo ;; HEAD|refs/remotes/origin/main) echo fixture-sha ;; esac ;;
     symbolic-ref) echo main ;;
     config) case "$location" in */context) echo https://github.com/oyzuai/context.git ;; *) echo https://github.com/oyzuai/agent-workflows.git ;; esac ;;
+    status) : ;;
     pull) [ "${FAIL_REFRESH:-0}" = 0 ] ;;
     show) echo "committed $2" ;;
     log) if [ "${OLD:-0}" = 1 ]; then echo 1; else date +%s; fi ;;
@@ -44,7 +45,11 @@ bash "$hook" > "$fixture/out" 2> "$fixture/err"
 check_links
 OLD=1 bash "$hook" > "$fixture/out" 2> "$fixture/err"
 grep -q 'more than a day old' "$fixture/err"
-FAIL_REFRESH=1 bash "$hook" > "$fixture/out" 2> "$fixture/err"
+if FAIL_REFRESH=1 bash "$hook" > "$fixture/out" 2> "$fixture/err"; then
+  echo "FAIL: context refresh failure must exit nonzero" >&2
+  exit 1
+fi
+grep -q "context load FAILED" "$fixture/out"
 grep -q 'shared oyzuai/context could not' "$fixture/err"
 grep -q 'shared skills could not' "$fixture/err"
 check_links
@@ -58,4 +63,4 @@ grep -q 'skill collision' "$fixture/err"
 for name in contract-change dependency-change docs-change publish-plugin release-cli rust-change; do
   [ -L "$CLAUDE_PROJECT_DIR/.claude/skills/$name" ]
 done
-printf '%s\n' 'PASS: discovery, collision continuation/precedence, repeat load, stale warning, offline continuation, user-package preservation'
+printf '%s\n' 'PASS: discovery, collision continuation/precedence, repeat load, stale warning, failed refresh denial, user-package preservation'

@@ -5,8 +5,20 @@
         "hooks": [
           {
             "type": "command",
-            "timeout": 60,
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/load-context.sh\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-runner.mjs\" session-start claude || exit 2",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-runner.mjs\" pre-tool-use claude || exit 2",
+            "timeout": 10
           }
         ]
       }

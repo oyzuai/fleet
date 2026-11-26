@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# SessionStart: shared context is optional; repository work stays usable offline.
+# SessionStart loader. The context-guard wrapper records per-session state.
 set -u
 export GIT_TERMINAL_PROMPT=0
 project_dir="${CLAUDE_PROJECT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 context_dir="$(dirname -- "$project_dir")/context"
-warn() { printf '%s\n' 'warning: shared oyzuai/context could not be refreshed or loaded; continuing without shared context.' >&2; }
+error() {
+  # SessionStart stdout enters the session; stderr also reaches the operator.
+  printf 'ERROR: %s\n' "$*" >&2
+  printf 'ERROR: %s\n' "$*"
+}
 load_context() {
   if [ -e "$context_dir" ]; then
     git -C "$context_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
@@ -14,7 +18,9 @@ load_context() {
       https://github.com/oyzuai/context|https://github.com/oyzuai/context.git|git@github.com:oyzuai/context.git) ;;
       *) return 1 ;;
     esac
+    [ -z "$(git -C "$context_dir" status --porcelain)" ] || return 1
     git -C "$context_dir" pull --ff-only origin main >/dev/null 2>&1 || return 1
+    [ "$(git -C "$context_dir" rev-parse HEAD)" = "$(git -C "$context_dir" rev-parse refs/remotes/origin/main)" ] || return 1
   else
     git clone --quiet --branch main https://github.com/oyzuai/context.git "$context_dir" >/dev/null 2>&1 || return 1
   fi
@@ -22,7 +28,12 @@ load_context() {
   commit="$(git -C "$context_dir" rev-parse HEAD)" || return 1
   constitution="$(git -C "$context_dir" show "$commit:CONSTITUTION.md" 2>/dev/null)" || return 1
   index="$(git -C "$context_dir" show "$commit:INDEX.md" 2>/dev/null)" || return 1
-  printf '%s\n\n%s\n\ncontext commit %s\n' "$constitution" "$index" "$commit"
+  client="${OYZU_CONTEXT_CLIENT:-claude}"
+  case "$client" in codex) provider=codex ;; claude) provider=claude-code ;; *) return 1 ;; esac
+  agreements="$(git -C "$context_dir" show "$commit:policy/working-agreements.md" 2>/dev/null)" || return 1
+  profile="$(git -C "$context_dir" show "$commit:accounts/maintainer-profile.md" 2>/dev/null)" || return 1
+  adapter="$(git -C "$context_dir" show "$commit:providers/$provider.md" 2>/dev/null)" || return 1
+  printf '%s\n\n%s\n\n%s\n\n%s\n\n%s\n\ncontext commit %s\nContext root: %s\n' "$constitution" "$index" "$agreements" "$profile" "$adapter" "$commit" "$context_dir"
 }
 
 # Refresh the generic skill source separately: a context failure must not hide it.
@@ -70,6 +81,7 @@ load_skills() {
   printf 'skills source commit %s\n' "$(git -C "$workflows_dir" rev-parse HEAD)"
 }
 
-load_context || warn
-load_skills || printf '%s\n' 'warning: shared skills could not be refreshed or linked; continuing with existing skills.' >&2
-exit 0
+context_status=0
+load_context || { context_status=1; error 'shared oyzuai/context could not be refreshed or loaded; context load FAILED. Check repository access and retry before relying on shared context.'; }
+load_skills || error 'shared skills could not be refreshed or linked; using existing skills. Check repository access and skill paths.'
+exit "$context_status"
