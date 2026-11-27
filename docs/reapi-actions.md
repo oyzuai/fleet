@@ -25,8 +25,13 @@ match a real configured isolation runtime.
 
 An executor configured with an action driver accepts only action jobs. Native
 and kind-operation assignments are refused before source preparation or command
-execution. Action-enabled process managers therefore require dedicated action
-pools; native jobs use a separate executor without the engine connection.
+execution and reported failed through their workload's finish route, using the
+current attempt's job token and lease. Kind operations use the kind heartbeat and
+finish routes with a `kind-not-started` no-result report and `started: false`;
+a current cancellation returns the existing `cancelled` no-result code.
+Action-enabled process managers therefore
+require dedicated action pools; native jobs use a separate executor without the
+engine connection.
 
 `runnerclient.Job.Kind == "action"` selects `ActionAssignment`; it never uses
 repository, source, native plan, secret or Oyzu-command preparation. Assignments
@@ -106,6 +111,17 @@ log rotation. A cumulative 1 MiB limit across both streams never resets;
 overflow or an incomplete stream stops the action and refuses successful output
 publication. Actual container inspection verifies the lifecycle and diagnostic
 log settings before the action starts.
+
+Container inspection requires the exact diagnostic log option map, with
+`max-size=1048576` and `max-file=1` for user containers. Extra options inherited
+from Docker's daemon `log-opts`, such as `labels`, `env` or `compress`, also fail
+this comparison and refuse every affected action before user start. Holder
+containers require the `none` log driver with no options. Provision the dedicated
+action pool's Docker daemon so it adds no options beyond these fixed maps.
+Do not share an incompatible daemon configuration with an action pool. This
+fail-closed check prevents unreviewed diagnostic log behavior; the live
+attachment and cumulative stdout/stderr limit remain required independently.
+
 This action profile requires Docker's Linux named-tmpfs mechanism; the existing
 Podman adapter does not advertise it. Windows-hosted workers remain unqualified.
 
