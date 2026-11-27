@@ -4,16 +4,20 @@ Claude runs `.claude/hooks/hook-runner.mjs` at SessionStart and before every too
 Codex uses the same runner through `.codex/hooks.json`. Review and trust the
 native hook definitions before use. These files do not install account hooks.
 
-For Codex, the trusted launcher must set `CODEX_PROJECT_ROOT` to the absolute
-checkout root before starting the session. This is a deployment requirement,
-not an assumed Codex-provided variable. A missing, relative or inaccessible root
-fails closed. The runner never searches the tool cwd for executable code.
+For Codex, the trusted launcher can set `OYZU_CONTEXT_PROJECT_ROOT` to the
+absolute checkout root. Otherwise, the hook derives the root with
+`git rev-parse --show-toplevel`. A relative or inaccessible root, missing hook
+configuration, or runner outside that root fails closed. The runner never walks
+up from the tool cwd to search for executable code.
 
 The loader refreshes the sibling `context` checkout on `main`, verifies its
 canonical origin and clean state, and reads the committed constitution, index,
 working agreements, maintainer profile and client adapter. It prints the exact
 context commit and root. Bash, Git, Node.js 24+ and repository access are required.
-Shared skills are refreshed separately without replacing existing packages.
+An unusable sibling is preserved while the loader tries a private clean clone
+in the OS state directory. If refresh fails, a clean cached `main` checkout at
+its last-fetched `origin/main` is accepted with an offline warning. Shared skills
+are refreshed separately without replacing existing packages.
 
 State is stored per client/session in the OS state directory, outside the repo.
 Failed context loading invalidates prior success. Until context loads, mutations

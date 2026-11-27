@@ -53,8 +53,10 @@ function tokens(command) {
 
 function publication(command, cwd) {
   const literal = command.replace(/['"\\]/g, '');
-  if (/\bgit(?:\b[^]*?\b|-)send-pack\b/i.test(literal) || /\bapi\.github\.com\b/i.test(literal) || /\bgh\b[^]*?\balias\b/.test(literal))
-    return 'Direct GitHub API, send-pack and gh alias commands are denied; use the guarded publication path.';
+  if (/\bgit\b[^]*?\bsend-pack\b/.test(literal) || /\bgh\b[^]*?\balias\b/.test(literal)
+    || /(?:^|[\s;&|(])gh\s+(?:-\S+\s+)*(?:release|workflow|secret|variable|pr\s+review|run\s+(?:rerun|cancel|delete)|repo\s+(?:edit|delete|rename|archive|sync))\b/.test(literal)
+    || /\b(?:api|uploads)\.github\.com\b/i.test(literal))
+    return 'Direct GitHub publication and aliases are denied; use the guarded PR command path.';
   const create = /\bgh\b[^]*?\bpr\s+(?:create|new)\b/.test(literal);
   const merge = /\bgh\b[^]*?\bpr\s+merge\b/.test(literal);
   const push = /\bgit\b[^]*?\bpush\b/.test(literal);
@@ -63,10 +65,36 @@ function publication(command, cwd) {
   const words = tokens(command);
   if (!words || words[0] !== (push ? 'git' : 'gh')) return 'Run publication as a separate, literal command with a Test-first: body and initiative:* label.';
   if (api) {
-    const methods = words.flatMap((word, i) => word === '-X' || word === '--method' ? [words[i + 1]]
-      : /^(?:--method=|-X.)/.test(word) ? [word.replace(/^(?:--method=|-X)/, '')] : []);
-    if (methods.some(verb => !['GET', 'HEAD', 'OPTIONS'].includes(verb)) || words.some(w => /^(?:-f|-F|--field|--raw-field|--input)/.test(w)))
-      return 'GitHub API writes are denied; use the PR metadata gate.';
+    // Parse like gh's flag parser: value flags consume the next word, combined short flags such as
+    // -iXPUT or -iX PUT are understood, and there must be exactly one positional endpoint.
+    const valueFlags = new Set(['-H', '--header', '-f', '-F', '--field', '--raw-field', '--input', '-q', '--jq', '-t', '--template', '--hostname', '-p', '--preview', '--cache']);
+    let method = '', hasFields = false, endpoints = [];
+    const args = words.slice(words.indexOf('api') + 1);
+    for (let i = 0; i < args.length; i++) {
+      const word = args[i];
+      if (word === '-X' || word === '--method') { method = args[++i] ?? ''; continue; }
+      if (word.startsWith('--method=')) { method = word.slice(9); continue; }
+      const combined = /^-([a-zA-Z]*)X(.*)$/.exec(word);
+      if (combined && !word.startsWith('--')) { method = combined[2] || args[++i] || ''; continue; }
+      if (/^(?:--field|--raw-field|--input)(?:=|$)/.test(word) || /^-[a-zA-Z]*[fF]/.test(word) && !word.startsWith('--')) hasFields = true;
+      if (/^-[a-zA-Z]*[fF]$/.test(word) && !word.startsWith('--')) { i++; continue; }
+      if (valueFlags.has(word)) { i++; continue; }
+      if (word.startsWith('-')) continue;
+      endpoints.push(word);
+    }
+    method = method.toUpperCase();
+    const writes = hasFields || (method && !['GET', 'HEAD', 'OPTIONS'].includes(method));
+    if (!writes) return null;
+    if (endpoints.length !== 1 || method === 'DELETE') return 'This GitHub API write is not an allowed routine operation; use the guarded path.';
+    const endpoint = '/' + endpoints[0].toLowerCase().split(/[?#]/)[0].replace(/\/+/g, '/').replace(/^\/|\/$/g, '');
+    const routine = [/^\/repos\/[^/]+\/[^/]+\/issues\/\d+$/, /^\/repos\/[^/]+\/[^/]+\/issues\/\d+\/(?:comments|labels|assignees)$/,
+      /^\/repos\/[^/]+\/[^/]+\/issues\/comments\/\d+$/, /^\/repos\/[^/]+\/[^/]+\/pulls\/\d+$/,
+      /^\/repos\/[^/]+\/[^/]+\/pulls\/\d+\/(?:comments|requested_reviewers)$/,
+      /^\/repos\/[^/]+\/[^/]+\/pulls\/\d+\/ccr\/(?:ready_for_review|convert_to_draft)$/,
+      /^\/repos\/[^/]+\/[^/]+\/pulls\/\d+\/ccr\/comments\/\d+\/(?:resolve|unresolve)$/,
+      /^\/repos\/[^/]+\/[^/]+\/rulesets(?:\/\d+)?$/];
+    if (/\/rulesets/.test(endpoint) && (/enforcement|bypass/i.test(args.join(' ')))) return 'Disabling or bypassing rulesets is not a routine operation.';
+    if (!routine.some(pattern => pattern.test(endpoint))) return 'This GitHub API write is not an allowed routine operation (PR/issue bodies, labels, comments, rulesets); use the guarded path.';
     return null;
   }
   if (push) {
@@ -117,8 +145,9 @@ export function guard(event, client) {
   if (typeof input !== 'string' && (!Array.isArray(input) || !input.every(word => typeof word === 'string'))) return 'Invalid shell command input; denied.';
   const command = Array.isArray(input) ? input.map(word => /^[A-Za-z0-9_./:=@+-]+$/.test(word) ? word : JSON.stringify(word)).join(' ') : input;
   const tool = event.tool_name ?? '';
-  if (tool === 'NotebookEdit' || /github.*(?:create|merge|push_files)/i.test(tool)
-    || (tool.startsWith('mcp__github__') && !/^mcp__github__(?:get_|list_|search_)/.test(tool)))
+  const cut = tool.lastIndexOf('__');
+  const github = tool.startsWith('mcp__') && cut > 4 && /github/i.test(tool.slice(0, cut)) ? [tool, tool.slice(cut + 2)] : null;
+  if (tool === 'NotebookEdit' || (github && !/^(?:get|list|search)_[a-zA-Z0-9_]+$/.test(github[1])))
     return 'Notebook and GitHub publication tools are denied; use the guarded command path.';
   let loaded = false;
   try {

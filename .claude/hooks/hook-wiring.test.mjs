@@ -12,8 +12,10 @@ const trusted = join(root, 'trusted project');
 const nested = join(root, 'untrusted', 'nested');
 const marker = join(root, 'cwd-runner-executed');
 for (const path of [join(trusted, '.claude/hooks'), join(root, 'untrusted/.claude/hooks'), nested]) mkdirSync(path, { recursive: true });
+mkdirSync(join(trusted, '.codex'), { recursive: true });
+writeFileSync(join(trusted, '.codex/hooks.json'), '{}');
 writeFileSync(join(root, 'untrusted/.claude/hooks/hook-runner.mjs'), `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'executed'); process.exit(0);`);
-const env = { ...process.env, CLAUDE_PROJECT_DIR: trusted, CODEX_PROJECT_ROOT: trusted, XDG_STATE_HOME: join(root, 'state'), LOCALAPPDATA: join(root, 'state') };
+const env = { ...process.env, CLAUDE_PROJECT_DIR: trusted, OYZU_CONTEXT_PROJECT_ROOT: trusted, XDG_STATE_HOME: join(root, 'state'), LOCALAPPDATA: join(root, 'state') };
 const config = client => JSON.parse(readFileSync(join(repo, client === 'claude' ? '.claude/settings.json' : '.codex/hooks.json'), 'utf8'));
 const hook = (client, name) => config(client).hooks?.[name]?.flatMap(group => group.hooks).find(h => /hook-runner/.test(h.command)) ?? { command: ':' };
 const run = (h, extra = {}) => spawnSync('/bin/sh', ['-c', h.command], { cwd: nested, env, input: '{}', encoding: 'utf8', ...extra });
@@ -22,7 +24,7 @@ test('round3: configured hooks deny unloaded mutation and missing runners', () =
   // Test the configured command, so an absent hook on the base fails as exit 0.
   const input = JSON.stringify({ cwd: nested, session_id: 'unloaded-wiring', tool_name: 'Edit', tool_input: { file_path: 'x' } });
   for (const client of ['claude', 'codex']) {
-    const ownEnv = { ...env, CLAUDE_PROJECT_DIR: repo, CODEX_PROJECT_ROOT: repo };
+    const ownEnv = { ...env, CLAUDE_PROJECT_DIR: repo, OYZU_CONTEXT_PROJECT_ROOT: repo };
     assert.equal(run(hook(client, 'PreToolUse'), { input, env: ownEnv }).status, 2, `${client}: unloaded Edit must exit 2`);
     for (const name of ['SessionStart', 'PreToolUse']) {
       assert.equal(run(hook(client, name)).status, 2, `${client} ${name}: missing runner must exit 2`);
@@ -54,7 +56,7 @@ test('round3: Codex uses only the trusted root across nested and non-repository 
     for (const cwd of [nested, root]) assert.equal(run(h, { cwd }).status, 0, h.command);
     assert.equal(existsSync(marker), false);
     for (const value of ['', '.', join(root, 'missing-project')])
-      assert.equal(run(h, { env: { ...env, CODEX_PROJECT_ROOT: value } }).status, 2, `untrusted root ${value}`);
+      assert.equal(run(h, { env: { ...env, OYZU_CONTEXT_PROJECT_ROOT: value } }).status, 2, `untrusted root ${value}`);
   }
   rmSync(runner);
 });

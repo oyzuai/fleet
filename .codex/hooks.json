@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"const p=require('node:path'),s=require('node:child_process');const d=process.env.CODEX_PROJECT_ROOT;if(!d||!p.isAbsolute(d))process.exit(2);const r=s.spawnSync(process.execPath,[p.join(d,'.claude/hooks/hook-runner.mjs'),...process.argv.slice(1)],{stdio:'inherit',timeout:28000});process.exit(r.status===0&&!r.error&&!r.signal?0:2)\" session-start codex || exit 2",
+            "command": "node -e \"const f=require('node:fs'),p=require('node:path'),s=require('node:child_process');let d=process.env.OYZU_CONTEXT_PROJECT_ROOT;if(!d){const g=s.spawnSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8',timeout:2000});d=g.status===0?g.stdout.trim():''}if(!d||!p.isAbsolute(d)||!f.existsSync(p.join(d,'.codex/hooks.json')))process.exit(2);const h=p.join(d,'.claude/hooks/hook-runner.mjs');if(!f.existsSync(h)||p.dirname(p.dirname(p.dirname(f.realpathSync(h))))!==f.realpathSync(d))process.exit(2);const mode=process.argv[1];const r=s.spawnSync(process.execPath,[h,...process.argv.slice(1)],{stdio:'inherit',timeout:mode==='session-start'?25000:6000});process.exit(r.status===0&&!r.error&&!r.signal?0:2)\" session-start codex || exit 2",
             "timeout": 30,
             "additionalContextLimit": 0
           }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"const p=require('node:path'),s=require('node:child_process');const d=process.env.CODEX_PROJECT_ROOT;if(!d||!p.isAbsolute(d))process.exit(2);const r=s.spawnSync(process.execPath,[p.join(d,'.claude/hooks/hook-runner.mjs'),...process.argv.slice(1)],{stdio:'inherit',timeout:28000});process.exit(r.status===0&&!r.error&&!r.signal?0:2)\" pre-tool-use codex || exit 2",
+            "command": "node -e \"const f=require('node:fs'),p=require('node:path'),s=require('node:child_process');let d=process.env.OYZU_CONTEXT_PROJECT_ROOT;if(!d){const g=s.spawnSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8',timeout:2000});d=g.status===0?g.stdout.trim():''}if(!d||!p.isAbsolute(d)||!f.existsSync(p.join(d,'.codex/hooks.json')))process.exit(2);const h=p.join(d,'.claude/hooks/hook-runner.mjs');if(!f.existsSync(h)||p.dirname(p.dirname(p.dirname(f.realpathSync(h))))!==f.realpathSync(d))process.exit(2);const mode=process.argv[1];const r=s.spawnSync(process.execPath,[h,...process.argv.slice(1)],{stdio:'inherit',timeout:mode==='session-start'?25000:6000});process.exit(r.status===0&&!r.error&&!r.signal?0:2)\" pre-tool-use codex || exit 2",
             "timeout": 10
           }
         ]

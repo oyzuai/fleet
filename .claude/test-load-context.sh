@@ -37,6 +37,7 @@ for name in context agent-workflows; do
 done
 export CLAUDE_PROJECT_DIR="$scratch/workspace/$(basename -- "$repo_root")"
 export XDG_CACHE_HOME="$scratch/cache"
+# Hermetic session state: never read or leave guard state in the real user state directory.
 export XDG_STATE_HOME="$scratch/state" LOCALAPPDATA="$scratch/state"
 git init --quiet "$CLAUDE_PROJECT_DIR"
 git -C "$CLAUDE_PROJECT_DIR" commit --quiet --allow-empty -m project
@@ -102,10 +103,30 @@ expected="$(git -C "$scratch/seed-context" rev-parse HEAD)"
 run_hook
 assert_success
 printf 'PASS: refresh prints the updated committed snapshot\n'
+printf 'dirty\n' >> "$scratch/workspace/context/INDEX.md"
+run_hook
+assert_success
+grep -q '^WARNING: sibling context checkout unusable (.*local changes' "$scratch/stdout" || fail 'dirty sibling must be named and bypassed with a warning'
+[ "$(git -C "$scratch/workspace/context" status --porcelain | wc -l)" = 1 ] || fail 'the sibling checkout must not be touched'
+git -C "$scratch/workspace/context" checkout --quiet -- INDEX.md
+git -C "$scratch/workspace/context" checkout --quiet --detach
+run_hook
+assert_success
+grep -q 'not on branch main' "$scratch/stdout" || fail 'detached sibling must be named'
+git -C "$scratch/workspace/context" checkout --quiet main
+printf 'PASS: an unusable sibling (dirty or detached) loads a private clean clone with a named WARNING\n'
 mv "$scratch/remotes/context.git" "$scratch/remotes/context-unavailable.git"
 run_hook
+assert_success
+grep -q '^WARNING: .*cached' "$scratch/stdout" || fail 'offline cached use must be disclosed with a WARNING'
+grep -Fxq "context commit $(git -C "$scratch/workspace/context" rev-parse HEAD)" "$scratch/stdout" || fail 'cached load must print the exact SHA'
+printf 'PASS: unavailable remote with a clean cached checkout loads it with a visible WARNING\n'
+git -C "$scratch/workspace/context" checkout --quiet --detach
+rm -rf -- "$scratch/state"
+run_hook
 assert_failure
-printf 'PASS: unavailable cached remote is visible on both streams\n'
+grep -q 'fallback:' "$scratch/stdout" || fail 'both checkouts unusable must report both reasons'
+printf 'PASS: with the remote down and no usable checkout the loader still fails closed with both reasons\n'
 rm -rf -- "$scratch/workspace" "$scratch/cache"
 mkdir -p "$scratch/workspace"
 if [ "$mode" = repository ]; then
